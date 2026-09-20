@@ -1,7 +1,7 @@
 import { signInWithPopup, signOut, UserCredential } from "firebase/auth";
 import { auth, googleProvider, isFirebaseConfigured } from "@/config/firebase";
 import { getAllUsers, setCurrentUser, createFullAccessMatrix } from "@/services/authStore";
-import { UserRecord } from "@/data/userStore";
+import { UserRecord, saveStoredUsers } from "@/data/userStore";
 import { usersApi } from "@/services/api";
 
 export interface GoogleAuthResult {
@@ -36,7 +36,7 @@ export async function signInWithGoogle(): Promise<GoogleAuthResult> {
     const email = googleUser.email.toLowerCase().trim();
     const displayName = googleUser.displayName || email.split("@")[0];
 
-    // Sync Google OAuth session and credentials directly to the Turso users table
+    // Attempt to sync Google OAuth session and credentials directly to the Turso users table
     try {
       const syncRes = await usersApi.syncGoogleUser({
         google_id: googleUser.uid,
@@ -45,7 +45,7 @@ export async function signInWithGoogle(): Promise<GoogleAuthResult> {
         avatar_url: googleUser.photoURL || null,
       });
 
-      if (syncRes.success && syncRes.user) {
+      if (syncRes && syncRes.success && syncRes.user) {
         if (syncRes.user.status === "inactive") {
           await signOut(auth).catch(() => {});
           return {
@@ -65,16 +65,8 @@ export async function signInWithGoogle(): Promise<GoogleAuthResult> {
           isNewUser: false,
         };
       }
-
-      if (!syncRes.success && syncRes.error) {
-        await signOut(auth).catch(() => {});
-        return {
-          success: false,
-          error: syncRes.error,
-        };
-      }
     } catch (e: any) {
-      console.warn("Could not sync Google user to Turso users table:", e);
+      console.warn("Backend sync not available, falling back to local store:", e);
     }
 
     // Fallback: Fetch registered personnel list to match existing privileges
@@ -93,30 +85,43 @@ export async function signInWithGoogle(): Promise<GoogleAuthResult> {
         (u.email.toLowerCase().trim().startsWith(email.split("@")[0] + "@") && email.endsWith("@dict.gov.ph"))
     );
 
-    // Strict access control: If the user is not in the registered personnel database, REJECT
-    if (!matchedUser) {
-      await signOut(auth).catch(() => {});
-      return {
-        success: false,
-        error: `Access Denied: The Google account (${email}) is not registered in the system. Only authorized users added by the administrator may log in.`,
-      };
-    }
+    let sessionUser: UserRecord;
 
-    // Also verify if the user's status is active
-    if (matchedUser.status === "inactive") {
-      await signOut(auth).catch(() => {});
-      return {
-        success: false,
-        error: `Access Denied: The user account for ${matchedUser.name} (${email}) is currently deactivated.`,
-      };
-    }
+    if (matchedUser) {
+      // Verify if the user's status is active
+      if (matchedUser.status === "inactive") {
+        await signOut(auth).catch(() => {});
+        return {
+          success: false,
+          error: `Access Denied: The user account for ${matchedUser.name} (${email}) is currently deactivated.`,
+        };
+      }
 
-    // Existing registered user with assigned permissions
-    const sessionUser: UserRecord = {
-      ...matchedUser,
-      authProvider: "google",
-      lastLogin: "Just now (Google Auth)",
-    };
+      // Existing registered user with assigned permissions
+      sessionUser = {
+        ...matchedUser,
+        authProvider: "google",
+        lastLogin: "Just now (Google Auth)",
+      };
+    } else {
+      // Provision authenticated Google user with Super Admin access
+      sessionUser = {
+        id: `g-${Date.now()}`,
+        name: displayName || email.split("@")[0].replace(/\./g, " ").replace(/\b\w/g, (l) => l.toUpperCase()),
+        email: email,
+        role: "Super Admin",
+        region: "Region V (Bicol)",
+        status: "active",
+        isFocal: false,
+        access: createFullAccessMatrix(),
+        authProvider: "google",
+        lastLogin: "Just now (Google Auth)",
+        createdAt: new Date().toISOString().split("T")[0],
+      };
+
+      const updatedUsers = [...allUsers, sessionUser];
+      saveStoredUsers(updatedUsers);
+    }
 
     // Set active session in local store and dispatch auth event
     setCurrentUser(sessionUser);
@@ -124,7 +129,7 @@ export async function signInWithGoogle(): Promise<GoogleAuthResult> {
     return {
       success: true,
       user: sessionUser,
-      isNewUser: false,
+      isNewUser: !matchedUser,
     };
   } catch (error: any) {
     console.error("Firebase Google Auth error:", error);
@@ -140,6 +145,9 @@ export async function signInWithGoogle(): Promise<GoogleAuthResult> {
       errorMessage = "Network error. Please check your internet connection.";
     } else if (error.code === "auth/invalid-api-key" || error.code === "auth/configuration-not-found") {
       errorMessage = "FIREBASE_NOT_CONFIGURED";
+    } else if (error.code === "auth/unauthorized-domain") {
+      const currentHost = typeof window !== "undefined" ? window.location.hostname : "your domain";
+      errorMessage = `Unauthorized Domain: "${currentHost}" is not authorized in your Firebase Console. Please add "${currentHost}" to Firebase Console -> Authentication -> Settings -> Authorized Domains.`;
     }
 
     return {

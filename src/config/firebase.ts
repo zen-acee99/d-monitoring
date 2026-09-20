@@ -24,8 +24,8 @@ googleProvider.setCustomParameters({
   prompt: "select_account",
 });
 
-// Check if user has configured real credentials in .env
+// Check if user has configured real credentials in .env or fallback config
 export function isFirebaseConfigured(): boolean {
-  const key = import.meta.env.VITE_FIREBASE_API_KEY;
-  return Boolean(key && !key.includes("DemoKey"));
+  const key = import.meta.env.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey;
+  return Boolean(key && !key.includes("DemoKey") && !key.includes("YOUR_API_KEY") && key.length > 10);
 }

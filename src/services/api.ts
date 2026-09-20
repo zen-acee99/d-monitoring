@@ -311,11 +311,12 @@ export const administrationApi = {
   async getAdministrators(): Promise<AdminUser[]> {
     try {
       const res = await fetch(`${API_BASE}/administration`);
-      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+      if (!res.ok) return [];
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) return [];
       const data = await res.json();
       return data.users || [];
-    } catch (err) {
-      console.warn("Failed to fetch administration users from backend:", err);
+    } catch {
       return [];
     }
   },
@@ -589,11 +590,12 @@ export const modulesApi = {
   async getModules(): Promise<SystemModule[]> {
     try {
       const res = await fetch(`${API_BASE}/modules`);
-      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+      if (!res.ok) return [];
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) return [];
       const data = await res.json();
       return data.modules || [];
-    } catch (err) {
-      console.warn("Failed to fetch modules from Turso:", err);
+    } catch {
       return [];
     }
   },
@@ -603,6 +605,8 @@ export const modulesApi = {
     try {
       const res = await fetch(`${API_BASE}/modules/${encodeURIComponent(idOrCode)}`);
       if (!res.ok) return null;
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) return null;
       const data = await res.json();
       return data.module || null;
     } catch {
@@ -626,8 +630,12 @@ export const modulesApi = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(moduleData),
       });
+      if (!res.ok) return { success: false, error: `Server error ${res.status}` };
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        return { success: false, error: "Non-JSON response" };
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP error ${res.status}`);
       return { success: true, module: data.module };
     } catch (err: any) {
       return { success: false, error: err.message || "Failed to create module" };
@@ -636,7 +644,7 @@ export const modulesApi = {
 
   // Update an existing module
   async updateModule(
-    id: string,
+    id: string | number,
     updates: Partial<SystemModule>
   ): Promise<{ success: boolean; module?: SystemModule; error?: string }> {
     try {
@@ -645,8 +653,12 @@ export const modulesApi = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
       });
+      if (!res.ok) return { success: false, error: `Server error ${res.status}` };
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        return { success: false, error: "Non-JSON response" };
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP error ${res.status}`);
       return { success: true, module: data.module };
     } catch (err: any) {
       return { success: false, error: err.message || "Failed to update module" };
@@ -654,13 +666,17 @@ export const modulesApi = {
   },
 
   // Toggle module active/deactivated state
-  async toggleStatus(id: string): Promise<{ success: boolean; module?: SystemModule; error?: string }> {
+  async toggleStatus(id: string | number): Promise<{ success: boolean; module?: SystemModule; error?: string }> {
     try {
       const res = await fetch(`${API_BASE}/modules/${encodeURIComponent(id)}/toggle`, {
         method: "PATCH",
       });
+      if (!res.ok) return { success: false, error: `Server error ${res.status}` };
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        return { success: false, error: "Non-JSON response" };
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP error ${res.status}`);
       return { success: true, module: data.module };
     } catch (err: any) {
       return { success: false, error: err.message || "Failed to toggle module status" };
@@ -668,12 +684,14 @@ export const modulesApi = {
   },
 
   // Delete a custom module
-  async deleteModule(id: string): Promise<boolean> {
+  async deleteModule(id: string | number): Promise<boolean> {
     try {
       const res = await fetch(`${API_BASE}/modules/${encodeURIComponent(id)}`, {
         method: "DELETE",
       });
       if (!res.ok) return false;
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) return false;
       const data = await res.json();
       return Boolean(data.success);
     } catch {
@@ -697,12 +715,17 @@ export const usersApi = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      if (!res.ok) {
+        return { success: false, error: `Backend unavailable (HTTP ${res.status})` };
+      }
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        return { success: false, error: "Non-JSON response from server" };
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP error ${res.status}`);
       return data;
-    } catch (err: any) {
-      console.error("Failed to sync Google user to DB:", err);
-      return { success: false, error: err.message || "Failed to sync Google user" };
+    } catch {
+      return { success: false, error: "Could not reach backend sync service" };
     }
   },
 

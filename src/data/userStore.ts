@@ -143,16 +143,18 @@ export function getStoredUsers(): UserRecord[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
-      return [];
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_USERS));
+      return DEFAULT_USERS;
     }
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
+    if (Array.isArray(parsed) && parsed.length > 0) {
       return parsed;
     }
-    return [];
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_USERS));
+    return DEFAULT_USERS;
   } catch (e) {
     console.error("Error reading users from storage:", e);
-    return [];
+    return DEFAULT_USERS;
   }
 }
 
