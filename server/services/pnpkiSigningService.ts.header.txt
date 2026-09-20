@@ -1,0 +1,103 @@
+import crypto from "crypto";
+import forge from "node-forge";
+import { PDFDocument, PDFName, PDFString, PDFHexString, PDFArray } from "pdf-lib";
+import { SignPdf } from "@signpdf/signpdf";
+import { P12Signer } from "@signpdf/signer-p12";
+
+const ENCRYPTION_KEY = crypto.scryptSync(
+  process.env.PNPKI_KEY_SECRET || "dict-r5-pnpki-signing-vault-key-2026",
+  "dict-pnpki-salt",
+  32
+);
+
+export function encryptP12Password(plainText: string): string {
+  if (!plainText) return "";
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", ENCRYPTION_KEY, iv);
+  let encrypted = cipher.update(plainText, "utf8", "hex");
+  encrypted += cipher.final("hex");
+  const tag = cipher.getAuthTag().toString("hex");
+  return `enc:${iv.toString("hex")}:${tag}:${encrypted}`;
+}
+
+export function decryptP12Password(cipherText: string): string {
+  if (!cipherText) return "";
+  if (!cipherText.startsWith("enc:")) return cipherText; // legacy fallback
+  const parts = cipherText.split(":");
+  if (parts.length !== 4) return "";
+  const iv = Buffer.from(parts[1], "hex");
+  const tag = Buffer.from(parts[2], "hex");
+  const encrypted = parts[3];
+  const decipher = crypto.createDecipheriv("aes-256-gcm", ENCRYPTION_KEY, iv);
+  decipher.setAuthTag(tag);
+  let decrypted = decipher.update(encrypted, "hex", "utf8");
+  decrypted += decipher.final("utf8");
+  return decrypted;
+}
+
+export interface P12ParsedCertificate {
+  commonName: string;
+  organization?: string;
+  validFrom: Date;
+  validTo: Date;
+  issuerCN?: string;
+  serialNumber?: string;
+  rawCert: forge.pki.Certificate;
+  privateKey: any;
+}
+
+export function parseP12Certificate(
+  p12Base64: string,
+  password?: string
+): P12ParsedCertificate {
+  const cleanBase64 = p12Base64.replace(/^data:.*?;base64,/, "").trim();
+  const p12Der = forge.util.decode64(cleanBase64);
+  const p12Asn1 = forge.asn1.fromDer(p12Der);
+  const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, password || "");
+
+  let cert: forge.pki.Certificate | null = null;
+  let key: any = null;
+
+  for (const safeContent of p12.safeContents) {
+    for (const safeBag of safeContent.safeBags) {
+      if (safeBag.cert && !cert) {
+        cert = safeBag.cert;
+      }
+      if (safeBag.key && !key) {
+        key = safeBag.key;
+      }
+    }
+  }
+
+  if (!cert || !key) {
+    throw new Error(
+      "Could not find valid Certificate and Private Key in this .p12 keystore. Check your password."
+    );
+  }
+
+  const cnAttr = cert.subject.attributes.find(
+    (a: any) => a.name === "commonName" || a.shortName === "CN"
+  );
+  const commonName = cnAttr ? String(cnAttr.value) : "DICT Authorized Signatory";
+
+  const orgAttr = cert.subject.attributes.find(
+    (a: any) => a.name === "organizationName" || a.shortName === "O"
+  );
+  const organization = orgAttr ? String(orgAttr.value) : undefined;
+
+  const issuerCnAttr = cert.issuer.attributes.find(
+    (a: any) => a.name === "commonName" || a.shortName === "CN"
+  );
+  const issuerCN = issuerCnAttr ? String(issuerCnAttr.value) : undefined;
+
+  return {
+    commonName,
+    organization,
+    validFrom: cert.validity.notBefore,
+    validTo: cert.validity.notAfter,
+    issuerCN,
+    serialNumber: cert.serialNumber,
+    rawCert: cert,
+    privateKey: key,
+  };
+}

@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ace M. Malto - Resume</title>
+  <style>
+    @page {
+      size: letter portrait;
+      margin: 0.45in 0.55in;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: "Times New Roman", Times, Georgia, serif;
+      font-size: 10pt;
+      line-height: 1.32;
+      color: #000;
+      background: #fff;
+      padding: 0.45in 0.55in;
+      max-width: 8.5in;
+      margin: 0 auto;
+    }
+    @media screen {
+      body {
+        background-color: #f3f4f6;
+        padding: 20px;
+      }
+      .resume-container {
+        background: #fff;
+        padding: 0.5in 0.6in;
+        max-width: 8.5in;
+        margin: 0 auto;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      }
+      .print-btn-bar {
+        text-align: center;
+        margin-bottom: 20px;
+      }
+      .print-btn {
+        background-color: #1e40af;
+        color: white;
+        padding: 10px 24px;
+        border: none;
+        border-radius: 6px;
+        font-size: 14px;
+        font-weight: bold;
+        cursor: pointer;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.15);
+      }
+      .print-btn:hover {
+        background-color: #1d4ed8;
+      }
+    }
+    @media print {
+      body {
+        padding: 0;
+        background: #fff;
+      }
+      .resume-container {
+        padding: 0;
+        box-shadow: none;
+      }
+      .print-btn-bar {
+        display: none;
+      }
+    }
+    
+    /* Header */
+    .header {
+      text-align: center;
+      margin-bottom: 12pt;
+    }
+    .name {
+      font-size: 18pt;
+      font-weight: bold;
+      letter-spacing: 1.5px;
+      margin-bottom: 3pt;
+    }
+    .contact-info {
+      font-size: 9.5pt;
+    }
+
+    /* Section Headings */
+    .section-title {
+      font-size: 10.5pt;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid #000;
+      padding-bottom: 1pt;
+      margin-top: 10pt;
+      margin-bottom: 5pt;
+    }
+
+    /* Content Styling */
+    .summary-text {
+      text-align: justify;
+      font-size: 9.8pt;
+      line-height: 1.32;
+    }
+
+    .job-entry {
+      margin-bottom: 7pt;
+    }
+    .job-header-1, .job-header-2 {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+    .company-name {
+      font-size: 10pt;
+      font-weight: normal;
+    }
+    .location {
+      font-size: 10pt;
+      text-align: right;
+    }
+    .job-title {
+      font-size: 10pt;
+      font-style: normal;
+    }
+    .date-range {
+      font-size: 10pt;
+      text-align: right;
+    }
+    .job-description {
+      margin-top: 2pt;
+      font-size: 9.6pt;
+      text-align: justify;
+      line-height: 1.32;
+    }
+
+    .job-bullets {
+      margin-top: 2pt;
+      padding-left: 14pt;
+      font-size: 9.6pt;
+      line-height: 1.32;
+      text-align: justify;
+    }
+    .job-bullets li {
+      margin-bottom: 2pt;
+    }
+
+    .edu-entry {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-size: 10pt;
+    }
+    .edu-sub {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-size: 10pt;
+    }
+
+    .skills-text {
+      font-size: 9.6pt;
+      text-align: justify;
+      line-height: 1.32;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="print-btn-bar">
+    <button class="print-btn" onclick="window.print()">📥 Print / Save as PDF</button>
+  </div>
+
+  <div class="resume-container">
+    <!-- Header -->
+    <div class="header">
+      <div class="name">ACE M. MALTO</div>
+      <div class="contact-info">+63 955-683-7001 | acemm.1599@gmail.com |</div>
+    </div>
+
+    <!-- Summary -->
+    <div class="section-title">SUMMARY</div>
+    <div class="summary-text">
+      Detail-oriented Software Engineer and Information Systems Analyst with a Bachelor's degree in Computer Science and over a year of hands-on experience in system architecture, automated diagnostics, and business requirements validation. Proven track record of executing comprehensive User Acceptance Testing (UAT), regression testing, and vulnerability assessments to secure enterprise systems. Adept in Agile environments with excellent English communication skills, seeking to leverage robust technical expertise to drive quality and innovation at ATOS PH. Fully prepared to support dynamic business needs on a shifting schedule.
+    </div>
+
+    <!-- Experience -->
+    <div class="section-title">PROFESSIONAL EXPERIENCE</div>
+
+    <!-- Job 1 -->
+    <div class="job-entry">
+      <div class="job-header-1">
+        <span class="company-name">Department of Information and Communication Technology</span>
+        <span class="location">Bicol Albay</span>
+      </div>
+      <div class="job-header-2">
+        <span class="job-title">Information System Analyst II</span>
+        <span class="date-range">12/2025 – Present</span>
+      </div>
+      <div class="job-description">
+        Validated enterprise-scale information systems by executing rigorous Manual Testing and User Acceptance Testing (UAT), ensuring 100% compliance with business specifications. Managed Azure cloud configurations and system operations to maintain high availability and support infrastructure requirements. Conducted vulnerability assessments and regression testing on legacy architectures, effectively identifying defects and verifying critical security patches.
+      </div>
+    </div>
+
+    <!-- Job 2 (Updated in Bullet Format) -->
+    <div class="job-entry">
+      <div class="job-header-1">
+        <span class="company-name">Amellar Solutions</span>
+        <span class="location">Manila</span>
+      </div>
+      <div class="job-header-2">
+        <span class="job-title">Software Engineer</span>
+        <span class="date-range">Jun 2023 – May 2025</span>
+      </div>
+      <ul class="job-bullets">
+        <li>Architected and developed modular Windows desktop applications using C# and .NET (Windows Forms / .NET Framework), delivering core enterprise solutions for BPLS (Business Permits and Licensing System), Financial ERP, and EPS (Engineering Permit System).</li>
+        <li>Engineered event-driven UI controls, custom business logic, and third-party system integrations for payment gateways and accounting workflows.</li>
+        <li>Designed, optimized, and maintained relational database architectures across MySQL and Oracle, implementing complex stored procedures and queries to ensure high data integrity within 2-week Agile sprints.</li>
+      </ul>
+    </div>
+
+    <!-- Job 3 -->
+    <div class="job-entry">
+      <div class="job-header-1">
+        <span class="company-name">Creotec Philippines Inc.</span>
+        <span class="location">Laguna</span>
+      </div>
+      <div class="job-header-2">
+        <span class="job-title">Software Engineer (Internship)</span>
+        <span class="date-range">Jan 2023 – Jun 2023</span>
+      </div>
+      <div class="job-description">
+        Engineered backend microservices using Node.js and JavaScript, establishing robust REST APIs for mission-critical internal applications. Reduced production bug reports by 20% by implementing automated diagnostics and comprehensive exception-handling protocols. Collaborated on the architectural planning of modular services to enhance overall system maintainability and deployment efficiency.
+      </div>
+    </div>
+
+    <!-- Job 4 -->
+    <div class="job-entry">
+      <div class="job-header-1">
+        <span class="company-name">Local Government Unit (Thesis)</span>
+        <span class="location"></span>
+      </div>
+      <div class="job-header-2">
+        <span class="job-title">Full Stack Developer</span>
+        <span class="date-range">Jan 2022 – Jan 2023</span>
+      </div>
+      <div class="job-description">
+        Designed and deployed a full-featured job portal utilizing React.js and MySQL, integrating Natural Language Processing (NLP) algorithms for intelligent candidate job-matching. Optimized application performance through strategic code refactoring and caching, achieving a 40% improvement in page load speeds. Created high-fidelity prototypes in Figma and translated UX/UI designs into pixel-perfect HTML/CSS interfaces.
+      </div>
+    </div>
+
+    <!-- Education -->
+    <div class="section-title">EDUCATION</div>
+    <div class="edu-entry">
+      <span>Divine Word College of Legazpi</span>
+      <span>Graduation: June 2023</span>
+    </div>
+    <div class="edu-sub">
+      <span>Computer Science - Software Engineer</span>
+      <span>GWA: 1.5</span>
+    </div>
+
+    <!-- Technical Skills -->
+    <div class="section-title">TECHNICAL SKILLS &amp; INTERESTS</div>
+    <div class="skills-text">
+      <strong>Skills:</strong> User Acceptance Testing (UAT), Automated Diagnostics, Regression Testing, Vulnerability Assessments, Business Analysis, Agile/Scrum Methodologies, Azure Cloud &amp; Azure SQL, MERN Stack (MongoDB, Express.js, React.js, Node.js), RESTful APIs, TypeScript &amp; JavaScript (ES6+), Security Implementation (JWT), English Communication
+    </div>
+  </div>
+
+</body>
+</html>

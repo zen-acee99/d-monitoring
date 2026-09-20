@@ -1,0 +1,147 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-50: #eff6ff;
+  --color-brand-100: #dbeafe;
+  --color-brand-200: #bfdbfe;
+  --color-brand-300: #93c5fd;
+  --color-brand-400: #60a5fa;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #2563eb;
+  --color-brand-700: #1d4ed8;
+  --color-brand-800: #1e40af;
+  --color-brand-900: #1e3a8a;
+  --color-brand-950: #172554;
+
+  --color-background-primary: #050816;
+  --color-background-secondary: #0D1426;
+  --color-background-tertiary: #111A2E;
+  --color-background-quaternary: #151F35;
+
+  --color-border-primary: #1E2A42;
+  --color-border-secondary: #26334D;
+
+  --color-text-primary: #F8FAFC;
+  --color-text-secondary: #94A3B8;
+  --color-text-muted: #64748B;
+
+  --color-status-green: #22C55E;
+  --color-status-cyan: #22D3EE;
+  --color-status-yellow: #F59E0B;
+  --color-status-orange: #F97316;
+  --color-status-red: #EF4444;
+  --color-status-purple: #8B5CF6;
+  --color-status-pink: #EC4899;
+  --color-status-blue: #38BDF8;
+
+  --font-sans: 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* Custom scrollbar for webkit */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-background-primary);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-primary);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-secondary);
+}
+
+/* Custom scrollbar utility */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(59, 130, 246, 0.35) transparent;
+}
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(59, 130, 246, 0.3);
+  border-radius: 9999px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(59, 130, 246, 0.6);
+}
+
+body {
+  background-color: var(--color-background-primary);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.glass-panel {
+  background: rgba(13, 20, 38, 0.6);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--color-border-primary);
+}
+
+/* Leaflet dark mode overrides */
+.leaflet-container {
+  background-color: var(--color-background-secondary) !important;
+  font-family: inherit !important;
+}
+.leaflet-control-zoom a {
+  background-color: var(--color-background-tertiary) !important;
+  color: var(--color-text-primary) !important;
+  border-color: var(--color-border-primary) !important;
+}
+.leaflet-control-zoom a:hover {
+  background-color: var(--color-background-quaternary) !important;
+}
+.leaflet-popup-content-wrapper, .leaflet-popup-tip {
+  background-color: var(--color-background-tertiary) !important;
+  color: var(--color-text-primary) !important;
+  border-color: var(--color-border-primary) !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5), 0 2px 4px -1px rgba(0, 0, 0, 0.3) !important;
+}
+
+.custom-lgu-marker,
+.custom-overview-marker {
+  background: transparent !important;
+  border: none !important;
+}
+
+/* ==========================================================
+   OFFICIAL DTR PRINT FORMATTING (CIVIL SERVICE FORM NO. 48)
+   ========================================================== */
+@media print {
+  @page {
+    size: letter portrait;
+    margin: 0.2in 0.25in;
+  }
+
+  html, body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    height: auto !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Force hide all non-printable UI */
+  .print-hidden,
+  .print\:hidden {
+    display: none !important;
+  }
+
+  /* Force display of printable preview sheets */
+  .print-only {
+    display: block !important;
+  }
+}
