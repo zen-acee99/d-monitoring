@@ -18,17 +18,21 @@ app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
-// Lazy DB init flag for serverless environment
-let dbInitialized = false;
-app.use(async (_req, _res, next) => {
-  if (!dbInitialized) {
-    try {
-      await initDatabase();
-      dbInitialized = true;
-    } catch (e) {
+// Lazy DB init promise for serverless environment
+let dbInitPromise: Promise<void> | null = null;
+function ensureDbInit() {
+  if (!dbInitPromise) {
+    dbInitPromise = initDatabase().catch((e) => {
       console.warn("DB init warning in serverless environment:", e);
-    }
+    });
   }
+  return dbInitPromise;
+}
+
+app.use(async (_req, _res, next) => {
+  try {
+    await ensureDbInit();
+  } catch {}
   next();
 });
 
