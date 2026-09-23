@@ -388,7 +388,11 @@ export function DtrGenerator() {
       setIsP12PasswordSaved(false);
       setP12Password("");
       setSavePasswordToDb(true);
-      showNotification(`PNPKI .p12 certificate "${file.name}" (${(file.size / 1024).toFixed(1)} KB) loaded! Please enter password to unlock.`);
+      // Immediately prompt for password to inspect and extract registered certificate identity
+      setPasswordModalReason("unlock");
+      setModalPasswordInput("");
+      setModalPasswordError("");
+      setShowPasswordModal(true);
     };
     reader.readAsDataURL(file);
   };
@@ -409,7 +413,8 @@ export function DtrGenerator() {
   // Save digital signature profile to Turso database (dtr_generator table)
   const handleSaveSignatureProfile = async () => {
     const user = getCurrentUser();
-    const nameToSave = (config.employeeName || user?.name || "PERSONNEL").trim();
+    // Prioritize the actual verified signer name from the P12 certificate!
+    const nameToSave = (p12SignerIdentity?.commonName || config.employeeName || user?.name || "PERSONNEL").trim();
     if (!nameToSave) {
       showNotification("Please enter or select Employee Full Name first.");
       return;
@@ -433,7 +438,8 @@ export function DtrGenerator() {
 
   const proceedSaveSignatureProfile = async (pwdToSave?: string) => {
     const user = getCurrentUser();
-    const nameToSave = (config.employeeName || user?.name || "PERSONNEL").trim();
+    // Prioritize the verified certificate Common Name (CN) from P12!
+    const nameToSave = (p12SignerIdentity?.commonName || config.employeeName || user?.name || "PERSONNEL").trim();
     setIsSavingSig(true);
     const effectivePwd = pwdToSave || p12Password;
     const res = await dtrGeneratorApi.saveSignatureProfile({
@@ -659,9 +665,9 @@ export function DtrGenerator() {
     setIsP12Unlocked(true);
     setShowPasswordModal(false);
 
-    if (passwordModalReason === "apply") {
-      const certSigner = inspectedCertName || pendingApplyProfile?.Name || config.employeeName;
-      showNotification(`✓ PNPKI .p12 unlocked & applied (Signer: ${certSigner})!`);
+    if (passwordModalReason === "unlock" || passwordModalReason === "apply") {
+      const certSigner = inspectedCertName || p12SignerIdentity?.commonName || pendingApplyProfile?.Name || config.employeeName;
+      showNotification(`✓ PNPKI .p12 unlocked & verified (Signer: ${certSigner})!`);
       setPendingApplyProfile(null);
     } else if (passwordModalReason === "save") {
       proceedSaveSignatureProfile(modalPasswordInput);
@@ -745,11 +751,53 @@ export function DtrGenerator() {
     showNotification(`✅ Applied digital signature profile for ${profile.Name}!`);
   };
 
+  // Delete .p12 certificate from active state and database profile
+  const handleDeleteP12Certificate = async () => {
+    const user = getCurrentUser();
+    setP12File(null);
+    setP12Password("");
+    setIsP12Unlocked(false);
+    setIsP12PasswordSaved(false);
+    setP12SignerIdentity(null);
+
+    const targetId = selectedProfileId || (user?.id ? `dtr-sig-${user.id}` : undefined);
+    const targetUserId = selectedUserId || (user?.id ? String(user.id) : undefined);
+
+    if (targetId || targetUserId) {
+      try {
+        await dtrGeneratorApi.saveSignatureProfile({
+          id: targetId,
+          user_Id: targetUserId,
+          Name: config.employeeName || user?.name || "PERSONNEL",
+          p12: null,
+          p12_filename: null,
+          p12_filesize: 0,
+          p12_password: null,
+          clear_p12: true,
+          image_digiSigned: signatureImage || null,
+        });
+        await loadSignatureProfiles();
+      } catch (err) {
+        console.warn("Could not remove .p12 from database:", err);
+      }
+    }
+
+    showNotification("Deleted .p12 certificate from profile and database. Upload re-enabled.");
+  };
+
   // Delete signature profile from Turso
   const handleDeleteSavedProfile = async (id: string, name: string) => {
     if (!window.confirm(`Are you sure you want to delete signature profile for "${name}" from Turso?`)) return;
     const ok = await dtrGeneratorApi.deleteRecord(id);
     if (ok) {
+      if (selectedProfileId === id || selectedUserId === id.replace(/^dtr-sig-/, "")) {
+        setP12File(null);
+        setP12Password("");
+        setIsP12Unlocked(false);
+        setIsP12PasswordSaved(false);
+        setP12SignerIdentity(null);
+        setSelectedProfileId("");
+      }
       showNotification(`Deleted signature profile for "${name}".`);
       await loadSignatureProfiles();
     }
@@ -1629,18 +1677,12 @@ export function DtrGenerator() {
                           </div>
                         </div>
 
-                        {/* Delete button: visible & highlighted on hover; deleting resets state and re-enables upload */}
+                        {/* Delete button: deletes from memory & clears from database profile */}
                         <button
                           type="button"
-                          onClick={() => {
-                            setP12File(null);
-                            setP12Password("");
-                            setIsP12Unlocked(false);
-                            setIsP12PasswordSaved(false);
-                            showNotification("Deleted .p12 certificate. Upload button re-enabled.");
-                          }}
+                          onClick={handleDeleteP12Certificate}
                           className="px-2 py-1 rounded-md bg-red-500/10 hover:bg-red-600 text-red-400 hover:text-white border border-red-500/30 text-[10px] font-bold transition-all flex items-center gap-1 cursor-pointer shrink-0 shadow-sm"
-                          title="Delete .p12 certificate and re-enable upload button"
+                          title="Delete .p12 certificate from profile and database"
                         >
                           <Trash2 className="w-3 h-3" />
                           <span>Delete .p12</span>

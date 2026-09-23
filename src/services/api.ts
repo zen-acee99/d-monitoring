@@ -459,6 +459,7 @@ export const dtrGeneratorApi = {
     p12_filesize?: number;
     p12_password?: string | null;
     image_digiSigned?: string | null;
+    clear_p12?: boolean;
   }): Promise<{ success: boolean; record?: DtrGeneratorSignatureRecord; error?: string }> {
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };

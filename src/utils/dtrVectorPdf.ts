@@ -494,7 +494,7 @@ export function generateDtrVectorPdf(
     const empSigY = certY + 48;
     const empSignatureImg = config.employeeSignatureImage || (config.status === "Submitted" ? signatureImage : undefined);
     const empHasCert = Boolean(config.employeeHasP12 || (config.status === "Submitted" && hasP12));
-    const empSigner = (config.employeeSignerName || config.employeeName || empName || "PERSONNEL").trim();
+    const empSigner = (config.employeeSignerName || (config.status === "Submitted" && p12SignerName) || config.employeeName || empName || "PERSONNEL").trim();
 
     if (empSignatureImg || empHasCert) {
       const boxW = 120;
@@ -551,7 +551,7 @@ export function generateDtrVectorPdf(
     const supSigY = verifiedY + 44;
     const isSupervisorSigned = (config.status === "Verified" || config.status === "Approved") || Boolean(config.supervisorSignatureImage || (p12SignerName && config.status !== "Submitted"));
     const supSignatureImg = config.supervisorSignatureImage || (config.status !== "Submitted" ? signatureImage : undefined);
-    const supSigner = (p12SignerName || config.signerName || "Malto Ace Mata").trim();
+    const supSigner = (p12SignerName || config.signerName || config.supervisorName || "DICT Authorized Signatory").trim();
 
     if (isSupervisorSigned && (supSignatureImg || hasP12 || config.supervisorHasP12 || p12SignerName)) {
       // Official Digital Signature Appearance in Supervisor Area (above Supervisor Name matching Image 2)

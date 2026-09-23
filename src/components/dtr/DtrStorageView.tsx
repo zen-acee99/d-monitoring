@@ -420,13 +420,13 @@ export function DtrStorageView({
           employeeSignatureImage: item.employeeSignatureImage || item.signatureImage,
           employeeHasP12: item.employeeHasP12 ?? item.hasP12,
           employeeSignerName: item.employeeSignerName || item.employeeName,
-          supervisorSignatureImage: item.supervisorSignatureImage || userSigProfile?.image_digiSigned,
-          supervisorHasP12: Boolean(item.supervisorHasP12 || item.hasP12),
+          supervisorSignatureImage: item.supervisorSignatureImage || (item.status !== "Submitted" ? userSigProfile?.image_digiSigned : undefined),
+          supervisorHasP12: Boolean(item.supervisorHasP12 && (item.status === "Verified" || item.status === "Approved")),
           signerName,
         } as any,
         item.rows,
-        item.supervisorSignatureImage || userSigProfile?.image_digiSigned || item.signatureImage,
-        Boolean(item.hasP12 || item.supervisorHasP12 || userSigProfile?.hasP12),
+        item.supervisorSignatureImage || (item.status !== "Submitted" ? (userSigProfile?.image_digiSigned || item.signatureImage) : undefined),
+        Boolean((item.status === "Verified" || item.status === "Approved") && (item.supervisorHasP12 || userSigProfile?.hasP12)),
         p12Options
       );
 
@@ -911,10 +911,8 @@ export function DtrStorageView({
             <tbody className="divide-y divide-[#18233C]/60 text-xs">
               {filteredRecords.map((item) => {
                 const isSelected = selectedIds.includes(item.id);
-                const isSigned = item.status === "Approved" || item.status === "Verified" || Boolean(item.supervisorHasP12);
-                const displayStatus = (item.status === "Approved" || item.status === "Verified")
-                  ? item.status
-                  : (item.supervisorHasP12 ? "Verified" : item.status);
+                const isSigned = item.status === "Approved" || item.status === "Verified";
+                const displayStatus = item.status || "Submitted";
                 const statusBadge =
                   displayStatus === "Approved"
                     ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"

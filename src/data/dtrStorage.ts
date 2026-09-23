@@ -134,19 +134,18 @@ export async function syncDtrStorageWithBackend(): Promise<DtrStorageItem[]> {
       // Remote deletions will correctly remove stale local records.
       const synced: DtrStorageItem[] = remoteRecords.map((item) => {
         const existing = localMap.get(item.id);
-        const isExistingVerified =
-          existing?.status === "Verified" ||
-          existing?.status === "Approved" ||
-          Boolean(existing?.supervisorHasP12 || existing?.hasP12);
+        const isVerified = item.status === "Verified" || item.status === "Approved";
 
         return {
           ...item,
-          status: isExistingVerified && item.status !== "Approved" ? (existing?.status || "Verified") : item.status,
-          hasP12: isExistingVerified ? true : Boolean(item.hasP12 || item.supervisorHasP12),
-          supervisorHasP12: isExistingVerified ? true : Boolean(item.supervisorHasP12 || item.hasP12),
-          signatureImage: existing?.signatureImage || item.signatureImage,
-          supervisorSignatureImage: existing?.supervisorSignatureImage || item.supervisorSignatureImage,
-          signerName: existing?.signerName || item.signerName,
+          status: item.status || "Submitted",
+          hasP12: Boolean(item.hasP12 || item.employeeHasP12),
+          employeeHasP12: Boolean(item.employeeHasP12 ?? item.hasP12),
+          supervisorHasP12: Boolean(item.supervisorHasP12 && isVerified),
+          signatureImage: item.signatureImage || existing?.signatureImage,
+          employeeSignatureImage: item.employeeSignatureImage || existing?.employeeSignatureImage,
+          supervisorSignatureImage: item.supervisorSignatureImage || existing?.supervisorSignatureImage,
+          signerName: item.signerName || existing?.signerName,
           pdfDataUrl: item.pdfDataUrl || existing?.pdfDataUrl || inMemoryPdfCache.get(item.id),
         };
       });
