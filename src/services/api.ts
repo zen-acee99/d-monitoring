@@ -1084,6 +1084,14 @@ export const openTimeClockApi = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        const text = await res.text();
+        return {
+          success: false,
+          error: `API returned unexpected response (${res.status} ${res.statusText}): ${text.slice(0, 150)}`,
+        };
+      }
       const data = await res.json();
       return data;
     } catch (err: any) {
@@ -1098,6 +1106,14 @@ export const openTimeClockApi = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),
       });
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        const text = await res.text();
+        return {
+          success: false,
+          error: `API returned unexpected response (${res.status} ${res.statusText}): ${text.slice(0, 150)}`,
+        };
+      }
       const data = await res.json();
       return data;
     } catch (err: any) {
