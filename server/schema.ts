@@ -331,6 +331,24 @@ export async function initDatabase() {
     );
   `);
 
+  // 3a. Create dtr_user_setup table (for saving user's default/preset DTR personnel configuration)
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS dtr_user_setup (
+      id TEXT PRIMARY KEY,
+      user_id TEXT UNIQUE NOT NULL,
+      employee_name TEXT NOT NULL,
+      province TEXT,
+      supervisor_name TEXT,
+      supervisor_title TEXT,
+      selected_officer_option TEXT DEFAULT 'custom',
+      regular_hours TEXT DEFAULT 'Regular days',
+      saturday_hours TEXT DEFAULT 'Saturdays',
+      period_text TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
   // 3b. Create dtr_storage table (for DTR documents moved to Provincial, HRM, or TOD archives with audit user_id tracking)
   await db.execute(`
     CREATE TABLE IF NOT EXISTS dtr_storage (
@@ -396,6 +414,77 @@ export async function initDatabase() {
   try {
     await db.execute(`ALTER TABLE dtr_storage ADD COLUMN doc_type TEXT DEFAULT 'DTR';`);
   } catch {}
+  try {
+    await db.execute(`ALTER TABLE dtr_storage ADD COLUMN late_minutes INTEGER DEFAULT 0;`);
+  } catch {}
+  try {
+    await db.execute(`ALTER TABLE dtr_storage ADD COLUMN otc_username TEXT;`);
+  } catch {}
+  try {
+    await db.execute(`ALTER TABLE dtr_storage ADD COLUMN otc_password TEXT;`);
+  } catch {}
+  try {
+    await db.execute(`ALTER TABLE dtr_user_setup ADD COLUMN otc_username TEXT;`);
+  } catch {}
+  try {
+    await db.execute(`ALTER TABLE dtr_user_setup ADD COLUMN otc_password TEXT;`);
+  } catch {}
+
+  // 3c. Create dtr_work_schedule_settings table (for HRM / Administration workweek & hours configuration)
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS dtr_work_schedule_settings (
+      id TEXT PRIMARY KEY DEFAULT 'main_schedule_setting',
+      schedule_name TEXT NOT NULL DEFAULT 'Standard 5-Day Workweek',
+      work_days_per_week INTEGER DEFAULT 5,
+      work_days_json TEXT DEFAULT '["Monday","Tuesday","Wednesday","Thursday","Friday"]',
+      hours_per_day REAL DEFAULT 8,
+      standard_am_arrival TEXT DEFAULT '08:00',
+      standard_am_departure TEXT DEFAULT '12:00',
+      standard_pm_arrival TEXT DEFAULT '13:00',
+      standard_pm_departure TEXT DEFAULT '17:00',
+      regular_hours_label TEXT DEFAULT '8:00 AM - 5:00 PM',
+      saturday_hours_label TEXT DEFAULT 'As Required',
+      no_work_day_label TEXT DEFAULT 'NO WORK: 4-DAY WORKWEEK',
+      grace_period_minutes INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      updated_by TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Seed default schedule setting if empty
+  try {
+    const schedCountRes = await db.execute("SELECT COUNT(*) as count FROM dtr_work_schedule_settings");
+    const schedCount = Number(schedCountRes.rows[0]?.count ?? 0);
+    if (schedCount === 0) {
+      await db.execute({
+        sql: `INSERT OR REPLACE INTO dtr_work_schedule_settings (
+                id, schedule_name, work_days_per_week, work_days_json, hours_per_day,
+                standard_am_arrival, standard_am_departure, standard_pm_arrival, standard_pm_departure,
+                regular_hours_label, saturday_hours_label, no_work_day_label, grace_period_minutes, is_active
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          "main_schedule_setting",
+          "Standard 5-Day Workweek",
+          5,
+          JSON.stringify(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]),
+          8,
+          "08:00",
+          "12:00",
+          "13:00",
+          "17:00",
+          "8:00 AM - 5:00 PM",
+          "As Required",
+          "NO WORK: 4-DAY WORKWEEK",
+          0,
+          1,
+        ],
+      });
+    }
+  } catch (err) {
+    console.warn("Could not seed dtr_work_schedule_settings:", err);
+  }
 
   // 4. Create module table (Module management, specific module codes, and active/deactive status)
   await db.execute(`

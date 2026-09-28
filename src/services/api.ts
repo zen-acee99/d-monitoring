@@ -531,6 +531,7 @@ export const dtrGeneratorApi = {
     reason?: string;
     sigRect?: [number, number, number, number];
     sigRects?: [number, number, number, number][];
+    fieldName?: string;
     pageIndex?: number;
   }): Promise<{
     success: boolean;
@@ -877,6 +878,234 @@ export const dtrStorageApi = {
     }
   },
 };
+
+// DTR User Setup & Presets API (connected to Turso dtr_user_setup table)
+export interface DtrUserSetup {
+  id: string;
+  userId: string;
+  user_id: string;
+  employeeName: string;
+  employee_name: string;
+  province: string;
+  supervisorName: string;
+  supervisor_name: string;
+  supervisorTitle: string;
+  supervisor_title: string;
+  selectedOfficerOption: string;
+  selected_officer_option: string;
+  regularHours: string;
+  regular_hours: string;
+  saturdayHours: string;
+  saturday_hours: string;
+  periodText: string;
+  period_text: string;
+  otcUsername?: string;
+  otc_username?: string;
+  otcPassword?: string;
+  otc_password?: string;
+  createdAt?: string;
+  created_at?: string;
+  updatedAt?: string;
+  updated_at?: string;
+}
+
+export interface DtrUserSetupInput {
+  id?: string;
+  userId: string;
+  employeeName: string;
+  province?: string;
+  supervisorName?: string;
+  supervisorTitle?: string;
+  selectedOfficerOption?: string;
+  regularHours?: string;
+  saturdayHours?: string;
+  periodText?: string;
+  otcUsername?: string;
+  otc_username?: string;
+  otcPassword?: string;
+  otc_password?: string;
+}
+
+export const dtrUserSetupApi = {
+  async getSetup(userId: string): Promise<DtrUserSetup | null> {
+    try {
+      const res = await fetch(`${API_BASE}/dtr-user-setup/${encodeURIComponent(userId)}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.setup || null;
+    } catch {
+      return null;
+    }
+  },
+
+  async getAllSetups(filters?: { user_id?: string; employee_name?: string }): Promise<DtrUserSetup[]> {
+    try {
+      const params = new URLSearchParams();
+      if (filters?.user_id) params.set("user_id", filters.user_id);
+      if (filters?.employee_name) params.set("employee_name", filters.employee_name);
+      const query = params.toString() ? `?${params.toString()}` : "";
+      const res = await fetch(`${API_BASE}/dtr-user-setup${query}`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.setups || [];
+    } catch {
+      return [];
+    }
+  },
+
+  async saveSetup(setup: DtrUserSetupInput): Promise<{ success: boolean; setup?: DtrUserSetup; error?: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/dtr-user-setup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(setup),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP error ${res.status}`);
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || "Failed to save setup" };
+    }
+  },
+
+  async deleteSetup(userId: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${API_BASE}/dtr-user-setup/${encodeURIComponent(userId)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      return Boolean(data.success);
+    } catch {
+      return false;
+    }
+  },
+};
+
+export interface DtrWorkScheduleSetting {
+  id: string;
+  scheduleName: string;
+  workDaysPerWeek: number;
+  workDays: string[];
+  hoursPerDay: number;
+  standardAmArrival: string;
+  standardAmDeparture: string;
+  standardPmArrival: string;
+  standardPmDeparture: string;
+  regularHoursLabel: string;
+  saturdayHoursLabel: string;
+  noWorkDayLabel: string;
+  gracePeriodMinutes: number;
+  isActive: boolean;
+  updatedBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export const dtrScheduleSettingsApi = {
+  async getSettings(): Promise<DtrWorkScheduleSetting> {
+    try {
+      const res = await fetch(`${API_BASE}/dtr-schedule-settings`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.setting) return data.setting;
+    } catch (err) {
+      console.warn("Could not fetch schedule settings from backend, using default:", err);
+    }
+    return {
+      id: "main_schedule_setting",
+      scheduleName: "Standard 5-Day Workweek",
+      workDaysPerWeek: 5,
+      workDays: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+      hoursPerDay: 8,
+      standardAmArrival: "08:00",
+      standardAmDeparture: "12:00",
+      standardPmArrival: "13:00",
+      standardPmDeparture: "17:00",
+      regularHoursLabel: "8:00 AM - 5:00 PM",
+      saturdayHoursLabel: "As Required",
+      noWorkDayLabel: "NO WORK: 4-DAY WORKWEEK",
+      gracePeriodMinutes: 0,
+      isActive: true,
+    };
+  },
+
+  async saveSettings(
+    settings: Partial<DtrWorkScheduleSetting>
+  ): Promise<{ success: boolean; setting?: DtrWorkScheduleSetting; error?: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/dtr-schedule-settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      // Broadcast local event so other tabs and components update immediately
+      window.dispatchEvent(new CustomEvent("dict_dtr_schedule_settings_updated", { detail: data.setting }));
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || "Failed to save schedule settings" };
+    }
+  },
+};
+
+export interface OtcFetchParams {
+  username?: string;
+  password?: string;
+  month: number;
+  year: number;
+  scope: "full" | "first-half" | "second-half";
+  employeeName?: string;
+}
+
+export interface OtcFetchResponse {
+  success: boolean;
+  employeeName?: string;
+  userName?: string;
+  employeeNumber?: string;
+  totalPunches?: number;
+  scope?: string;
+  month?: number;
+  year?: number;
+  rows?: any[];
+  error?: string;
+  message?: string;
+}
+
+export const openTimeClockApi = {
+  async verifyAccount(
+    username: string,
+    password?: string
+  ): Promise<{ success: boolean; employeeName?: string; userName?: string; error?: string; message?: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/opentimeclock/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await res.json();
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || "Failed to verify Open Time Clock account" };
+    }
+  },
+
+  async fetchTimeCards(params: OtcFetchParams): Promise<OtcFetchResponse> {
+    try {
+      const res = await fetch(`${API_BASE}/opentimeclock/fetch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      });
+      const data = await res.json();
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || "Failed to fetch time cards from Open Time Clock" };
+    }
+  },
+};
+
 
 
 

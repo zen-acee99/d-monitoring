@@ -113,7 +113,7 @@ export const MUNICIPALITY_COORDINATES: Record<string, [number, number]> = {
   "camnorte-talisay": [14.1500, 122.9333],
   "camnorte-vinzons": [14.1833, 122.9333],
 
-  // Catanduanes
+  // Catanduanes (All 11 Municipalities)
   "catanduanes-virac": [13.5833, 124.2333],
   "catanduanes-bagamanoc": [13.9333, 124.2833],
   "catanduanes-baras": [13.6833, 124.3667],
@@ -123,7 +123,9 @@ export const MUNICIPALITY_COORDINATES: Record<string, [number, number]> = {
   "catanduanes-pandan": [14.0500, 124.1667],
   "catanduanes-panganiban": [13.9000, 124.3000],
   "catanduanes-san-andres": [13.6000, 124.1000],
+  "catanduanes-sanandres": [13.6000, 124.1000],
   "catanduanes-san-miguel": [13.6500, 124.3000],
+  "catanduanes-sanmiguel": [13.6500, 124.3000],
   "catanduanes-viga": [13.8833, 124.3000],
 
   // Masbate

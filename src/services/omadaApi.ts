@@ -48,6 +48,10 @@ export interface OmadaSite {
   apCount?: number;
   gatewayCount?: number;
   switchCount?: number;
+  onlineDevicesCount?: number;
+  offlineDevicesCount?: number;
+  totalDevicesCount?: number;
+  siteOnlineStatus?: "Online" | "Degraded" | "Offline";
   clients?: any;
   status?: string;
 }
@@ -67,10 +71,28 @@ export interface OmadaSyncResult {
   };
 }
 
+export interface OmadaSupplierOverview {
+  count: number;
+  onlineSites: number;
+  offlineSites: number;
+  partialSites: number;
+  totalDevices: number;
+  onlineDevices: number;
+  offlineDevices: number;
+  enabled: boolean;
+  lastSync?: string;
+}
+
 export interface OmadaOverview {
-  supplier1: { count: number; enabled: boolean; lastSync?: string };
-  supplier2: { count: number; enabled: boolean; lastSync?: string };
+  supplier1: OmadaSupplierOverview;
+  supplier2: OmadaSupplierOverview;
   totalSites: number;
+  onlineSites: number;
+  offlineSites: number;
+  partialSites: number;
+  totalDevices: number;
+  onlineDevices: number;
+  offlineDevices: number;
   estimatedAps: number;
   onlineStatus: string;
 }

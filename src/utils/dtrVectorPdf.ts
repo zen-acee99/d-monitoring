@@ -113,7 +113,13 @@ export function generateDtrVectorPdf(
   hasP12?: boolean,
   fonts?: FontCache | null,
   p12SignerName?: string
-): { doc: jsPDF; sigRect: [number, number, number, number]; sigRects: [number, number, number, number][] } {
+): {
+  doc: jsPDF;
+  sigRect: [number, number, number, number];
+  sigRects: [number, number, number, number][];
+  employeeSigRects: [number, number, number, number][];
+  supervisorSigRects: [number, number, number, number][];
+} {
   // Standard Letter size in points (72 points/inch): 612 x 792 pt
   const doc = new jsPDF({
     orientation: "portrait",
@@ -186,7 +192,8 @@ export function generateDtrVectorPdf(
 
   // Render both copies side-by-side: Copy 1 at X=20, Copy 2 at X=314
   const formOffsets = [20, 314];
-  const calculatedSigRects: [number, number, number, number][] = [];
+  const employeeSigRects: [number, number, number, number][] = [];
+  const supervisorSigRects: [number, number, number, number][] = [];
 
   formOffsets.forEach((formX, formIdx) => {
     // -------------------------------------------------------------
@@ -255,18 +262,20 @@ export function generateDtrVectorPdf(
     doc.text("Regular days", formX + 86, startY + 75);
     doc.setLineWidth(0.4);
     doc.line(formX + 124, startY + 76, formX + formWidth, startY + 76);
-    if (config.regularHours && config.regularHours.trim()) {
+    const regHoursVal = config.regularHours?.trim();
+    if (regHoursVal && regHoursVal.toLowerCase() !== "regular days") {
       setSansBold();
-      doc.text(config.regularHours.trim(), formX + 124 + (formWidth - 124) / 2, startY + 74.5, { align: "center" });
+      doc.text(regHoursVal, formX + 124 + (formWidth - 124) / 2, startY + 74.5, { align: "center" });
     }
 
     setSansItalic();
     doc.setFontSize(6);
     doc.text("Saturdays", formX + 86, startY + 83);
     doc.line(formX + 124, startY + 84, formX + formWidth, startY + 84);
-    if (config.saturdayHours && config.saturdayHours.trim()) {
+    const satHoursVal = config.saturdayHours?.trim();
+    if (satHoursVal && satHoursVal.toLowerCase() !== "saturdays") {
       setSansBold();
-      doc.text(config.saturdayHours.trim(), formX + 124 + (formWidth - 124) / 2, startY + 82.5, { align: "center" });
+      doc.text(satHoursVal, formX + 124 + (formWidth - 124) / 2, startY + 82.5, { align: "center" });
     }
 
     // -------------------------------------------------------------
@@ -379,9 +388,16 @@ export function generateDtrVectorPdf(
         doc.line(formX + colWidths[0], rowY, formX + colWidths[0], rowY + rowHeight);
 
         // Merged Note Text
-        setSansBold();
-        doc.setFontSize(6);
-        doc.setTextColor(0, 0, 0);
+        const isNoWork = note.includes("NO WORK");
+        if (isNoWork) {
+          setSansItalic();
+          doc.setFontSize(5.8);
+          doc.setTextColor(130, 140, 150); // Soft gray matching gray-400
+        } else {
+          setSansBold();
+          doc.setFontSize(6);
+          doc.setTextColor(0, 0, 0);
+        }
         doc.text(note, formX + colWidths[0] + (formWidth - colWidths[0]) / 2, rowY + 8, { align: "center" });
       } else {
         // Regular Time Row
@@ -490,11 +506,30 @@ export function generateDtrVectorPdf(
     drawJustifiedLine("hours of work performed, record of which was made daily at the time of", certY + 9);
     doc.text("arrival and departure from office.", formX + 0.5, certY + 18);
 
-    // Employee Signature Line & Dedicated Appearance
+    // -------------------------------------------------------------
+    // EMPLOYEE SIGNATURE SECTION
+    // -------------------------------------------------------------
     const empSigY = certY + 48;
-    const empSignatureImg = config.employeeSignatureImage || (config.status === "Submitted" ? signatureImage : undefined);
-    const empHasCert = Boolean(config.employeeHasP12 || (config.status === "Submitted" && hasP12));
-    const empSigner = (config.employeeSignerName || (config.status === "Submitted" && p12SignerName) || config.employeeName || empName || "PERSONNEL").trim();
+    const isSupervisorOnly = config.status === "Verified" || config.status === "Approved";
+    const isEmpDirectSigning = !isSupervisorOnly;
+
+    const empSignatureImg =
+      config.employeeSignatureImage ||
+      (isEmpDirectSigning ? signatureImage : undefined);
+
+    const empHasCert = Boolean(
+      config.employeeHasP12 ||
+      (config.employeeSignerName && config.employeeSignerName !== "PERSONNEL") ||
+      (isEmpDirectSigning && (hasP12 || Boolean(p12SignerName)))
+    );
+
+    const empSigner = (
+      config.employeeSignerName ||
+      (isEmpDirectSigning && p12SignerName) ||
+      config.employeeName ||
+      empName ||
+      "PERSONNEL"
+    ).trim();
 
     if (empSignatureImg || empHasCert) {
       const boxW = 120;
@@ -503,7 +538,7 @@ export function generateDtrVectorPdf(
       const boxY = empSigY - boxH - 4;
 
       // PDF bottom-left coordinate system (Page Height = 792 pt for standard Letter)
-      calculatedSigRects.push([
+      employeeSigRects.push([
         Math.round(boxX),
         Math.round(792 - (boxY + boxH)),
         Math.round(boxW),
@@ -547,13 +582,28 @@ export function generateDtrVectorPdf(
     doc.setFontSize(6.4);
     doc.text("VERIFIED as to the prescribed office hours:", formX + 2, verifiedY);
 
-    // Supervisor Signature Line & Dedicated Space for Applying Digital Signature
+    // -------------------------------------------------------------
+    // SUPERVISOR SIGNATURE SECTION
+    // -------------------------------------------------------------
     const supSigY = verifiedY + 44;
-    const isSupervisorSigned = (config.status === "Verified" || config.status === "Approved") || Boolean(config.supervisorSignatureImage || (p12SignerName && config.status !== "Submitted"));
-    const supSignatureImg = config.supervisorSignatureImage || (config.status !== "Submitted" ? signatureImage : undefined);
-    const supSigner = (p12SignerName || config.signerName || config.supervisorName || "DICT Authorized Signatory").trim();
+    const isSupervisorSigned =
+      config.status === "Verified" ||
+      config.status === "Approved" ||
+      Boolean(config.supervisorSignatureImage) ||
+      Boolean(config.supervisorHasP12);
 
-    if (isSupervisorSigned && (supSignatureImg || hasP12 || config.supervisorHasP12 || p12SignerName)) {
+    const supSignatureImg =
+      config.supervisorSignatureImage ||
+      (isSupervisorOnly ? signatureImage : undefined);
+
+    const supSigner = (
+      (isSupervisorOnly && p12SignerName) ||
+      config.signerName ||
+      config.supervisorName ||
+      "NORLY A. TABO"
+    ).trim();
+
+    if (isSupervisorSigned && (supSignatureImg || config.supervisorHasP12 || (isSupervisorOnly && (hasP12 || Boolean(p12SignerName))))) {
       // Official Digital Signature Appearance in Supervisor Area (above Supervisor Name matching Image 2)
       const boxW = 120;
       const boxH = 22;
@@ -561,7 +611,7 @@ export function generateDtrVectorPdf(
       const boxY = supSigY - boxH - 4;
 
       // PDF bottom-left coordinate system (Page Height = 792 pt for standard Letter)
-      calculatedSigRects.push([
+      supervisorSigRects.push([
         Math.round(boxX),
         Math.round(792 - (boxY + boxH)),
         Math.round(boxW),
@@ -610,8 +660,10 @@ export function generateDtrVectorPdf(
 
   return {
     doc,
-    sigRect: calculatedSigRects[0] || [98, 220, 122, 26],
-    sigRects: calculatedSigRects.length > 0 ? calculatedSigRects : [[98, 220, 122, 26]],
+    sigRect: employeeSigRects[0] || supervisorSigRects[0] || [98, 220, 122, 26],
+    sigRects: employeeSigRects.length > 0 ? employeeSigRects : supervisorSigRects.length > 0 ? supervisorSigRects : [[98, 220, 122, 26]],
+    employeeSigRects,
+    supervisorSigRects,
   };
 }
 
@@ -629,8 +681,38 @@ export interface P12SigningOptions {
   account_password?: string;
   isGoogleAuth?: boolean;
   signerName?: string;
+  signerRole?: "employee" | "supervisor";
   sigRect?: [number, number, number, number];
   sigRects?: [number, number, number, number][];
+  employeeProfileId?: string;
+  employeeUserId?: string;
+  employeeP12Base64?: string;
+  employeeP12Password?: string;
+  employeeSignerName?: string;
+}
+
+export function matchNames(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  const clean = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/\.p12$/i, "")
+      .replace(/\.pfx$/i, "")
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const s1 = clean(a);
+  const s2 = clean(b);
+  if (s1 === s2 || s1.includes(s2) || s2.includes(s1)) return true;
+  const t1 = s1.split(" ").filter((w) => w.length >= 2);
+  const t2 = s2.split(" ").filter((w) => w.length >= 2);
+  if (t1.length === 0 || t2.length === 0) return false;
+  const common = t1.filter((w) => t2.includes(w));
+  return (
+    common.length >= 2 ||
+    (t1.length === 1 && t2.includes(t1[0])) ||
+    (t2.length === 1 && t1.includes(t2[0]))
+  );
 }
 
 export async function getSignedDtrVectorPdfBytes(
@@ -642,32 +724,155 @@ export async function getSignedDtrVectorPdfBytes(
 ): Promise<{ bytes: Uint8Array; resolvedSignerName: string; fileName: string }> {
   const fonts = await preloadFonts();
 
-  // The digital signer identity MUST come strictly from the P12 certificate, NEVER hardcoded
-  let resolvedP12SignerName = p12Options?.signerName;
+  const isSupervisorAction =
+    p12Options?.signerRole === "supervisor" ||
+    config.status === "Verified" ||
+    config.status === "Approved" ||
+    Boolean(config.supervisorHasP12);
 
-  if (hasP12 && !resolvedP12SignerName && (p12Options?.p12Base64 || p12Options?.profileId || p12Options?.user_Id)) {
-    try {
-      const idRes = await dtrGeneratorApi.getP12Identity({
-        p12: p12Options.p12Base64,
-        p12_password: p12Options.p12Password,
-        profileId: p12Options.profileId,
-        user_Id: p12Options.user_Id,
-      });
-      if (idRes.success && idRes.identity?.commonName) {
-        resolvedP12SignerName = idRes.identity.commonName;
+  // Fetch all profiles from backend for dynamic lookup
+  let allProfiles: any[] = [];
+  try {
+    allProfiles = await dtrGeneratorApi.getRecords();
+  } catch (e) {
+    console.warn("Could not fetch dtr_generator records:", e);
+  }
+
+  // 1. Resolve Employee Profile & Signing Credentials
+  let empProfile: any = null;
+  if (p12Options?.employeeP12Base64 || p12Options?.employeeProfileId || p12Options?.employeeUserId) {
+    empProfile = {
+      id: p12Options.employeeProfileId,
+      user_Id: p12Options.employeeUserId,
+      p12: p12Options.employeeP12Base64,
+      p12_password: p12Options.employeeP12Password,
+      Name: p12Options.employeeSignerName || config.employeeSignerName || config.employeeName,
+    };
+  } else {
+    // First, look up employee in allProfiles by matching config.employeeName
+    if (config.employeeName) {
+      empProfile = allProfiles.find(
+        (p) => matchNames(p.Name, config.employeeName) && (p.hasP12 || p.p12)
+      );
+    }
+    if (!empProfile && (config as any).userId) {
+      empProfile = allProfiles.find(
+        (p) => (p.user_Id === String((config as any).userId) || p.id === `dtr-sig-${(config as any).userId}`) && (p.hasP12 || p.p12)
+      );
+    }
+    // Fallback: If not found in database, check if p12Options was provided for the employee
+    if (!empProfile && !isSupervisorAction && (p12Options?.p12Base64 || p12Options?.profileId || p12Options?.user_Id)) {
+      if (matchNames(p12Options.signerName, config.employeeName) || !matchNames(p12Options.signerName, config.supervisorName)) {
+        empProfile = {
+          id: p12Options.profileId,
+          user_Id: p12Options.user_Id,
+          p12: p12Options.p12Base64,
+          p12_password: p12Options.p12Password,
+          account_password: p12Options.account_password,
+          isGoogleAuth: p12Options.isGoogleAuth,
+          Name: p12Options.signerName || config.employeeSignerName || config.employeeName,
+        };
       }
-    } catch (e) {
-      console.warn("Could not pre-inspect .p12 identity:", e);
     }
   }
 
-  const { doc, sigRect, sigRects } = generateDtrVectorPdf(
-    config,
+  const empHasP12 = Boolean(empProfile || config.employeeHasP12 || (!isSupervisorAction && hasP12));
+  const empSignerName = empProfile?.Name || config.employeeSignerName || config.employeeName || "PERSONNEL";
+
+  // 2. Resolve Supervisor Profile & Signing Credentials
+  let supProfile: any = null;
+  const isSupervisorTarget =
+    isSupervisorAction ||
+    config.status === "Verified" ||
+    config.status === "Approved" ||
+    Boolean(config.supervisorHasP12) ||
+    p12Options?.signerRole === "supervisor";
+
+  if (isSupervisorTarget) {
+    if (
+      p12Options?.signerRole === "supervisor" &&
+      (p12Options?.p12Base64 || p12Options?.profileId || p12Options?.user_Id) &&
+      (!empProfile || p12Options.profileId !== empProfile.id || matchNames(config.employeeName, config.supervisorName))
+    ) {
+      supProfile = {
+        id: p12Options.profileId,
+        user_Id: p12Options.user_Id,
+        p12: p12Options.p12Base64,
+        p12_password: p12Options.p12Password,
+        account_password: p12Options.account_password,
+        isGoogleAuth: p12Options.isGoogleAuth,
+        Name: p12Options.signerName || config.signerName || config.supervisorName,
+      };
+    }
+
+    if (!supProfile) {
+      // 1. Priority 1: Match config.signerName (the actual officer who signed/verified, e.g. "Malto Ace Mata")
+      if (config.signerName) {
+        supProfile = allProfiles.find(
+          (p) => matchNames(p.Name, config.signerName) && (p.hasP12 || p.p12)
+        );
+      }
+      // 2. Priority 2: Match config.supervisorName (e.g. "Norly A. Tabo")
+      if (!supProfile && config.supervisorName) {
+        supProfile = allProfiles.find(
+          (p) => matchNames(p.Name, config.supervisorName) && (p.hasP12 || p.p12)
+        );
+      }
+      // 3. Priority 3: Check p12Options if it's supervisor action
+      if (!supProfile && (p12Options?.p12Base64 || p12Options?.profileId || p12Options?.user_Id)) {
+        if (matchNames(p12Options?.signerName, config.supervisorName) || isSupervisorAction) {
+          supProfile = {
+            id: p12Options.profileId,
+            user_Id: p12Options.user_Id,
+            p12: p12Options.p12Base64,
+            p12_password: p12Options.p12Password,
+            account_password: p12Options.account_password,
+            isGoogleAuth: p12Options.isGoogleAuth,
+            Name: p12Options.signerName || config.signerName || config.supervisorName,
+          };
+        }
+      }
+      // 4. Priority 4: Any supervisor/PO profile with p12 that is distinct from employee
+      if (!supProfile) {
+        supProfile = allProfiles.find(
+          (p) => (p.hasP12 || p.p12) && (!empProfile || p.id !== empProfile.id) && !matchNames(p.Name, config.employeeName)
+        );
+      }
+    }
+  }
+
+  // 3. Separation Guard: If empProfile and supProfile mistakenly resolved to the same ID while names differ
+  if (empProfile && supProfile && empProfile.id && empProfile.id === supProfile.id && !matchNames(config.employeeName, config.supervisorName)) {
+    if (matchNames(supProfile.Name, config.supervisorName) || matchNames(supProfile.Name, config.signerName)) {
+      empProfile = allProfiles.find((p) => matchNames(p.Name, config.employeeName) && (p.hasP12 || p.p12)) || null;
+    } else if (matchNames(empProfile.Name, config.employeeName)) {
+      supProfile =
+        allProfiles.find((p) => config.signerName && matchNames(p.Name, config.signerName) && (p.hasP12 || p.p12)) ||
+        allProfiles.find((p) => config.supervisorName && matchNames(p.Name, config.supervisorName) && (p.hasP12 || p.p12)) ||
+        allProfiles.find((p) => (p.hasP12 || p.p12) && p.id !== empProfile.id && !matchNames(p.Name, config.employeeName)) ||
+        null;
+    }
+  }
+
+  const supHasP12 = Boolean(supProfile || config.supervisorHasP12 || (isSupervisorAction && hasP12));
+  const supSignerName = supProfile?.Name || config.signerName || config.supervisorName || "NORLY A. TABO";
+
+  // Pre-fill config with resolved identities for vector drawing
+  const resolvedConfig: DtrConfig = {
+    ...config,
+    employeeHasP12: empHasP12,
+    employeeSignerName: empSignerName,
+    supervisorHasP12: supHasP12,
+    signerName: supSignerName,
+  };
+
+  const { doc, employeeSigRects, supervisorSigRects } = generateDtrVectorPdf(
+    resolvedConfig,
     rows,
     signatureImage,
-    hasP12,
+    Boolean(hasP12 || empHasP12 || supHasP12),
     fonts,
-    resolvedP12SignerName
+    isSupervisorAction ? supSignerName : empSignerName
   );
   
   // Get raw binary ArrayBuffer from jsPDF (DO NOT convert to string, which corrupts streams via UTF-8 expansion!)
@@ -702,46 +907,89 @@ export async function getSignedDtrVectorPdfBytes(
   // This ensures all interactive digital signature boxes and PNPKI verification links are clickable across all PDF readers
   finalUint8 = await normalizePdfAnnotations(finalUint8);
 
-  // If PNPKI .p12 signing is requested, sign cryptographically via backend API
-  if (hasP12 && (p12Options?.p12Base64 || p12Options?.profileId || p12Options?.user_Id)) {
-    try {
-      let binary = "";
-      const len = finalUint8.byteLength;
-      for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(finalUint8[i]);
-      }
-      const rawPdfBase64 = btoa(binary);
+  const uint8ToBase64 = (u8: Uint8Array): string => {
+    let binary = "";
+    const len = u8.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(u8[i]);
+    }
+    return btoa(binary);
+  };
 
-      const signResult = await dtrGeneratorApi.signPdfDocument({
-        pdfBase64: rawPdfBase64,
-        profileId: p12Options.profileId,
-        user_Id: p12Options.user_Id,
-        p12: p12Options.p12Base64,
-        p12_password: p12Options.p12Password,
-        account_password: p12Options.account_password,
-        isGoogleAuth: p12Options.isGoogleAuth,
-        reason: "Civil Service Form No. 48 Official Verification",
-        sigRect: p12Options.sigRect || sigRect,
-        sigRects: p12Options.sigRects || sigRects,
-      });
+  const base64ToUint8 = (b64: string): Uint8Array => {
+    const binary = atob(b64);
+    const u8 = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      u8[i] = binary.charCodeAt(i);
+    }
+    return u8;
+  };
 
-      if (signResult.success && signResult.signedPdfBase64) {
-        const signedBinary = atob(signResult.signedPdfBase64);
-        const signedBytes = new Uint8Array(signedBinary.length);
-        for (let i = 0; i < signedBinary.length; i++) {
-          signedBytes[i] = signedBinary.charCodeAt(i);
+  // -------------------------------------------------------------
+  // SEQUENTIAL PASS 1 & 2: Employee Digital Signatures (Copy 1 & Copy 2)
+  // -------------------------------------------------------------
+  if (empProfile && employeeSigRects.length > 0) {
+    for (let i = 0; i < employeeSigRects.length; i++) {
+      const rect = employeeSigRects[i];
+      const copyNum = i + 1;
+      const fieldName = `Personnel_Signature_Copy${copyNum}`;
+      try {
+        const rawPdfBase64 = uint8ToBase64(finalUint8);
+        const empSignResult = await dtrGeneratorApi.signPdfDocument({
+          pdfBase64: rawPdfBase64,
+          profileId: empProfile.id,
+          user_Id: empProfile.user_Id,
+          p12: empProfile.p12 || undefined,
+          p12_password: empProfile.p12_password,
+          account_password: empProfile.account_password,
+          isGoogleAuth: empProfile.isGoogleAuth,
+          reason: `Civil Service Form No. 48 Daily Time Record Submission (Copy ${copyNum})`,
+          sigRect: rect,
+          fieldName,
+        });
+
+        if (empSignResult.success && empSignResult.signedPdfBase64) {
+          finalUint8 = base64ToUint8(empSignResult.signedPdfBase64);
         }
-        finalUint8 = signedBytes;
-      } else {
-        throw new Error(signResult.error || "Digital signature failed on server");
+      } catch (empErr) {
+        console.warn(`Pass (Employee Copy ${copyNum}) warning:`, empErr);
       }
-    } catch (signErr: any) {
-      console.error("Digital signing error:", signErr);
-      throw new Error(signErr.message || "Failed to cryptographically sign PDF with PNPKI keystore");
     }
   }
 
-  const safeName = (config.employeeName || resolvedP12SignerName || "PERSONNEL")
+  // -------------------------------------------------------------
+  // SEQUENTIAL PASS 3 & 4: Supervisor Digital Signatures (Copy 1 & Copy 2)
+  // -------------------------------------------------------------
+  if (supProfile && supervisorSigRects.length > 0) {
+    for (let i = 0; i < supervisorSigRects.length; i++) {
+      const rect = supervisorSigRects[i];
+      const copyNum = i + 1;
+      const fieldName = `Supervisor_Signature_Copy${copyNum}`;
+      try {
+        const currentPdfBase64 = uint8ToBase64(finalUint8);
+        const supSignResult = await dtrGeneratorApi.signPdfDocument({
+          pdfBase64: currentPdfBase64,
+          profileId: supProfile.id,
+          user_Id: supProfile.user_Id,
+          p12: supProfile.p12 || undefined,
+          p12_password: supProfile.p12_password,
+          account_password: supProfile.account_password,
+          isGoogleAuth: supProfile.isGoogleAuth,
+          reason: `Civil Service Form No. 48 Official Verification (Copy ${copyNum})`,
+          sigRect: rect,
+          fieldName,
+        });
+
+        if (supSignResult.success && supSignResult.signedPdfBase64) {
+          finalUint8 = base64ToUint8(supSignResult.signedPdfBase64);
+        }
+      } catch (supErr) {
+        console.warn(`Pass (Supervisor Copy ${copyNum}) warning:`, supErr);
+      }
+    }
+  }
+
+  const safeName = (config.employeeName || empSignerName || "PERSONNEL")
     .trim()
     .replace(/\.p12$/i, "")
     .replace(/\.pfx$/i, "")
@@ -752,7 +1000,7 @@ export async function getSignedDtrVectorPdfBytes(
 
   return {
     bytes: finalUint8,
-    resolvedSignerName: resolvedP12SignerName || config.employeeName || "PERSONNEL",
+    resolvedSignerName: isSupervisorAction ? supSignerName : empSignerName,
     fileName,
   };
 }

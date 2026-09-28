@@ -169,7 +169,7 @@ export function DtrUploadModal({
         const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
         const pText = `${MONTH_NAMES[currentMonth].toUpperCase()} 01-${daysInMonth}, ${currentYear}`;
 
-        const safeEmployeeName = (currentUser?.name || employeeName || "ACE M. MALTO").trim().toUpperCase();
+        const safeEmployeeName = (currentUser?.name || employeeName || "PERSONNEL").trim().toUpperCase();
         const generatedFileName =
           pdfFileName ||
           `AR_${safeEmployeeName.replace(/[^a-zA-Z0-9]/g, "_")}_${MONTH_NAMES[currentMonth]}_${currentYear}.pdf`;

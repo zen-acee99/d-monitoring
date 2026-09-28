@@ -582,6 +582,18 @@ class OmadaService {
             const router = devices.find((d) => d.type === "gateway");
             const apModels = Array.from(new Set(devices.filter((d) => d.type === "ap").map((d) => d.modelName || d.model))).filter(Boolean);
 
+            const onlineDevicesCount = devices.filter((d) => d.status === 1).length;
+            const offlineDevicesCount = devices.filter((d) => d.status === 0 || d.status !== 1).length;
+            const totalDevicesCount = devices.length;
+            const siteOnlineStatus: "Online" | "Degraded" | "Offline" =
+              totalDevicesCount === 0
+                ? "Offline"
+                : offlineDevicesCount === 0
+                ? "Online"
+                : onlineDevicesCount === 0
+                ? "Offline"
+                : "Degraded";
+
             const enrichedData = {
               ...record.data,
               omadaSiteId: matchedOmada.siteId,
@@ -592,7 +604,11 @@ class OmadaService {
               omadaApModels: apModels.length > 0 ? apModels.join(", ") : (record.data.omadaApModels || "EAP225-Outdoor"),
               omadaDevices: devices,
               apCount: apCount,
-              status: "Operational",
+              onlineDevicesCount,
+              offlineDevicesCount,
+              totalDevicesCount,
+              siteOnlineStatus,
+              status: onlineDevicesCount > 0 ? "Operational" : "Offline",
               lastOmadaSync: now,
             };
 
@@ -606,7 +622,7 @@ class OmadaService {
 
             await db.execute({
               sql: 'UPDATE "freewifi" SET data = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-              args: [JSON.stringify(enrichedData), "Operational", record.id],
+              args: [JSON.stringify(enrichedData), onlineDevicesCount > 0 ? "Operational" : "Offline", record.id],
             });
             updatedCount++;
           }
@@ -635,6 +651,18 @@ class OmadaService {
           const router = devices.find((d) => d.type === "gateway");
           const apModels = Array.from(new Set(devices.filter((d) => d.type === "ap").map((d) => d.modelName || d.model))).filter(Boolean);
 
+          const onlineDevicesCount = devices.filter((d) => d.status === 1).length;
+          const offlineDevicesCount = devices.filter((d) => d.status === 0 || d.status !== 1).length;
+          const totalDevicesCount = devices.length;
+          const siteOnlineStatus: "Online" | "Degraded" | "Offline" =
+            totalDevicesCount === 0
+              ? "Offline"
+              : offlineDevicesCount === 0
+              ? "Online"
+              : onlineDevicesCount === 0
+              ? "Offline"
+              : "Degraded";
+
           const newRecordData = {
             id: recordId,
             siteType: parsed.siteType,
@@ -646,13 +674,17 @@ class OmadaService {
             contact: os.supplierName,
             linkType: "FOC",
             apCount: apCount,
+            onlineDevicesCount,
+            offlineDevicesCount,
+            totalDevicesCount,
+            siteOnlineStatus,
             locationCode: os.siteId.slice(0, 8).toUpperCase(),
             barangay: os.address || "Poblacion",
             municipality: parsed.municipality,
             province: parsed.province,
             nationwideId: 60000 + currentIdx,
             remarks: os.siteId.slice(0, 6),
-            status: "Operational",
+            status: onlineDevicesCount > 0 ? "Operational" : "Offline",
             estimatedDailyUsers: apCount * 120,
             averageBandwidthMbps: 50,
             omadaSiteId: os.siteId,
@@ -670,7 +702,7 @@ class OmadaService {
 
           await db.execute({
             sql: 'INSERT OR REPLACE INTO "freewifi" (id, data, status, province, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)',
-            args: [recordId, JSON.stringify(newRecordData), "Operational", parsed.province],
+            args: [recordId, JSON.stringify(newRecordData), onlineDevicesCount > 0 ? "Operational" : "Offline", parsed.province],
           });
 
           newCreatedCount++;
@@ -682,8 +714,8 @@ class OmadaService {
     // 5. Update last sync timestamp in config
     const currentConfig = await this.getConfig();
     await this.saveConfig({
-      supplier1: { ...currentConfig.supplier1, lastSync: now },
-      supplier2: { ...currentConfig.supplier2, lastSync: now },
+      supplier1: { ...currentConfig.supplier1, enabled: true, lastSync: now },
+      supplier2: { ...currentConfig.supplier2, enabled: true, lastSync: now },
     });
 
     console.log(`[Omada Sync] Complete! Matched ${updatedCount} existing records and inserted ${newCreatedCount} new live sites from Omada.`);
@@ -705,37 +737,110 @@ class OmadaService {
   }
 
   /**
-   * Get overview statistics from Omada Northbound controllers
+   * Get overview statistics from Omada Northbound controllers including live Online/Offline status
    */
   async getOverview(): Promise<{
-    supplier1: { count: number; enabled: boolean; lastSync?: string };
-    supplier2: { count: number; enabled: boolean; lastSync?: string };
+    supplier1: {
+      count: number;
+      onlineSites: number;
+      offlineSites: number;
+      partialSites: number;
+      totalDevices: number;
+      onlineDevices: number;
+      offlineDevices: number;
+      enabled: boolean;
+      lastSync?: string;
+    };
+    supplier2: {
+      count: number;
+      onlineSites: number;
+      offlineSites: number;
+      partialSites: number;
+      totalDevices: number;
+      onlineDevices: number;
+      offlineDevices: number;
+      enabled: boolean;
+      lastSync?: string;
+    };
     totalSites: number;
+    onlineSites: number;
+    offlineSites: number;
+    partialSites: number;
+    totalDevices: number;
+    onlineDevices: number;
+    offlineDevices: number;
     estimatedAps: number;
     onlineStatus: string;
   }> {
     const config = await this.getConfig();
-    const [s1Sites, s2Sites] = await Promise.all([
-      config.supplier1.enabled ? this.fetchSupplierSites("supplier1") : Promise.resolve([]),
-      config.supplier2.enabled ? this.fetchSupplierSites("supplier2") : Promise.resolve([]),
-    ]);
 
-    const totalSites = s1Sites.length + s2Sites.length;
+    // Query all records from freewifi table to compute live metrics
+    let s1 = { count: 0, onlineSites: 0, offlineSites: 0, partialSites: 0, totalDevices: 0, onlineDevices: 0, offlineDevices: 0 };
+    let s2 = { count: 0, onlineSites: 0, offlineSites: 0, partialSites: 0, totalDevices: 0, onlineDevices: 0, offlineDevices: 0 };
+
+    try {
+      const dbRes = await db.execute('SELECT data FROM "freewifi"');
+      for (const row of dbRes.rows) {
+        let d: any = {};
+        try {
+          d = typeof row.data === "string" ? JSON.parse(row.data) : row.data || {};
+        } catch {}
+
+        const supplierId = (d.omadaSupplierId || "").toLowerCase();
+        const supplierName = (d.omadaSupplier || "").toLowerCase();
+        const isS1 = supplierId === "supplier1" || supplierName.includes("supplier 1");
+        const isS2 = supplierId === "supplier2" || supplierName.includes("supplier 2");
+
+        const target = isS2 ? s2 : s1;
+        target.count++;
+
+        const onDev = typeof d.onlineDevicesCount === "number" ? d.onlineDevicesCount : (d.status === "Operational" ? 2 : 0);
+        const offDev = typeof d.offlineDevicesCount === "number" ? d.offlineDevicesCount : 0;
+        const totDev = typeof d.totalDevicesCount === "number" ? d.totalDevicesCount : (onDev + offDev || d.apCount || 2);
+
+        target.totalDevices += totDev;
+        target.onlineDevices += onDev;
+        target.offlineDevices += offDev;
+
+        const siteStatus = d.siteOnlineStatus || (d.status === "Operational" ? (offDev > 0 ? "Degraded" : "Online") : "Offline");
+        if (siteStatus === "Online") target.onlineSites++;
+        else if (siteStatus === "Degraded") target.partialSites++;
+        else target.offlineSites++;
+      }
+    } catch (e) {
+      console.warn("Could not read freewifi data for overview:", e);
+    }
+
+    const totalSites = s1.count + s2.count;
+    const onlineSites = s1.onlineSites + s2.onlineSites;
+    const offlineSites = s1.offlineSites + s2.offlineSites;
+    const partialSites = s1.partialSites + s2.partialSites;
+    const totalDevices = s1.totalDevices + s2.totalDevices;
+    const onlineDevices = s1.onlineDevices + s2.onlineDevices;
+    const offlineDevices = s1.offlineDevices + s2.offlineDevices;
+
+    const healthPct = totalSites > 0 ? Math.round(((onlineSites + partialSites * 0.5) / totalSites) * 100) : 100;
 
     return {
       supplier1: {
-        count: s1Sites.length,
+        ...s1,
         enabled: config.supplier1.enabled,
         lastSync: config.supplier1.lastSync,
       },
       supplier2: {
-        count: s2Sites.length,
+        ...s2,
         enabled: config.supplier2.enabled,
         lastSync: config.supplier2.lastSync,
       },
       totalSites,
-      estimatedAps: totalSites * 3,
-      onlineStatus: "100% Operational",
+      onlineSites,
+      offlineSites,
+      partialSites,
+      totalDevices,
+      onlineDevices,
+      offlineDevices,
+      estimatedAps: totalDevices,
+      onlineStatus: `${healthPct}% Operational (${onlineSites} Online, ${offlineSites} Offline)`,
     };
   }
 

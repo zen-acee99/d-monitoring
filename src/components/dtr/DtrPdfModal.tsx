@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { DtrStorageItem, getCachedPdfDataUrl, setCachedPdfDataUrl } from "@/data/dtrStorage";
 import { exportDtrToExcel } from "@/utils/dtrUtils";
-import { downloadDtrVectorPdf } from "@/utils/dtrVectorPdf";
+import { downloadDtrVectorPdf, matchNames } from "@/utils/dtrVectorPdf";
 import { dtrGeneratorApi, dtrStorageApi } from "@/services/api";
 import { DtrSignatureValidationModal } from "./DtrSignatureValidationModal";
 
@@ -180,54 +180,8 @@ export function DtrPdfModal({ isOpen, onClose, record }: DtrPdfModalProps) {
     if (!record) return;
     setIsDownloading(true);
 
-    if (record.docType === "AR" || record.pdfFileName?.toUpperCase().startsWith("AR_")) {
-      const downloadUrl = currentPdfUrl || record.pdfDataUrl || getCachedPdfDataUrl(record.id);
-      if (downloadUrl) {
-        const a = document.createElement("a");
-        a.href = downloadUrl;
-        a.download = record.pdfFileName || `AR_${record.employeeName}_${record.year}.pdf`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      }
-      setIsDownloading(false);
-      return;
-    }
-
     try {
-      // Fetch active PNPKI signature profile from Turso for full cryptographic signing
-      let activeProfile: any = null;
-      const signerName = record.supervisorName || record.employeeName;
-      try {
-        if (record.supervisorName) {
-          const profiles = await dtrGeneratorApi.getRecords({ Name: record.supervisorName });
-          activeProfile = profiles.find((p) => p.Name.toLowerCase() === record.supervisorName.toLowerCase()) || profiles[0];
-        }
-        if (!activeProfile && record.userId) {
-          const profiles = await dtrGeneratorApi.getRecords({ user_Id: String(record.userId) });
-          activeProfile = profiles.find((p) => p.user_Id === String(record.userId) || p.id === `dtr-sig-${record.userId}`) || profiles[0];
-        }
-        if (!activeProfile) {
-          const allProfiles = await dtrGeneratorApi.getRecords();
-          activeProfile = allProfiles.find(
-            (p) =>
-              p.Name.toLowerCase().includes((signerName || "").toLowerCase()) ||
-              (signerName || "").toLowerCase().includes(p.Name.toLowerCase())
-          );
-        }
-      } catch (err) {
-        console.warn("Could not fetch signature profile for PO download:", err);
-      }
-
-      const hasP12Keystore = Boolean(record.hasP12 || record.supervisorHasP12 || record.status === "Verified" || record.status === "Approved" || activeProfile?.hasP12 || activeProfile?.p12);
-      const p12Options = (activeProfile && (activeProfile.hasP12 || activeProfile.p12))
-        ? {
-            profileId: activeProfile.id,
-            user_Id: activeProfile.user_Id,
-            p12Base64: activeProfile.p12 || undefined,
-            signerName: activeProfile.Name || signerName,
-          }
-        : null;
+      const isSupervisor = record.status === "Verified" || record.status === "Approved";
 
       await downloadDtrVectorPdf(
         {
@@ -240,19 +194,20 @@ export function DtrPdfModal({ isOpen, onClose, record }: DtrPdfModalProps) {
           month: record.month,
           year: record.year,
           scope: record.scope,
-          hasP12: hasP12Keystore,
           status: record.status,
           employeeSignatureImage: record.employeeSignatureImage || (record.status === "Submitted" ? record.signatureImage : undefined),
-          employeeHasP12: record.employeeHasP12 ?? (record.status === "Submitted" ? record.hasP12 : false),
+          employeeHasP12: record.employeeHasP12 ?? (record.status === "Submitted" ? record.hasP12 : undefined),
           employeeSignerName: record.employeeSignerName || record.employeeName,
-          supervisorSignatureImage: record.supervisorSignatureImage || (record.status !== "Submitted" ? (record.signatureImage || activeProfile?.image_digiSigned) : undefined),
-          supervisorHasP12: record.supervisorHasP12 || (record.status !== "Submitted" && hasP12Keystore),
-          signerName: record.signerName || activeProfile?.Name || signerName,
+          supervisorSignatureImage: record.supervisorSignatureImage || (record.status !== "Submitted" ? record.signatureImage : undefined),
+          supervisorHasP12: record.supervisorHasP12 ?? (record.status !== "Submitted" ? record.hasP12 : undefined),
+          signerName: record.signerName || record.supervisorName,
         } as any,
         record.rows,
-        record.supervisorSignatureImage || (record.status !== "Submitted" ? (record.signatureImage || activeProfile?.image_digiSigned) : undefined),
-        hasP12Keystore,
-        p12Options
+        record.supervisorSignatureImage || record.employeeSignatureImage || record.signatureImage,
+        true,
+        {
+          signerRole: isSupervisor ? ("supervisor" as const) : ("employee" as const),
+        }
       );
     } catch (err) {
       console.error("Error generating vector PDF:", err);
@@ -516,7 +471,7 @@ export function DtrPdfModal({ isOpen, onClose, record }: DtrPdfModalProps) {
         signerName={
           validationTarget === "employee"
             ? (record.employeeSignerName || record.employeeName || "PERSONNEL")
-            : (record.signerName || "Malto Ace Mata")
+            : (record.signerName || record.supervisorName || "SUPERVISOR")
         }
       />
     </div>
@@ -607,6 +562,7 @@ function Form48Strip({
               if (row.isCustomLabel) {
                 const labelUpper = (row.customLabel || "").trim().toUpperCase();
                 const isWeekend = labelUpper.includes("SATURDAY") || labelUpper.includes("SUNDAY");
+                const isNoWork = labelUpper.includes("NO WORK");
                 const rowBg = isWeekend ? "#e5e7eb" : "#ffffff";
                 const cellBgClass = isWeekend ? "bg-gray-200" : "bg-white";
 
@@ -621,7 +577,9 @@ function Form48Strip({
                     <td
                       colSpan={6}
                       style={{ backgroundColor: rowBg }}
-                      className={`font-bold text-center text-black tracking-wider text-[8px] uppercase py-0 ${cellBgClass}`}
+                      className={`text-center tracking-wider text-[8px] uppercase py-0 ${cellBgClass} ${
+                        isNoWork ? "italic font-semibold text-gray-400" : "font-bold text-black"
+                      }`}
                     >
                       {row.customLabel || "—"}
                     </td>
@@ -730,7 +688,7 @@ function Form48Strip({
               <div className="text-[7.5px] font-sans text-left leading-tight text-slate-900">
                 <div className="font-bold text-[8.5px] text-black">Digitally signed</div>
                 <div className="text-[8px] font-semibold text-slate-900">
-                  by {(record.signerName || "Malto Ace Mata").trim()}
+                  by {(record.signerName || record.supervisorName || "SUPERVISOR").trim()}
                 </div>
               </div>
             </div>

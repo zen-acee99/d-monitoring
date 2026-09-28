@@ -28,6 +28,31 @@ function formatDtrGeneratorRow(row: any) {
   };
 }
 
+// Helper for intelligent fuzzy matching of government personnel names across variations
+export function matchNames(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  const clean = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/\.p12$/i, "")
+      .replace(/\.pfx$/i, "")
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const s1 = clean(a);
+  const s2 = clean(b);
+  if (s1 === s2 || s1.includes(s2) || s2.includes(s1)) return true;
+  const t1 = s1.split(" ").filter((w) => w.length >= 2);
+  const t2 = s2.split(" ").filter((w) => w.length >= 2);
+  if (t1.length === 0 || t2.length === 0) return false;
+  const common = t1.filter((w) => t2.includes(w));
+  return (
+    common.length >= 2 ||
+    (t1.length === 1 && t2.includes(t1[0])) ||
+    (t2.length === 1 && t1.includes(t2[0]))
+  );
+}
+
 // GET /api/dtr-generator - List records (strictly scoped by user_Id for multi-user isolation)
 dtrGeneratorRouter.get("/", async (req: Request, res: Response) => {
   try {
@@ -40,10 +65,6 @@ dtrGeneratorRouter.get("/", async (req: Request, res: Response) => {
       conditions.push("(user_Id = ? OR id = ?)");
       args.push(String(user_Id), `dtr-sig-${user_Id}`);
     }
-    if (Name) {
-      conditions.push("LOWER(Name) = LOWER(?)");
-      args.push(String(Name).trim());
-    }
 
     if (conditions.length > 0) {
       sql += " WHERE " + conditions.join(" AND ");
@@ -52,7 +73,16 @@ dtrGeneratorRouter.get("/", async (req: Request, res: Response) => {
     sql += " ORDER BY updated_at DESC";
 
     const result = await db.execute({ sql, args });
-    const records = result.rows.map(formatDtrGeneratorRow);
+    let records = result.rows.map(formatDtrGeneratorRow);
+
+    if (Name && typeof Name === "string" && Name.trim()) {
+      const targetName = Name.trim();
+      const filtered = records.filter((r) => matchNames(r.Name, targetName));
+      if (filtered.length > 0) {
+        records = filtered;
+      }
+    }
+
     return res.json({ success: true, records });
   } catch (error: any) {
     console.error("Error fetching dtr_generator records:", error);
@@ -69,11 +99,19 @@ dtrGeneratorRouter.get("/:id", async (req: Request, res: Response) => {
       args: [id, id, id],
     });
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, error: "Record not found" });
+    if (result.rows.length > 0) {
+      return res.json({ success: true, record: formatDtrGeneratorRow(result.rows[0]) });
     }
 
-    return res.json({ success: true, record: formatDtrGeneratorRow(result.rows[0]) });
+    // Fuzzy name matching fallback if exact ID/Name wasn't found
+    const all = await db.execute("SELECT * FROM dtr_generator");
+    const matched = all.rows.find((r: any) => matchNames(r.Name, id) || matchNames(r.user_Id, id));
+
+    if (matched) {
+      return res.json({ success: true, record: formatDtrGeneratorRow(matched) });
+    }
+
+    return res.status(404).json({ success: false, error: "Record not found" });
   } catch (error: any) {
     console.error("Error fetching dtr_generator record:", error);
     return res.status(500).json({ success: false, error: error.message });
@@ -83,7 +121,7 @@ dtrGeneratorRouter.get("/:id", async (req: Request, res: Response) => {
 // POST /api/dtr-generator - Create or update record (Upsert with strict user_Id audit tracking)
 dtrGeneratorRouter.post("/", async (req: Request, res: Response) => {
   try {
-    const { id, user_Id, Name, p12, p12_filename, p12_filesize, p12_password, image_digiSigned } = req.body;
+    const { id, user_Id, Name, p12, p12_filename, p12_filesize, p12_password, image_digiSigned, clear_p12 } = req.body;
 
     if (!Name || typeof Name !== "string" || !Name.trim()) {
       return res.status(400).json({ success: false, error: "Name is required" });
@@ -146,29 +184,43 @@ dtrGeneratorRouter.post("/", async (req: Request, res: Response) => {
 
     if (existingRecord) {
       // Update existing record
-      await db.execute({
-        sql: `UPDATE dtr_generator 
-              SET user_Id = COALESCE(?, user_Id),
-                  Name = ?,
-                  p12 = COALESCE(?, p12),
-                  p12_filename = COALESCE(?, p12_filename),
-                  p12_filesize = CASE WHEN ? > 0 THEN ? ELSE p12_filesize END,
-                  p12_password = COALESCE(?, p12_password),
-                  image_digiSigned = COALESCE(?, image_digiSigned),
-                  updated_at = CURRENT_TIMESTAMP
-              WHERE id = ?`,
-        args: [
-          cleanUserId,
-          cleanName,
-          cleanP12,
-          cleanP12Filename,
-          cleanP12Filesize,
-          cleanP12Filesize,
-          cleanP12Password,
-          cleanImage,
-          existingRecord.id,
-        ],
-      });
+      if (clear_p12) {
+        await db.execute({
+          sql: `UPDATE dtr_generator 
+                SET p12 = NULL,
+                    p12_filename = NULL,
+                    p12_filesize = 0,
+                    p12_password = NULL,
+                    image_digiSigned = COALESCE(?, image_digiSigned),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?`,
+          args: [cleanImage, existingRecord.id],
+        });
+      } else {
+        await db.execute({
+          sql: `UPDATE dtr_generator 
+                SET user_Id = COALESCE(?, user_Id),
+                    Name = ?,
+                    p12 = COALESCE(?, p12),
+                    p12_filename = COALESCE(?, p12_filename),
+                    p12_filesize = CASE WHEN ? > 0 THEN ? ELSE p12_filesize END,
+                    p12_password = COALESCE(?, p12_password),
+                    image_digiSigned = COALESCE(?, image_digiSigned),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?`,
+          args: [
+            cleanUserId,
+            cleanName,
+            cleanP12,
+            cleanP12Filename,
+            cleanP12Filesize,
+            cleanP12Filesize,
+            cleanP12Password,
+            cleanImage,
+            existingRecord.id,
+          ],
+        });
+      }
 
       const updated = await db.execute({
         sql: "SELECT * FROM dtr_generator WHERE id = ?",
@@ -286,6 +338,7 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
       reason,
       sigRect,
       sigRects,
+      fieldName,
       pageIndex,
     } = req.body;
 
@@ -331,6 +384,17 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
         if (!passwordToUse && row.p12_password) {
           passwordToUse = decryptP12Password(String(row.p12_password));
         }
+      } else {
+        const all = await db.execute("SELECT * FROM dtr_generator WHERE p12 IS NOT NULL");
+        const matched = all.rows.find((r: any) => matchNames(r.Name, lookupId) || matchNames(r.user_Id, lookupId));
+        if (matched) {
+          if (!p12ToUse && matched.p12) {
+            p12ToUse = String(matched.p12);
+          }
+          if (!passwordToUse && matched.p12_password) {
+            passwordToUse = decryptP12Password(String(matched.p12_password));
+          }
+        }
       }
     }
 
@@ -351,6 +415,7 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
         reason: reason || "Civil Service Form No. 48 Official Verification",
         sigRect: Array.isArray(sigRect) && sigRect.length === 4 ? (sigRect as [number, number, number, number]) : undefined,
         sigRects: Array.isArray(sigRects) ? (sigRects as [number, number, number, number][]) : undefined,
+        fieldName: typeof fieldName === "string" ? fieldName : undefined,
         pageIndex: typeof pageIndex === "number" ? pageIndex : undefined,
       }
     );

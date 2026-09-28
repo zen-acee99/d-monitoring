@@ -24,12 +24,19 @@ import {
   XCircle,
   Power,
   Database,
-  MapPin
+  MapPin,
+  CalendarClock,
+  Clock,
+  Calendar,
+  AlertTriangle,
+  Save,
+  BookmarkCheck,
+  Sliders
 } from "lucide-react";
 import { PROJECTS } from "@/config/projects";
 import { getStoredUsers, saveStoredUsers, UserRecord } from "@/data/userStore";
 import { UserModal, ROLE_OPTIONS, REGION_OPTIONS } from "@/components/users/UserModal";
-import { administrationApi, modulesApi, SystemModule } from "@/services/api";
+import { administrationApi, modulesApi, SystemModule, dtrScheduleSettingsApi, DtrWorkScheduleSetting } from "@/services/api";
 import { createFullAccessMatrix, createEmptyAccessMatrix, syncCurrentUserIfUpdated, getCurrentUser, hasModuleAccess, AUTH_EVENT, setCachedSystemModules } from "@/services/authStore";
 
 // Interactive switch component for project permissions
@@ -74,7 +81,7 @@ export function SystemSettings() {
   const canGlobalEdit = isSuperAdminOrDirector || (currentUser?.canEdit && hasModuleAccess(currentUser, "MOD_ADMIN"));
 
   const [users, setUsers] = useState<UserRecord[]>([]);
-  const [activeTab, setActiveTab] = useState<"directory" | "modules">("directory");
+  const [activeTab, setActiveTab] = useState<"directory" | "modules" | "schedule">("directory");
   const [search, setSearch] = useState("");
   const [selectedRole, setSelectedRole] = useState("All");
   const [selectedRegion, setSelectedRegion] = useState("All");
@@ -93,6 +100,26 @@ export function SystemSettings() {
   const [moduleCategoryFilter, setModuleCategoryFilter] = useState("All");
   const [moduleStatusFilter, setModuleStatusFilter] = useState<"All" | "Active" | "Deactivated">("All");
 
+  // DTR Work Schedule Settings State (Turso table: dtr_work_schedule_settings)
+  const [scheduleSetting, setScheduleSetting] = useState<DtrWorkScheduleSetting>({
+    id: "main_schedule_setting",
+    scheduleName: "Standard 5-Day Workweek",
+    workDaysPerWeek: 5,
+    workDays: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+    hoursPerDay: 8,
+    standardAmArrival: "08:00",
+    standardAmDeparture: "12:00",
+    standardPmArrival: "13:00",
+    standardPmDeparture: "17:00",
+    regularHoursLabel: "8:00 AM - 5:00 PM",
+    saturdayHoursLabel: "As Required",
+    noWorkDayLabel: "NO WORK: 4-DAY WORKWEEK",
+    gracePeriodMinutes: 0,
+    isActive: true,
+  });
+  const [loadingSchedule, setLoadingSchedule] = useState(false);
+  const [isSavingSchedule, setIsSavingSchedule] = useState(false);
+
   // Module Add / Edit Modal State
   const [isModuleModalOpen, setIsModuleModalOpen] = useState(false);
   const [editingModule, setEditingModule] = useState<SystemModule | null>(null);
@@ -109,6 +136,94 @@ export function SystemSettings() {
   const showToast = (message: string, type: "success" | "error" | "info" = "success") => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 4000);
+  };
+
+  const loadScheduleSetting = async () => {
+    setLoadingSchedule(true);
+    try {
+      const s = await dtrScheduleSettingsApi.getSettings();
+      if (s) setScheduleSetting(s);
+    } catch (e) {
+      console.warn("Failed to load schedule settings:", e);
+    } finally {
+      setLoadingSchedule(false);
+    }
+  };
+
+  const handleSaveScheduleSetting = async () => {
+    setIsSavingSchedule(true);
+    try {
+      const res = await dtrScheduleSettingsApi.saveSettings({
+        ...scheduleSetting,
+        updatedBy: currentUser?.name || "HRM Administrator",
+      });
+      if (res.success && res.setting) {
+        setScheduleSetting(res.setting);
+        showToast("Work schedule policy saved to Turso database!", "success");
+      } else {
+        showToast(res.error || "Failed to save schedule policy", "error");
+      }
+    } catch (err: any) {
+      showToast("Error saving schedule: " + (err.message || "Failed"), "error");
+    } finally {
+      setIsSavingSchedule(false);
+    }
+  };
+
+  // Preset quick apply handler
+  const handleApplySchedulePreset = (preset: "standard_5day" | "compressed_4day") => {
+    if (preset === "standard_5day") {
+      setScheduleSetting((prev) => ({
+        ...prev,
+        scheduleName: "Standard 5-Day Workweek",
+        workDaysPerWeek: 5,
+        workDays: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+        hoursPerDay: 8,
+        standardAmArrival: "08:00",
+        standardAmDeparture: "12:00",
+        standardPmArrival: "13:00",
+        standardPmDeparture: "17:00",
+        regularHoursLabel: "8:00 AM - 5:00 PM",
+        saturdayHoursLabel: "As Required",
+        noWorkDayLabel: "NO WORK: 4-DAY WORKWEEK",
+      }));
+      showToast("Applied Standard 5-Day Workweek preset (8 hrs/day). Click 'Save Work Schedule' to persist.", "info");
+    } else if (preset === "compressed_4day") {
+      setScheduleSetting((prev) => ({
+        ...prev,
+        scheduleName: "4-Day Compressed Workweek (Friday No Work)",
+        workDaysPerWeek: 4,
+        workDays: ["Monday", "Tuesday", "Wednesday", "Thursday"],
+        hoursPerDay: 10,
+        standardAmArrival: "08:00",
+        standardAmDeparture: "12:00",
+        standardPmArrival: "13:00",
+        standardPmDeparture: "19:00",
+        regularHoursLabel: "8:00 AM - 7:00 PM",
+        saturdayHoursLabel: "As Required",
+        noWorkDayLabel: "NO WORK: 4-DAY WORKWEEK",
+      }));
+      showToast("Applied 4-Day Compressed Workweek preset (10 hrs/day, Friday No Work). Click 'Save Work Schedule' to persist.", "info");
+    }
+  };
+
+  const handleToggleWorkDay = (day: string) => {
+    const current = scheduleSetting.workDays || [];
+    let updated: string[];
+    if (current.includes(day)) {
+      if (current.length <= 1) {
+        showToast("At least 1 working day must remain active.", "error");
+        return;
+      }
+      updated = current.filter((d) => d !== day);
+    } else {
+      updated = [...current, day];
+    }
+    setScheduleSetting((prev) => ({
+      ...prev,
+      workDays: updated,
+      workDaysPerWeek: updated.length,
+    }));
   };
 
   // Sync users from Turso administration table
@@ -270,6 +385,7 @@ export function SystemSettings() {
   useEffect(() => {
     loadUsers();
     loadModules();
+    loadScheduleSetting();
   }, []);
 
   const handleSaveUser = async (userData: UserRecord) => {
@@ -541,16 +657,26 @@ export function SystemSettings() {
             onClick={() => {
               loadUsers();
               loadModules();
+              loadScheduleSetting();
             }}
-            disabled={loading || loadingModules}
+            disabled={loading || loadingModules || loadingSchedule}
             className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-[#111728] hover:bg-[#1C263E] border border-[#1C2844] text-xs font-semibold text-slate-300 hover:text-white transition-colors cursor-pointer disabled:opacity-50"
-            title="Refresh personnel and modules from Turso database"
+            title="Refresh personnel, modules, and schedule policy from Turso database"
           >
-            <RefreshCw className={`w-3.5 h-3.5 text-blue-400 ${loading || loadingModules ? "animate-spin" : ""}`} />
+            <RefreshCw className={`w-3.5 h-3.5 text-blue-400 ${loading || loadingModules || loadingSchedule ? "animate-spin" : ""}`} />
             <span>Sync Turso</span>
           </button>
 
-          {activeTab === "modules" ? (
+          {activeTab === "schedule" ? (
+            <button
+              onClick={handleSaveScheduleSetting}
+              disabled={isSavingSchedule}
+              className="flex items-center gap-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white font-bold px-5 py-2.5 rounded-xl text-xs transition-all shadow-lg shadow-amber-900/40 cursor-pointer disabled:opacity-50"
+            >
+              {isSavingSchedule ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              <span>{isSavingSchedule ? "Saving..." : "Save Work Schedule"}</span>
+            </button>
+          ) : activeTab === "modules" ? (
             <button
               onClick={handleOpenAddModule}
               className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold px-5 py-2.5 rounded-xl text-xs transition-all shadow-lg shadow-emerald-900/40 cursor-pointer"
@@ -572,7 +698,58 @@ export function SystemSettings() {
       </div>
 
       {/* Summary KPI Cards */}
-      {activeTab === "modules" ? (
+      {activeTab === "schedule" ? (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="bg-[#0C101D] border border-[#18233C] p-4 rounded-2xl">
+            <div className="text-[11px] font-semibold text-amber-400 uppercase tracking-wider flex items-center gap-1">
+              <Calendar className="w-3.5 h-3.5" /> Working Days
+            </div>
+            <div className="text-2xl font-black text-amber-400 font-mono mt-1">
+              {scheduleSetting.workDaysPerWeek} Days / Week
+            </div>
+            <div className="text-[10px] text-slate-400 mt-0.5 truncate">
+              {scheduleSetting.workDays?.join(", ") || "Mon - Fri"}
+            </div>
+          </div>
+
+          <div className="bg-[#0C101D] border border-[#18233C] p-4 rounded-2xl">
+            <div className="text-[11px] font-semibold text-cyan-400 uppercase tracking-wider flex items-center gap-1">
+              <Clock className="w-3.5 h-3.5" /> Daily Render Target
+            </div>
+            <div className="text-2xl font-black text-cyan-400 font-mono mt-1">
+              {scheduleSetting.hoursPerDay} Hours / Day
+            </div>
+            <div className="text-[10px] text-slate-400 mt-0.5">
+              {scheduleSetting.hoursPerDay * scheduleSetting.workDaysPerWeek} hrs total weekly target
+            </div>
+          </div>
+
+          <div className="bg-[#0C101D] border border-[#18233C] p-4 rounded-2xl">
+            <div className="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-1">
+              <CalendarClock className="w-3.5 h-3.5" /> Core Work Hours
+            </div>
+            <div className="text-xl font-black text-emerald-400 font-mono mt-1 truncate">
+              {scheduleSetting.regularHoursLabel || `${scheduleSetting.standardAmArrival} - ${scheduleSetting.standardPmDeparture}`}
+            </div>
+            <div className="text-[10px] text-slate-400 mt-0.5">
+              Lunch: {scheduleSetting.standardAmDeparture} - {scheduleSetting.standardPmArrival}
+            </div>
+          </div>
+
+          <div className="bg-[#0C101D] border border-[#18233C] p-4 rounded-2xl">
+            <div className="text-[11px] font-semibold text-purple-400 uppercase tracking-wider flex items-center gap-1">
+              <BookmarkCheck className="w-3.5 h-3.5" /> Active Schedule Policy
+            </div>
+            <div className="text-sm font-black text-purple-300 font-mono mt-1 truncate">
+              {scheduleSetting.scheduleName}
+            </div>
+            <div className="text-[10px] text-emerald-400 font-semibold mt-0.5 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              Applied to DTR Form 48 & Provincial
+            </div>
+          </div>
+        </div>
+      ) : activeTab === "modules" ? (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <div className="bg-[#0C101D] border border-[#18233C] p-4 rounded-2xl">
             <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Total Modules</div>
@@ -654,8 +831,6 @@ export function SystemSettings() {
           </span>
         </button>
 
-
-
         <button
           type="button"
           onClick={() => setActiveTab("modules")}
@@ -669,6 +844,22 @@ export function SystemSettings() {
           Module Management (Table: Module)
           <span className={`px-2 py-0.5 rounded-full text-[10px] ${activeTab === "modules" ? "bg-white/20 text-white" : "bg-slate-800 text-slate-400"}`}>
             {modules.length}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab("schedule")}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            activeTab === "schedule"
+              ? "bg-amber-600 text-white shadow-lg shadow-amber-900/30"
+              : "bg-[#0C101D] text-slate-400 border border-[#18233C] hover:text-white hover:border-slate-700"
+          }`}
+        >
+          <CalendarClock className="w-4 h-4" />
+          HRM & Work Schedule Policy
+          <span className={`px-2 py-0.5 rounded-full text-[10px] ${activeTab === "schedule" ? "bg-white/20 text-white" : "bg-slate-800 text-slate-400"}`}>
+            {scheduleSetting.workDaysPerWeek}D / {scheduleSetting.hoursPerDay}H
           </span>
         </button>
       </div>
@@ -1152,6 +1343,381 @@ export function SystemSettings() {
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {/* View 3: HRM & Work Schedule Policy (Table: dtr_work_schedule_settings) */}
+        {activeTab === "schedule" && (
+          <div className="flex flex-col">
+            {/* Header / Intro bar */}
+            <div className="p-5 bg-[#0A0E1A] border-b border-[#18233C] flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+              <div className="flex items-center gap-3.5">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                  <CalendarClock className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-white uppercase tracking-wider">
+                      Turso Cloud Table: <code className="text-amber-400 font-mono font-black">dtr_work_schedule_settings</code>
+                    </span>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      Live in Form 48 & Provincial
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Configure work days per week (e.g. 4-Day vs 5-Day), required daily rendered hours (e.g. 10 hrs vs 8 hrs), standard time in/out, and auto smart tags.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleSaveScheduleSetting}
+                  disabled={isSavingSchedule}
+                  className="flex items-center gap-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white font-bold px-5 py-2.5 rounded-xl text-xs transition-all shadow-lg shadow-amber-900/40 cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingSchedule ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  <span>{isSavingSchedule ? "Saving..." : "Save Work Schedule Policy"}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6 space-y-6">
+              {/* Preset Selector */}
+              <div>
+                <label className="text-xs font-bold text-slate-300 uppercase tracking-wider block mb-3 flex items-center gap-2">
+                  <Sliders className="w-4 h-4 text-amber-400" />
+                  Quick Schedule Presets
+                </label>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Preset 1: Standard 5-Day */}
+                  <div
+                    onClick={() => handleApplySchedulePreset("standard_5day")}
+                    className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden ${
+                      scheduleSetting.workDaysPerWeek === 5 && scheduleSetting.hoursPerDay === 8
+                        ? "bg-amber-500/10 border-amber-500/40 shadow-lg shadow-amber-950/40"
+                        : "bg-[#111728] border-[#1C2844] hover:border-slate-600 hover:bg-[#151D33]"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-black text-white text-sm">Standard 5-Day Workweek</h4>
+                          {scheduleSetting.workDaysPerWeek === 5 && scheduleSetting.hoursPerDay === 8 && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                              Selected
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Monday to Friday • 8 Hours / Day (40 hrs/week) • 8:00 AM - 5:00 PM
+                        </p>
+                      </div>
+                      <div className="w-8 h-8 rounded-xl bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400 shrink-0">
+                        <Calendar className="w-4 h-4" />
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {["Mon", "Tue", "Wed", "Thu", "Fri"].map((d) => (
+                        <span key={d} className="px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold text-[10px]">
+                          {d} (8h)
+                        </span>
+                      ))}
+                      {["Sat", "Sun"].map((d) => (
+                        <span key={d} className="px-2 py-0.5 rounded-md bg-slate-800 text-slate-500 border border-slate-700 text-[10px]">
+                          {d} (Off)
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Preset 2: 4-Day Compressed */}
+                  <div
+                    onClick={() => handleApplySchedulePreset("compressed_4day")}
+                    className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden ${
+                      scheduleSetting.workDaysPerWeek === 4 && scheduleSetting.hoursPerDay === 10
+                        ? "bg-amber-500/10 border-amber-500/40 shadow-lg shadow-amber-950/40"
+                        : "bg-[#111728] border-[#1C2844] hover:border-slate-600 hover:bg-[#151D33]"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-black text-white text-sm">4-Day Compressed Workweek</h4>
+                          {scheduleSetting.workDaysPerWeek === 4 && scheduleSetting.hoursPerDay === 10 && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                              Selected
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Monday to Thursday • 10 Hours / Day (40 hrs/week) • Friday is NO WORK (Auto Smart Tagged)
+                        </p>
+                      </div>
+                      <div className="w-8 h-8 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400 shrink-0">
+                        <CalendarClock className="w-4 h-4" />
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {["Mon", "Tue", "Wed", "Thu"].map((d) => (
+                        <span key={d} className="px-2 py-0.5 rounded-md bg-purple-500/10 text-purple-400 border border-purple-500/20 font-bold text-[10px]">
+                          {d} (10h)
+                        </span>
+                      ))}
+                      <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 font-bold text-[10px]">
+                        Fri (No Work)
+                      </span>
+                      {["Sat", "Sun"].map((d) => (
+                        <span key={d} className="px-2 py-0.5 rounded-md bg-slate-800 text-slate-500 border border-slate-700 text-[10px]">
+                          {d} (Off)
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Working Days Configuration */}
+              <div className="bg-[#111728] border border-[#1C2844] p-5 rounded-2xl space-y-4">
+                <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2">
+                  <div>
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                      <Calendar className="w-4 h-4 text-amber-400" />
+                      Official Working Days in Week ({scheduleSetting.workDaysPerWeek} Days Active)
+                    </h4>
+                    <p className="text-[11px] text-slate-400">
+                      Click to toggle which days are official work days vs off days (unselected days will be automatically tagged as NO WORK).
+                    </p>
+                  </div>
+                  <span className="text-xs font-mono font-bold text-amber-300 bg-amber-950/60 border border-amber-500/30 px-3 py-1 rounded-xl">
+                    {scheduleSetting.workDaysPerWeek} Working Days / Week
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2.5">
+                  {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((day) => {
+                    const isSelected = (scheduleSetting.workDays || []).includes(day);
+                    return (
+                      <button
+                        key={day}
+                        type="button"
+                        onClick={() => handleToggleWorkDay(day)}
+                        className={`p-3 rounded-xl border flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                          isSelected
+                            ? "bg-amber-500/15 border-amber-500/50 text-white shadow-md shadow-amber-950/30"
+                            : "bg-[#0A0E1A] border-[#18233C] text-slate-500 hover:text-slate-300 hover:border-slate-700"
+                        }`}
+                      >
+                        <span className="text-xs font-black">{day.substring(0, 3)}</span>
+                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md ${
+                          isSelected ? "bg-amber-500/20 text-amber-300" : "bg-slate-800 text-slate-500"
+                        }`}>
+                          {isSelected ? `${scheduleSetting.hoursPerDay}h Work` : "No Work"}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Working Hours & Daily Target Details */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {/* Left Column: Hours and Timings */}
+                <div className="bg-[#111728] border border-[#1C2844] p-5 rounded-2xl space-y-4">
+                  <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-cyan-400" />
+                    Daily Hours & Core Timings
+                  </h4>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-slate-300">
+                        Daily Render Target (Hours/Day)
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={16}
+                        value={scheduleSetting.hoursPerDay}
+                        onChange={(e) =>
+                          setScheduleSetting((prev) => ({
+                            ...prev,
+                            hoursPerDay: Math.max(1, parseInt(e.target.value) || 8),
+                          }))
+                        }
+                        className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-amber-500"
+                      />
+                      <span className="text-[10px] text-slate-500">
+                        Default: 8 hrs (5-day) or 10 hrs (4-day)
+                      </span>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-slate-300">
+                        Grace Period (Minutes)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={60}
+                        value={scheduleSetting.gracePeriodMinutes || 0}
+                        onChange={(e) =>
+                          setScheduleSetting((prev) => ({
+                            ...prev,
+                            gracePeriodMinutes: Math.max(0, parseInt(e.target.value) || 0),
+                          }))
+                        }
+                        className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-amber-500"
+                      />
+                      <span className="text-[10px] text-slate-500">Tolerated arrival window</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 pt-1">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-slate-300">Morning Arrival (AM In)</label>
+                      <input
+                        type="text"
+                        value={scheduleSetting.standardAmArrival}
+                        onChange={(e) =>
+                          setScheduleSetting((prev) => ({ ...prev, standardAmArrival: e.target.value }))
+                        }
+                        placeholder="08:00"
+                        className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-slate-300">Morning Departure (AM Out)</label>
+                      <input
+                        type="text"
+                        value={scheduleSetting.standardAmDeparture}
+                        onChange={(e) =>
+                          setScheduleSetting((prev) => ({ ...prev, standardAmDeparture: e.target.value }))
+                        }
+                        placeholder="12:00"
+                        className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-slate-300">Afternoon Arrival (PM In)</label>
+                      <input
+                        type="text"
+                        value={scheduleSetting.standardPmArrival}
+                        onChange={(e) =>
+                          setScheduleSetting((prev) => ({ ...prev, standardPmArrival: e.target.value }))
+                        }
+                        placeholder="13:00"
+                        className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-slate-300">Afternoon Departure (PM Out)</label>
+                      <input
+                        type="text"
+                        value={scheduleSetting.standardPmDeparture}
+                        onChange={(e) =>
+                          setScheduleSetting((prev) => ({ ...prev, standardPmDeparture: e.target.value }))
+                        }
+                        placeholder="17:00"
+                        className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Column: Form 48 Display Labels & Smart Tagging */}
+                <div className="bg-[#111728] border border-[#1C2844] p-5 rounded-2xl space-y-4">
+                  <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                    <BookmarkCheck className="w-4 h-4 text-purple-400" />
+                    Form 48 Header Labels & Smart Tagging
+                  </h4>
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-semibold text-slate-300">
+                      Regular Days Header Text (Official Hours for arrival and departure)
+                    </label>
+                    <input
+                      type="text"
+                      value={scheduleSetting.regularHoursLabel}
+                      onChange={(e) =>
+                        setScheduleSetting((prev) => ({ ...prev, regularHoursLabel: e.target.value }))
+                      }
+                      placeholder="e.g. 8:00 AM - 7:00 PM (Mon-Thu)"
+                      className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
+                    />
+                    <span className="text-[10px] text-slate-500">Printed on Civil Service Form 48 Header</span>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-semibold text-slate-300">
+                      Saturdays Header Text
+                    </label>
+                    <input
+                      type="text"
+                      value={scheduleSetting.saturdayHoursLabel}
+                      onChange={(e) =>
+                        setScheduleSetting((prev) => ({ ...prev, saturdayHoursLabel: e.target.value }))
+                      }
+                      placeholder="e.g. As Required or NO WORK"
+                      className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-semibold text-slate-300">
+                      Non-Working Day Auto Smart Tag (e.g. for Friday in 4-day workweek)
+                    </label>
+                    <input
+                      type="text"
+                      value={scheduleSetting.noWorkDayLabel || "NO WORK: 4-DAY WORKWEEK"}
+                      onChange={(e) =>
+                        setScheduleSetting((prev) => ({ ...prev, noWorkDayLabel: e.target.value }))
+                      }
+                      placeholder="NO WORK: 4-DAY WORKWEEK"
+                      className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500 font-mono"
+                    />
+                    <span className="text-[10px] text-amber-400/80">
+                      Auto-filled across all 4 time slots when "Auto-Fill Weekends & Holidays" is executed
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Policy Enforcement & Compliance Summary Notice */}
+              <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-950/40 via-purple-950/30 to-blue-950/40 border border-amber-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span className="text-xs font-bold text-white uppercase tracking-wider">
+                      Active Policy Calculation Rules
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Under the <strong className="text-amber-300">{scheduleSetting.workDaysPerWeek}-Day ({scheduleSetting.hoursPerDay} hrs/day)</strong> schedule, 
+                    late minutes are counted if arrival is past <code className="text-amber-300">{scheduleSetting.standardAmArrival}</code> (AM) or <code className="text-amber-300">{scheduleSetting.standardPmArrival}</code> (PM). 
+                    Undertime is deducted if departure is before <code className="text-amber-300">{scheduleSetting.standardAmDeparture}</code> (AM) or <code className="text-amber-300">{scheduleSetting.standardPmDeparture}</code> (PM). 
+                    Off-days (e.g. {!(scheduleSetting.workDays || []).includes("Friday") ? "Friday, " : ""}Saturday, Sunday) are exempt from late penalties when tagged.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleSaveScheduleSetting}
+                  disabled={isSavingSchedule}
+                  className="px-5 py-2.5 rounded-xl font-bold text-xs bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white shadow-lg shadow-amber-900/30 transition-all flex items-center gap-2 shrink-0 cursor-pointer"
+                >
+                  {isSavingSchedule ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  <span>{isSavingSchedule ? "Saving..." : "Save Policy to Turso"}</span>
+                </button>
+              </div>
             </div>
           </div>
         )}

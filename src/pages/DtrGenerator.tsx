@@ -1,14 +1,15 @@
 import React, { useState, useEffect } from "react";
-import { 
-  FileSpreadsheet, 
-  Sparkles, 
-  Calendar, 
-  Printer, 
-  Trash2, 
-  Clock, 
-  Check, 
-  Info, 
-  Download, 
+import { useSearchParams } from "react-router-dom";
+import {
+  FileSpreadsheet,
+  Sparkles,
+  Calendar,
+  Printer,
+  Trash2,
+  Clock,
+  Check,
+  Info,
+  Download,
   FileText,
   Building2,
   Users2,
@@ -30,31 +31,42 @@ import {
   EyeOff,
   KeyRound,
   ShieldAlert,
-  UserCheck
+  UserCheck,
+  Bookmark,
+  BookmarkCheck,
+  Cloud,
+  Loader2,
+  X
 } from "lucide-react";
-import { 
-  dtrGeneratorApi, 
+import {
+  dtrGeneratorApi,
   DtrGeneratorSignatureRecord,
-  administrationApi 
+  administrationApi,
+  dtrUserSetupApi,
+  DtrUserSetup,
+  dtrScheduleSettingsApi,
+  DtrWorkScheduleSetting,
+  openTimeClockApi
 } from "@/services/api";
 import { getCurrentUser } from "@/services/authStore";
 import { UserRecord } from "@/data/userStore";
-import { 
-  DtrRow, 
-  DtrConfig, 
-  MONTH_NAMES, 
+import {
+  DtrRow,
+  DtrConfig,
+  MONTH_NAMES,
   DTR_PROVINCE_OPTIONS,
-  createEmptyDtrRows, 
-  autoFillWeekendsAndHolidays, 
-  parseOtcLogStream, 
-  exportDtrToExcel 
+  createEmptyDtrRows,
+  autoFillWeekendsAndHolidays,
+  parseOtcLogStream,
+  exportDtrToExcel,
+  calculateDtrMetrics
 } from "@/utils/dtrUtils";
-import { downloadDtrVectorPdf, generateDtrVectorPdf, preloadFonts } from "@/utils/dtrVectorPdf";
+import { downloadDtrVectorPdf, generateDtrVectorPdf, getSignedDtrVectorPdfBytes, preloadFonts, matchNames } from "@/utils/dtrVectorPdf";
 import { DtrStorageView } from "@/components/dtr/DtrStorageView";
-import { 
-  DtrModuleCategory, 
-  ProvincialTab, 
-  PROVINCIAL_TABS, 
+import {
+  DtrModuleCategory,
+  ProvincialTab,
+  PROVINCIAL_TABS,
   addDtrRecord,
   getDtrStorage,
   syncDtrStorageWithBackend
@@ -66,9 +78,35 @@ import { subscribeToDtrRealtime } from "@/services/dtrRealtime";
 type ActiveSubModule = "generator" | "hrm" | "tod" | "provincial";
 
 export function DtrGenerator() {
-  // Sub-module navigation state
-  const [activeSubModule, setActiveSubModule] = useState<ActiveSubModule>("generator");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab") as ActiveSubModule | null;
+
+  // Sub-module navigation state (synced with URL tab parameter)
+  const [activeSubModule, setActiveSubModule] = useState<ActiveSubModule>(() => {
+    if (tabParam && ["generator", "hrm", "tod", "provincial"].includes(tabParam)) {
+      return tabParam;
+    }
+    return "generator";
+  });
   const [activeProvinceTab, setActiveProvinceTab] = useState<ProvincialTab>("Regional Off");
+
+  // Keep activeSubModule synchronized when URL query param changes
+  useEffect(() => {
+    if (tabParam && ["generator", "hrm", "tod", "provincial"].includes(tabParam)) {
+      setActiveSubModule(tabParam);
+    }
+  }, [tabParam]);
+
+  const handleSubModuleChange = (sub: ActiveSubModule) => {
+    setActiveSubModule(sub);
+    setSearchParams({ tab: sub });
+  };
+
+  // Saved Personnel Setups from Turso Database (dtr_user_setup table)
+  const [savedUserSetups, setSavedUserSetups] = useState<DtrUserSetup[]>([]);
+  const [selectedSavedSetupId, setSelectedSavedSetupId] = useState<string>("");
+  const [isSavingUserSetup, setIsSavingUserSetup] = useState<boolean>(false);
+  const [isLoadingUserSetup, setIsLoadingUserSetup] = useState<boolean>(false);
 
   // Storage record counts for badges
   const [storageCounts, setStorageCounts] = useState<{
@@ -118,7 +156,7 @@ export function DtrGenerator() {
 
   useEffect(() => {
     refreshCounts();
-    syncDtrStorageWithBackend().then(() => refreshCounts()).catch(() => {});
+    syncDtrStorageWithBackend().then(() => refreshCounts()).catch(() => { });
 
     // Realtime Event Subscription for instant badge updates
     const unsubscribeRealtime = subscribeToDtrRealtime(() => {
@@ -127,12 +165,12 @@ export function DtrGenerator() {
 
     // Fallback background polling every 3 seconds
     const pollInterval = setInterval(() => {
-      syncDtrStorageWithBackend().then(() => refreshCounts()).catch(() => {});
+      syncDtrStorageWithBackend().then(() => refreshCounts()).catch(() => { });
     }, 3000);
 
     const handleFocus = () => {
       refreshCounts();
-      syncDtrStorageWithBackend().then(() => refreshCounts()).catch(() => {});
+      syncDtrStorageWithBackend().then(() => refreshCounts()).catch(() => { });
     };
 
     window.addEventListener("dict_dtr_storage_updated", refreshCounts);
@@ -197,10 +235,47 @@ export function DtrGenerator() {
     validTo: string;
   } | null>(null);
 
+  // Open Time Clock (OTC) Cloud Integration State
+  const [otcUsername, setOtcUsername] = useState<string>(() => localStorage.getItem("dict_otc_username") || "");
+  const [otcPassword, setOtcPassword] = useState<string>(() => localStorage.getItem("dict_otc_password") || "");
+  const [showOtcPassword, setShowOtcPassword] = useState<boolean>(false);
+  const [rememberOtcCreds, setRememberOtcCreds] = useState<boolean>(true);
+  const [isOtcFetching, setIsOtcFetching] = useState<boolean>(false);
+  const [isOtcConnected, setIsOtcConnected] = useState<boolean>(() => Boolean(localStorage.getItem("dict_otc_username")));
+  const [isOtcHidden, setIsOtcHidden] = useState<boolean>(() => Boolean(localStorage.getItem("dict_otc_hidden") === "true"));
+  const [showOtcDialog, setShowOtcDialog] = useState<boolean>(false);
+  const [otcDialogData, setOtcDialogData] = useState<{
+    success: boolean;
+    employeeName: string;
+    userName: string;
+    employeeNumber?: string;
+    departmentName?: string;
+    totalPunches: number;
+    scope: string;
+    message: string;
+    error?: string;
+  } | null>(null);
+
   // Active user session & authentication provider
   const [currentUser, setCurrentUserState] = useState<UserRecord | null>(() => getCurrentUser());
   useEffect(() => {
     setCurrentUserState(getCurrentUser());
+  }, []);
+
+  // DTR Work Schedule Policy (e.g. Mon-Fri 8hrs vs Mon-Thu 10hrs 4-day workweek)
+  const [scheduleSetting, setScheduleSetting] = useState<DtrWorkScheduleSetting | null>(null);
+
+  useEffect(() => {
+    dtrScheduleSettingsApi.getSettings().then((s) => {
+      setScheduleSetting(s);
+    }).catch(() => {});
+
+    const handleScheduleChange = (e: any) => {
+      if (e?.detail) setScheduleSetting(e.detail);
+      else dtrScheduleSettingsApi.getSettings().then(setScheduleSetting).catch(() => {});
+    };
+    window.addEventListener("dict_dtr_schedule_settings_updated", handleScheduleChange);
+    return () => window.removeEventListener("dict_dtr_schedule_settings_updated", handleScheduleChange);
   }, []);
 
   const isGovMailAuth = Boolean(
@@ -355,7 +430,7 @@ export function DtrGenerator() {
               if (idRes.success && idRes.identity) {
                 setP12SignerIdentity(idRes.identity);
               }
-            }).catch(() => {});
+            }).catch(() => { });
           } else {
             setIsP12PasswordSaved(false);
           }
@@ -366,8 +441,186 @@ export function DtrGenerator() {
     }
   };
 
+  // Helper to reliably resolve active user's ID
+  const resolveCurrentUserId = (empName?: string): string => {
+    const user = currentUser || getCurrentUser();
+    if (user?.id) return String(user.id);
+    if (selectedUserId) return String(selectedUserId);
+    const targetName = (empName || config.employeeName || user?.name || "").trim();
+    if (targetName) {
+      const matchedP = personnelList.find((p) => matchNames(p.name, targetName));
+      if (matchedP && matchedP.id) return String(matchedP.id);
+      const matchedS = savedUserSetups.find((s) => matchNames(s.employeeName || s.employee_name, targetName));
+      if (matchedS && (matchedS.userId || matchedS.user_id)) return String(matchedS.userId || matchedS.user_id);
+    }
+    return `usr-${Date.now()}`;
+  };
+
+  // Load saved user setups from Turso on mount and auto-fill for current user
+  const loadSavedUserSetups = async () => {
+    try {
+      const setups = await dtrUserSetupApi.getAllSetups();
+      setSavedUserSetups(setups);
+
+      const user = getCurrentUser();
+      if (user) {
+        let matched = setups.find(
+          (s) => (user.id && (s.userId === String(user.id) || s.user_id === String(user.id))) || matchNames(s.employeeName || s.employee_name, user.name)
+        );
+
+        if (!matched && user.id) {
+          matched = (await dtrUserSetupApi.getSetup(String(user.id))) || undefined;
+        }
+
+        if (matched) {
+          setConfig((prev) => ({
+            ...prev,
+            employeeName: matched!.employeeName || matched!.employee_name || prev.employeeName,
+            province: matched!.province || prev.province,
+            supervisorName: matched!.supervisorName || matched!.supervisor_name || prev.supervisorName,
+            supervisorTitle: matched!.supervisorTitle || matched!.supervisor_title || prev.supervisorTitle,
+            regularHours: matched!.regularHours || matched!.regular_hours || prev.regularHours,
+            saturdayHours: matched!.saturdayHours || matched!.saturday_hours || prev.saturdayHours,
+          }));
+          if (matched.selectedOfficerOption || matched.selected_officer_option) {
+            setSelectedOfficerOption(matched.selectedOfficerOption || matched.selected_officer_option);
+          }
+          if (matched.otcUsername || matched.otc_username) {
+            setOtcUsername(matched.otcUsername || matched.otc_username);
+            if (matched.otcPassword || matched.otc_password) {
+              setOtcPassword(matched.otcPassword || matched.otc_password);
+            }
+            setIsOtcConnected(true);
+            setIsOtcHidden(true);
+            localStorage.setItem("dict_otc_hidden", "true");
+          }
+          setSelectedSavedSetupId(matched.id || `setup-${matched.userId}`);
+        } else if (user.name) {
+          setConfig((prev) => ({
+            ...prev,
+            employeeName: prev.employeeName === "PERSONNEL" ? user.name : prev.employeeName,
+          }));
+        }
+      }
+    } catch (err) {
+      console.warn("Could not load saved user setups:", err);
+    }
+  };
+
+  const handleSaveUserSetup = async () => {
+    const user = currentUser || getCurrentUser();
+    const employeeName = (config.employeeName || user?.name || "").trim();
+
+    if (!employeeName || employeeName === "PERSONNEL") {
+      showNotification("⚠️ Please enter a valid Employee Full Name before saving your setup.");
+      return;
+    }
+
+    const userId = resolveCurrentUserId(employeeName);
+
+    setIsSavingUserSetup(true);
+    try {
+      // If Open Time Clock username is provided, verify credentials first before saving to Turso
+      if (otcUsername.trim()) {
+        const verifyRes = await openTimeClockApi.verifyAccount(otcUsername.trim(), otcPassword);
+        if (!verifyRes.success) {
+          setIsOtcConnected(false);
+          setIsOtcHidden(false); // Keep credentials fields visible for user to edit
+          setOtcDialogData({
+            success: false,
+            employeeName: employeeName,
+            userName: otcUsername.trim(),
+            totalPunches: 0,
+            scope: "",
+            message: verifyRes.error || `Invalid credentials for Open Time Clock account "${otcUsername.trim()}".`,
+            error: verifyRes.error || "Incorrect username or password. Please verify your Open Time Clock credentials.",
+          });
+          setShowOtcDialog(true);
+          showNotification(verifyRes.error || "❌ Incorrect Open Time Clock credentials. Setup was NOT saved to Turso.");
+          setIsSavingUserSetup(false);
+          return; // STOP! DO NOT PROCEED TO SAVE TO TURSO!
+        }
+      }
+
+      const res = await dtrUserSetupApi.saveSetup({
+        userId,
+        employeeName,
+        province: config.province,
+        supervisorName: config.supervisorName,
+        supervisorTitle: config.supervisorTitle,
+        selectedOfficerOption,
+        regularHours: config.regularHours,
+        saturdayHours: config.saturdayHours,
+        periodText: config.periodText,
+        otcUsername: otcUsername.trim() || undefined,
+        otcPassword: otcPassword.trim() || undefined,
+      });
+
+      if (res.success && res.setup) {
+        showNotification(`✓ Saved setup and linked Open Time Clock account for "${employeeName}" in Turso!`);
+        setIsOtcHidden(true);
+        localStorage.setItem("dict_otc_hidden", "true");
+        if (otcUsername.trim()) {
+          setIsOtcConnected(true);
+        }
+        const updatedList = await dtrUserSetupApi.getAllSetups();
+        setSavedUserSetups(updatedList);
+        setSelectedSavedSetupId(res.setup.id || `setup-${userId}`);
+      } else {
+        showNotification(`⚠️ Failed to save setup: ${res.error || "Unknown error"}`);
+      }
+    } catch (err: any) {
+      showNotification(`⚠️ Error saving setup: ${err.message || "Failed"}`);
+    } finally {
+      setIsSavingUserSetup(false);
+    }
+  };
+
+  const handleSelectSavedSetup = async (setupIdOrUserId: string) => {
+    if (!setupIdOrUserId) return;
+    setIsLoadingUserSetup(true);
+    try {
+      let setup = savedUserSetups.find(
+        (s) => s.id === setupIdOrUserId || s.userId === setupIdOrUserId || s.user_id === setupIdOrUserId
+      );
+      if (!setup) {
+        setup = (await dtrUserSetupApi.getSetup(setupIdOrUserId)) || undefined;
+      }
+      if (setup) {
+        setConfig((prev) => ({
+          ...prev,
+          employeeName: setup!.employeeName || setup!.employee_name || prev.employeeName,
+          province: setup!.province || prev.province,
+          supervisorName: setup!.supervisorName || setup!.supervisor_name || prev.supervisorName,
+          supervisorTitle: setup!.supervisorTitle || setup!.supervisor_title || prev.supervisorTitle,
+          regularHours: setup!.regularHours || setup!.regular_hours || prev.regularHours,
+          saturdayHours: setup!.saturdayHours || setup!.saturday_hours || prev.saturdayHours,
+        }));
+        if (setup.selectedOfficerOption || setup.selected_officer_option) {
+          setSelectedOfficerOption(setup.selectedOfficerOption || setup.selected_officer_option);
+        }
+        if (setup.otcUsername || setup.otc_username) {
+          setOtcUsername(setup.otcUsername || setup.otc_username);
+          if (setup.otcPassword || setup.otc_password) {
+            setOtcPassword(setup.otcPassword || setup.otc_password);
+          }
+          setIsOtcConnected(true);
+          setIsOtcHidden(true);
+          localStorage.setItem("dict_otc_hidden", "true");
+        }
+        setSelectedSavedSetupId(setup.id || `setup-${setup.userId}`);
+        showNotification(`✓ Loaded setup for "${setup.employeeName || setup.employee_name}" from Turso!`);
+      }
+    } catch (err: any) {
+      showNotification(`⚠️ Failed to load setup: ${err.message || "Failed"}`);
+    } finally {
+      setIsLoadingUserSetup(false);
+    }
+  };
+
   useEffect(() => {
     loadSignatureProfiles();
+    loadSavedUserSetups();
     preloadFonts().catch((err) => console.warn("Failed to preload fonts:", err));
   }, []);
 
@@ -471,10 +724,15 @@ export function DtrGenerator() {
   // Trigger vector PDF download (Supports generating WITH or WITHOUT .p12 digital signature)
   const handleRequestPdfExport = async () => {
     // Determine whether an actual .p12 certificate is loaded in memory or saved in user's profile
+    const isCurrentUserTheEmployee = matchNames(currentUser?.name, config.employeeName);
     const matchedProfile = signatureProfiles.find(
-      (p) => p.id === selectedProfileId || (selectedUserId && p.user_Id === selectedUserId) || (currentUser?.id && p.user_Id === String(currentUser.id))
+      (p) =>
+        matchNames(p.Name, config.employeeName) ||
+        (selectedProfileId && p.id === selectedProfileId) ||
+        (selectedUserId && p.user_Id === selectedUserId) ||
+        (isCurrentUserTheEmployee && currentUser?.id && p.user_Id === String(currentUser.id))
     );
-    
+
     const hasP12Keystore = Boolean(p12File?.base64 || (matchedProfile && (matchedProfile.hasP12 || matchedProfile.p12_filename)));
     const hasDbPassword = Boolean(matchedProfile?.hasP12Password);
 
@@ -516,6 +774,7 @@ export function DtrGenerator() {
           p12Password: p12Password || undefined,
           isGoogleAuth: true,
           signerName: p12SignerIdentity?.commonName,
+          signerRole: "employee" as const,
         };
 
         try {
@@ -569,6 +828,7 @@ export function DtrGenerator() {
       p12Password: p12Password || undefined,
       isGoogleAuth,
       signerName: p12SignerIdentity?.commonName,
+      signerRole: "employee" as const,
     };
 
     try {
@@ -606,20 +866,26 @@ export function DtrGenerator() {
 
     // Handle normal account password signing
     if (passwordModalReason === "account_sign") {
+      const isCurrentUserTheEmployee = matchNames(currentUser?.name, config.employeeName);
       const matchedProfile = signatureProfiles.find(
-        (p) => p.id === selectedProfileId || (selectedUserId && p.user_Id === selectedUserId) || (currentUser?.id && p.user_Id === String(currentUser.id))
+        (p) =>
+          matchNames(p.Name, config.employeeName) ||
+          (selectedProfileId && p.id === selectedProfileId) ||
+          (selectedUserId && p.user_Id === selectedUserId) ||
+          (isCurrentUserTheEmployee && currentUser?.id && p.user_Id === String(currentUser.id))
       );
       const hasP12Keystore = Boolean(p12File?.base64 || (matchedProfile && (matchedProfile.hasP12 || matchedProfile.p12_filename)));
 
       const p12Options = hasP12Keystore
         ? {
-            profileId: selectedProfileId || matchedProfile?.id || (currentUser?.id ? `dtr-sig-${currentUser.id}` : undefined),
-            user_Id: selectedUserId || matchedProfile?.user_Id || (currentUser?.id ? String(currentUser.id) : undefined),
-            p12Base64: p12File?.base64,
-            account_password: modalPasswordInput,
-            isGoogleAuth: false,
-            signerName: p12SignerIdentity?.commonName,
-          }
+          profileId: selectedProfileId || matchedProfile?.id || (currentUser?.id ? `dtr-sig-${currentUser.id}` : undefined),
+          user_Id: selectedUserId || matchedProfile?.user_Id || (currentUser?.id ? String(currentUser.id) : undefined),
+          p12Base64: p12File?.base64,
+          account_password: modalPasswordInput,
+          isGoogleAuth: false,
+          signerName: p12SignerIdentity?.commonName,
+          signerRole: "employee" as const,
+        }
         : null;
 
       try {
@@ -643,7 +909,7 @@ export function DtrGenerator() {
     // Validate password and inspect identity from certificate
     let inspectedCertName: string | undefined;
     const hasP12Source = Boolean(p12File?.base64 || pendingApplyProfile?.p12 || selectedProfileId || selectedUserId);
-    
+
     if (hasP12Source) {
       const idRes = await dtrGeneratorApi.getP12Identity({
         p12: p12File?.base64,
@@ -674,12 +940,13 @@ export function DtrGenerator() {
     } else {
       const p12Options = (p12File || selectedProfileId || selectedUserId)
         ? {
-            profileId: selectedProfileId || (selectedUserId ? `dtr-sig-${selectedUserId}` : undefined),
-            user_Id: selectedUserId || undefined,
-            p12Base64: p12File?.base64,
-            p12Password: modalPasswordInput,
-            signerName: inspectedCertName || p12SignerIdentity?.commonName,
-          }
+          profileId: selectedProfileId || (selectedUserId ? `dtr-sig-${selectedUserId}` : undefined),
+          user_Id: selectedUserId || undefined,
+          p12Base64: p12File?.base64,
+          p12Password: modalPasswordInput,
+          signerName: inspectedCertName || p12SignerIdentity?.commonName,
+          signerRole: "employee" as const,
+        }
         : null;
 
       try {
@@ -823,6 +1090,158 @@ export function DtrGenerator() {
       scope: newScope,
       periodText: pText,
     }));
+
+    // Automatically fetch and place time in/out in Form 48 whenever scope, month, or year changes
+    if (otcUsername.trim() || isOtcConnected) {
+      handleOtcLoginAndFetch(newScope, newMonth, newYear, true);
+    }
+  };
+
+  // Open Time Clock Cloud API Login & Fetch Handler
+  const handleOtcLoginAndFetch = async (
+    scopeOverride?: "full" | "first-half" | "second-half",
+    monthOverride?: number,
+    yearOverride?: number,
+    silentModal: boolean = false
+  ) => {
+    const userQuery = otcUsername.trim() || config.employeeName.trim();
+    if (!userQuery) {
+      showNotification("⚠️ Please enter your Open Time Clock Username or Employee Name.");
+      return;
+    }
+
+    if (rememberOtcCreds) {
+      if (otcUsername.trim()) localStorage.setItem("dict_otc_username", otcUsername.trim());
+      if (otcPassword) localStorage.setItem("dict_otc_password", otcPassword);
+    }
+
+    setIsOtcFetching(true);
+    try {
+      // Step 1: Verify username / account against Open Time Clock
+      const verifyRes = await openTimeClockApi.verifyAccount(userQuery, otcPassword);
+
+      if (!verifyRes.success) {
+        setIsOtcConnected(false);
+        setOtcDialogData({
+          success: false,
+          employeeName: userQuery,
+          userName: userQuery,
+          totalPunches: 0,
+          scope: "",
+          message: verifyRes.error || `Invalid account "${userQuery}". Please check your Open Time Clock username.`,
+          error: verifyRes.error || "User account not found in Open Time Clock (Company ID: 94324).",
+        });
+        if (!silentModal) {
+          setShowOtcDialog(true);
+        }
+        showNotification(verifyRes.error || "❌ Invalid Open Time Clock username or credentials.");
+        return;
+      }
+
+      setIsOtcConnected(true);
+
+      if (verifyRes.employeeName && verifyRes.employeeName !== "ALL USERS") {
+        setConfig((prev) => ({
+          ...prev,
+          employeeName: verifyRes.employeeName!,
+        }));
+      }
+
+      // Step 2: Fetch Punches for active period & scope
+      const activeScope = scopeOverride || config.scope;
+      const activeMonth = monthOverride !== undefined ? monthOverride : config.month;
+      const activeYear = yearOverride !== undefined ? yearOverride : config.year;
+
+      const res = await openTimeClockApi.fetchTimeCards({
+        username: otcUsername.trim() || verifyRes.userName,
+        password: otcPassword,
+        month: activeMonth,
+        year: activeYear,
+        scope: activeScope,
+        employeeName: verifyRes.employeeName || config.employeeName.trim() || undefined,
+      });
+
+      if (res.success && res.rows && res.rows.length > 0) {
+        // Apply schedule-based smart tags (e.g. non-working day tags for weekends and 4-day workweek) to empty days
+        const updatedRows: DtrRow[] = autoFillWeekendsAndHolidays(
+          res.rows as DtrRow[],
+          activeMonth,
+          activeYear,
+          activeScope,
+          scheduleSetting || undefined
+        );
+
+        setRows(updatedRows);
+
+        const effectiveEmpName = res.employeeName || verifyRes.employeeName || userQuery;
+        const effectiveUserName = res.userName || verifyRes.userName || userQuery;
+
+        if (effectiveEmpName && effectiveEmpName !== "ALL USERS") {
+          setConfig((prev) => ({
+            ...prev,
+            employeeName: effectiveEmpName,
+          }));
+        }
+
+        const scopeLabel =
+          activeScope === "full"
+            ? "Full Month (1-31)"
+            : activeScope === "first-half"
+            ? "1st Half (1-15)"
+            : "2nd Half (16-31)";
+
+        setOtcDialogData({
+          success: true,
+          employeeName: effectiveEmpName,
+          userName: effectiveUserName,
+          employeeNumber: res.employeeNumber || (verifyRes as any).employeeNumber,
+          departmentName: (verifyRes as any).departmentName,
+          totalPunches: res.totalPunches || 0,
+          scope: scopeLabel,
+          message: res.message || `Credentials verified! Synced ${res.totalPunches || 0} time punches.`,
+        });
+
+        if (!silentModal) {
+          setShowOtcDialog(true);
+        }
+
+        showNotification(
+          `✅ Open Time Clock: Synced ${res.totalPunches || 0} time punches for ${effectiveEmpName} (${scopeLabel})!`
+        );
+      } else {
+        const effectiveEmpName = verifyRes.employeeName || userQuery;
+        const effectiveUserName = verifyRes.userName || userQuery;
+        const scopeLabel =
+          activeScope === "full"
+            ? "Full Month (1-31)"
+            : activeScope === "first-half"
+            ? "1st Half (1-15)"
+            : "2nd Half (16-31)";
+
+        setOtcDialogData({
+          success: true,
+          employeeName: effectiveEmpName,
+          userName: effectiveUserName,
+          employeeNumber: (verifyRes as any).employeeNumber,
+          departmentName: (verifyRes as any).departmentName,
+          totalPunches: 0,
+          scope: scopeLabel,
+          message: `✓ Credentials verified for ${effectiveEmpName}. (No punches logged in Open Time Clock for ${MONTH_NAMES[activeMonth]} ${activeYear})`,
+        });
+
+        if (!silentModal) {
+          setShowOtcDialog(true);
+        }
+
+        showNotification(
+          `✓ Connected to Open Time Clock (${effectiveEmpName}), but 0 punch logs recorded for ${MONTH_NAMES[activeMonth]} ${activeYear}.`
+        );
+      }
+    } catch (err: any) {
+      showNotification(`❌ Failed to connect to Open Time Clock: ${err.message || "Error"}`);
+    } finally {
+      setIsOtcFetching(false);
+    }
   };
 
   // Execute OTC Input Parser
@@ -859,32 +1278,37 @@ export function DtrGenerator() {
     showNotification(infoMsg);
   };
 
-  // Apply Holiday / Weekend Smart Tags
+  // Apply Holiday / Weekend / Non-Working Day Smart Tags
   const handleApplySmartTags = () => {
-    const updated = autoFillWeekendsAndHolidays(rows, config.month, config.year, config.scope);
+    const updated = autoFillWeekendsAndHolidays(rows, config.month, config.year, config.scope, scheduleSetting || undefined);
     setRows(updated);
-    showNotification(`Smart tags applied for ${MONTH_NAMES[config.month]} ${config.year}!`);
+    showNotification(`Smart tags applied for ${MONTH_NAMES[config.month]} ${config.year} (${scheduleSetting?.scheduleName || "Standard Schedule"})!`);
   };
 
-  // Fill Standard Official Hours (8:00 AM - 12:00 PM, 1:00 PM - 5:00 PM) for non-weekend days
+  // Fill Standard Official Hours (8:00 AM - 12:00 PM, 1:00 PM - 5:00 PM / 10-hr) for active work days
   const handleFillStandardTimes = () => {
     const daysInMonth = new Date(config.year, config.month + 1, 0).getDate();
+    const amIn = scheduleSetting?.standardAmArrival || "07:55";
+    const amOut = scheduleSetting?.standardAmDeparture || "12:00";
+    const pmIn = scheduleSetting?.standardPmArrival || "12:58";
+    const pmOut = scheduleSetting?.standardPmDeparture || (scheduleSetting?.hoursPerDay === 10 ? "19:00" : "17:00");
+
     const updated = rows.map((row) => {
       if (row.day > daysInMonth) return row;
-      if (row.isCustomLabel) return row; // skip weekends & holidays
+      if (row.isCustomLabel) return row; // skip weekends & holidays & no-work days
 
       return {
         ...row,
-        amArrival: "07:55",
-        amDeparture: "12:00",
-        pmArrival: "12:58",
-        pmDeparture: "05:00",
+        amArrival: amIn,
+        amDeparture: amOut,
+        pmArrival: pmIn,
+        pmDeparture: pmOut,
         undertimeHours: "",
         undertimeMinutes: "",
       };
     });
     setRows(updated);
-    showNotification("Standard working hours filled for weekdays!");
+    showNotification(`Standard working hours (${scheduleSetting?.regularHoursLabel || "8:00 AM - 5:00 PM"}) filled for active working days!`);
   };
 
   // Clear All
@@ -905,7 +1329,7 @@ export function DtrGenerator() {
     });
   };
 
-  // Toggle Custom Label (e.g. toggle SATURDAY / SUNDAY / LEAVE)
+  // Toggle Custom Label (e.g. toggle SATURDAY / SUNDAY / LEAVE / NO WORK)
   const handleToggleRowType = (dayIndex: number) => {
     setRows((prev) => {
       const copy = [...prev];
@@ -920,7 +1344,7 @@ export function DtrGenerator() {
         copy[dayIndex] = {
           ...current,
           isCustomLabel: true,
-          customLabel: "OFFICIAL BUSINESS",
+          customLabel: scheduleSetting?.noWorkDayLabel || "NO WORK: 4-DAY WORKWEEK",
           amArrival: "",
           amDeparture: "",
           pmArrival: "",
@@ -932,10 +1356,9 @@ export function DtrGenerator() {
   };
 
   // Move current generated DTR to Provincial Office (PO) Archive
-  const handleMoveToPo = () => {
+  const handleMoveToPo = async () => {
     const safeName = (config.employeeName || "PERSONNEL").trim().toUpperCase();
-    const renderedDays = rows.filter((r) => !r.isCustomLabel && r.amArrival).length;
-    const renderedHours = renderedDays * 8;
+    const metrics = calculateDtrMetrics(rows, scheduleSetting || undefined);
     const fileName = `DTR_${safeName.replace(/[^a-zA-Z0-9]/g, "_")}_${MONTH_NAMES[config.month]}_${config.year}.pdf`;
 
     const selectedProv = config.province || "Regional Office (RO)";
@@ -951,28 +1374,77 @@ export function DtrGenerator() {
 
     // Generate vector PDF data URL for immediate viewing in modal viewer
     let pdfDataUrl: string | undefined;
-    const empHasP12 = Boolean(p12File?.base64 || signatureProfiles.find(p => p.id === selectedProfileId || (selectedUserId && p.user_Id === selectedUserId) || (currentUser?.id && p.user_Id === String(currentUser.id)))?.hasP12);
+    const isCurrentUserTheEmployee = matchNames(currentUser?.name, config.employeeName);
+    const matchedProfile = signatureProfiles.find(
+      (p) =>
+        matchNames(p.Name, config.employeeName) ||
+        (selectedProfileId && p.id === selectedProfileId) ||
+        (selectedUserId && p.user_Id === selectedUserId) ||
+        (isCurrentUserTheEmployee && currentUser?.id && p.user_Id === String(currentUser.id))
+    );
+    const empHasP12 = Boolean(p12File?.base64 || matchedProfile?.hasP12 || (matchedProfile && (matchedProfile as any).p12));
+    const hasDbPassword = Boolean(matchedProfile?.hasP12Password);
     const empSignerName = p12SignerIdentity?.commonName || config.employeeName;
-    try {
-      const { doc } = generateDtrVectorPdf(
-        {
-          ...config,
-          status: "Submitted",
-          employeeSignatureImage: signatureImage || undefined,
-          employeeHasP12: empHasP12,
-          employeeSignerName: empSignerName,
-          supervisorSignatureImage: undefined,
-          supervisorHasP12: false,
-        },
-        rows,
-        signatureImage,
-        empHasP12,
-        null,
-        empSignerName
-      );
-      pdfDataUrl = doc.output("datauristring");
-    } catch (e) {
-      console.warn("Could not generate PDF data URL for storage:", e);
+
+    if (empHasP12 && (p12File?.base64 || (matchedProfile && (matchedProfile as any).p12) || isGovMailAuth || hasDbPassword || p12Password)) {
+      try {
+        const p12Options = {
+          profileId: selectedProfileId || matchedProfile?.id || (currentUser?.id ? `dtr-sig-${currentUser.id}` : undefined),
+          user_Id: selectedUserId || matchedProfile?.user_Id || (currentUser?.id ? String(currentUser.id) : undefined),
+          p12Base64: p12File?.base64 || (matchedProfile as any)?.p12,
+          p12Password: p12Password || undefined,
+          isGoogleAuth: isGovMailAuth || isGoogleAuth,
+          signerName: empSignerName,
+          signerRole: "employee" as const,
+        };
+        const { bytes } = await getSignedDtrVectorPdfBytes(
+          {
+            ...config,
+            status: "Submitted",
+            employeeSignatureImage: signatureImage || undefined,
+            employeeHasP12: true,
+            employeeSignerName: empSignerName,
+            supervisorSignatureImage: undefined,
+            supervisorHasP12: false,
+          },
+          rows,
+          signatureImage,
+          true,
+          p12Options
+        );
+        let binary = "";
+        const len = bytes.byteLength;
+        for (let i = 0; i < len; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        pdfDataUrl = `data:application/pdf;base64,${btoa(binary)}`;
+      } catch (e) {
+        console.warn("Could not cryptographically sign DTR during move to PO:", e);
+      }
+    }
+
+    if (!pdfDataUrl) {
+      try {
+        const { doc } = generateDtrVectorPdf(
+          {
+            ...config,
+            status: "Submitted",
+            employeeSignatureImage: signatureImage || undefined,
+            employeeHasP12: empHasP12,
+            employeeSignerName: empSignerName,
+            supervisorSignatureImage: undefined,
+            supervisorHasP12: false,
+          },
+          rows,
+          signatureImage,
+          empHasP12,
+          null,
+          empSignerName
+        );
+        pdfDataUrl = doc.output("datauristring");
+      } catch (e) {
+        console.warn("Could not generate PDF data URL for storage:", e);
+      }
     }
 
     addDtrRecord({
@@ -992,18 +1464,19 @@ export function DtrGenerator() {
       saturdayHours: config.saturdayHours,
       supervisorName: config.supervisorName,
       supervisorTitle: config.supervisorTitle,
-      totalDaysRendered: renderedDays,
-      totalHoursRendered: renderedHours,
-      undertimeHours: totalUndertime.hours,
-      undertimeMinutes: totalUndertime.minutes,
+      totalDaysRendered: metrics.totalDaysRendered,
+      totalHoursRendered: metrics.totalHoursRendered,
+      undertimeHours: metrics.undertimeHours,
+      undertimeMinutes: metrics.undertimeMinutes,
+      lateMinutes: metrics.lateMinutes,
       status: "Submitted",
       pdfFileName: fileName,
       pdfFileSize: "325 KB",
       pdfDataUrl: pdfDataUrl,
-      hasP12: Boolean(p12File?.base64 || signatureProfiles.find(p => p.id === selectedProfileId || (selectedUserId && p.user_Id === selectedUserId) || (currentUser?.id && p.user_Id === String(currentUser.id)))?.hasP12),
+      hasP12: empHasP12,
       signatureImage: signatureImage || undefined,
       employeeSignatureImage: signatureImage || undefined,
-      employeeHasP12: Boolean(p12File?.base64 || signatureProfiles.find(p => p.id === selectedProfileId || (selectedUserId && p.user_Id === selectedUserId) || (currentUser?.id && p.user_Id === String(currentUser.id)))?.hasP12),
+      employeeHasP12: empHasP12,
       employeeSignerName: p12SignerIdentity?.commonName || config.employeeName,
       supervisorSignatureImage: undefined,
       supervisorHasP12: false,
@@ -1016,14 +1489,13 @@ export function DtrGenerator() {
     // Switch active view directly to the 4th tab: Provincial Module -> Selected Province Sub-Tab
     setActiveSubModule("provincial");
     setActiveProvinceTab(targetProvinceTab);
-    showNotification(`✓ Moved DTR for "${safeName}" to ${targetProvinceTab} Provincial Module!`);
+    showNotification(`✓ Moved DTR for "${safeName}" to ${targetProvinceTab} Provincial Module! (Rendered: ${metrics.totalHoursRendered}h • Late: ${metrics.lateMinutes}m)`);
   };
 
   // Save current generated DTR to Storage Repository
-  const handleSaveToStorage = () => {
+  const handleSaveToStorage = async () => {
     const safeName = (config.employeeName || "PERSONNEL").trim().toUpperCase();
-    const renderedDays = rows.filter((r) => !r.isCustomLabel && r.amArrival).length;
-    const renderedHours = renderedDays * 8;
+    const metrics = calculateDtrMetrics(rows, scheduleSetting || undefined);
     const fileName = `DTR_${safeName.replace(/[^a-zA-Z0-9]/g, "_")}_${MONTH_NAMES[config.month]}_${config.year}.pdf`;
 
     const selectedProv = config.province || "Regional Office (RO)";
@@ -1038,32 +1510,83 @@ export function DtrGenerator() {
     const userAuditId = activeUser?.id || currentUser?.id || "";
 
     let pdfDataUrl: string | undefined;
-    const empHasP12 = Boolean(p12File?.base64 || signatureProfiles.find(p => p.id === selectedProfileId || (selectedUserId && p.user_Id === selectedUserId) || (currentUser?.id && p.user_Id === String(currentUser.id)))?.hasP12);
+    const isCurrentUserTheEmployee = matchNames(currentUser?.name, config.employeeName);
+    const matchedProfile = signatureProfiles.find(
+      (p) =>
+        matchNames(p.Name, config.employeeName) ||
+        (selectedProfileId && p.id === selectedProfileId) ||
+        (selectedUserId && p.user_Id === selectedUserId) ||
+        (isCurrentUserTheEmployee && currentUser?.id && p.user_Id === String(currentUser.id))
+    );
+    const empHasP12 = Boolean(p12File?.base64 || matchedProfile?.hasP12 || (matchedProfile && (matchedProfile as any).p12));
+    const hasDbPassword = Boolean(matchedProfile?.hasP12Password);
     const empSignerName = p12SignerIdentity?.commonName || config.employeeName;
-    try {
-      const { doc } = generateDtrVectorPdf(
-        {
-          ...config,
-          status: "Submitted",
-          employeeSignatureImage: signatureImage || undefined,
-          employeeHasP12: empHasP12,
-          employeeSignerName: empSignerName,
-          supervisorSignatureImage: undefined,
-          supervisorHasP12: false,
-        },
-        rows,
-        signatureImage,
-        empHasP12,
-        null,
-        empSignerName
-      );
-      pdfDataUrl = doc.output("datauristring");
-    } catch (e) {
-      console.warn("Could not generate PDF data URL for storage:", e);
+
+    if (empHasP12 && (p12File?.base64 || (matchedProfile && (matchedProfile as any).p12) || isGovMailAuth || hasDbPassword || p12Password)) {
+      try {
+        const p12Options = {
+          profileId: selectedProfileId || matchedProfile?.id || (currentUser?.id ? `dtr-sig-${currentUser.id}` : undefined),
+          user_Id: selectedUserId || matchedProfile?.user_Id || (currentUser?.id ? String(currentUser.id) : undefined),
+          p12Base64: p12File?.base64 || (matchedProfile as any)?.p12,
+          p12Password: p12Password || undefined,
+          isGoogleAuth: isGovMailAuth || isGoogleAuth,
+          signerName: empSignerName,
+          signerRole: "employee" as const,
+        };
+        const { bytes } = await getSignedDtrVectorPdfBytes(
+          {
+            ...config,
+            status: "Submitted",
+            employeeSignatureImage: signatureImage || undefined,
+            employeeHasP12: true,
+            employeeSignerName: empSignerName,
+            supervisorSignatureImage: undefined,
+            supervisorHasP12: false,
+          },
+          rows,
+          signatureImage,
+          true,
+          p12Options
+        );
+        let binary = "";
+        const len = bytes.byteLength;
+        for (let i = 0; i < len; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        pdfDataUrl = `data:application/pdf;base64,${btoa(binary)}`;
+      } catch (e) {
+        console.warn("Could not cryptographically sign DTR during save:", e);
+      }
     }
 
+    if (!pdfDataUrl) {
+      try {
+        const { doc } = generateDtrVectorPdf(
+          {
+            ...config,
+            status: "Submitted",
+            employeeSignatureImage: signatureImage || undefined,
+            employeeHasP12: empHasP12,
+            employeeSignerName: empSignerName,
+            supervisorSignatureImage: undefined,
+            supervisorHasP12: false,
+          },
+          rows,
+          signatureImage,
+          empHasP12,
+          null,
+          empSignerName
+        );
+        pdfDataUrl = doc.output("datauristring");
+      } catch (e) {
+        console.warn("Could not generate PDF data URL for storage:", e);
+      }
+    }
+
+    const resolvedUserId = resolveCurrentUserId(safeName);
+
     addDtrRecord({
-      userId: userAuditId ? String(userAuditId) : undefined,
+      userId: resolvedUserId,
       employeeName: safeName,
       employeeId: `DICT-R5-${config.year}-${Math.floor(100 + Math.random() * 900)}`,
       position: "Technical Specialist / Engineer",
@@ -1079,18 +1602,19 @@ export function DtrGenerator() {
       saturdayHours: config.saturdayHours,
       supervisorName: config.supervisorName,
       supervisorTitle: config.supervisorTitle,
-      totalDaysRendered: renderedDays,
-      totalHoursRendered: renderedHours,
-      undertimeHours: totalUndertime.hours,
-      undertimeMinutes: totalUndertime.minutes,
+      totalDaysRendered: metrics.totalDaysRendered,
+      totalHoursRendered: metrics.totalHoursRendered,
+      undertimeHours: metrics.undertimeHours,
+      undertimeMinutes: metrics.undertimeMinutes,
+      lateMinutes: metrics.lateMinutes,
       status: "Submitted",
       pdfFileName: fileName,
       pdfFileSize: "325 KB",
       pdfDataUrl: pdfDataUrl,
-      hasP12: Boolean(p12File?.base64 || signatureProfiles.find(p => p.id === selectedProfileId || (selectedUserId && p.user_Id === selectedUserId) || (currentUser?.id && p.user_Id === String(currentUser.id)))?.hasP12),
+      hasP12: empHasP12,
       signatureImage: signatureImage || undefined,
       employeeSignatureImage: signatureImage || undefined,
-      employeeHasP12: Boolean(p12File?.base64 || signatureProfiles.find(p => p.id === selectedProfileId || (selectedUserId && p.user_Id === selectedUserId) || (currentUser?.id && p.user_Id === String(currentUser.id)))?.hasP12),
+      employeeHasP12: empHasP12,
       employeeSignerName: p12SignerIdentity?.commonName || config.employeeName,
       supervisorSignatureImage: undefined,
       supervisorHasP12: false,
@@ -1099,8 +1623,62 @@ export function DtrGenerator() {
       remarks: `Generated via CS Form 48 Interactive Generator for ${selectedProv}`
     });
 
+    // Also persist personnel setup and Open Time Clock credentials to Turso dtr_user_setup
+    if (resolvedUserId && (otcUsername.trim() || safeName)) {
+      if (otcUsername.trim()) {
+        openTimeClockApi.verifyAccount(otcUsername.trim(), otcPassword).then((verifyRes) => {
+          if (verifyRes.success) {
+            dtrUserSetupApi.saveSetup({
+              userId: resolvedUserId,
+              employeeName: safeName,
+              province: config.province,
+              supervisorName: config.supervisorName,
+              supervisorTitle: config.supervisorTitle,
+              selectedOfficerOption,
+              regularHours: config.regularHours,
+              saturdayHours: config.saturdayHours,
+              periodText: config.periodText,
+              otcUsername: otcUsername.trim(),
+              otcPassword: otcPassword.trim() || undefined,
+            }).then(() => {
+              setIsOtcHidden(true);
+              localStorage.setItem("dict_otc_hidden", "true");
+              setIsOtcConnected(true);
+            }).catch((e) => console.warn("Failed to sync setup on Save Record:", e));
+          } else {
+            // Do NOT save incorrect credentials to Turso!
+            setIsOtcHidden(false);
+            setIsOtcConnected(false);
+            setOtcDialogData({
+              success: false,
+              employeeName: safeName,
+              userName: otcUsername.trim(),
+              totalPunches: 0,
+              scope: "",
+              message: verifyRes.error || `Incorrect credentials for Open Time Clock account "${otcUsername.trim()}".`,
+              error: verifyRes.error || "Incorrect Open Time Clock credentials. The incorrect username/password were NOT saved to Turso.",
+            });
+            setShowOtcDialog(true);
+            showNotification("⚠️ Notice: DTR saved to archive, but incorrect Open Time Clock credentials were NOT saved to Turso.");
+          }
+        }).catch((err) => console.warn("Could not verify OTC during save record:", err));
+      } else {
+        dtrUserSetupApi.saveSetup({
+          userId: resolvedUserId,
+          employeeName: safeName,
+          province: config.province,
+          supervisorName: config.supervisorName,
+          supervisorTitle: config.supervisorTitle,
+          selectedOfficerOption,
+          regularHours: config.regularHours,
+          saturdayHours: config.saturdayHours,
+          periodText: config.periodText,
+        }).catch((e) => console.warn("Failed to background sync user setup on Save Record:", e));
+      }
+    }
+
     refreshCounts();
-    showNotification(`DTR for ${safeName} saved to ${selectedProv} Archive!`);
+    showNotification(`DTR for ${safeName} saved to ${selectedProv} Archive & Turso! (Rendered: ${metrics.totalHoursRendered}h • Late: ${metrics.lateMinutes}m)`);
   };
 
   // Calculate totals
@@ -1117,10 +1695,10 @@ export function DtrGenerator() {
 
   return (
     <div className="min-h-screen bg-[#07090E] text-slate-200 flex flex-col max-w-[1920px] mx-auto print:min-h-0 print:h-auto print:bg-white print:text-black print:m-0 print:p-0 print:block">
-      
+
       {/* Top Bar Banner & Sub-Module Selector */}
       <div className="bg-[#0C101A] border-b border-[#1A2235] px-6 py-4 space-y-4 print:hidden">
-        
+
         {/* Header Title Bar */}
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -1150,84 +1728,47 @@ export function DtrGenerator() {
           )}
         </div>
 
-        {/* Sub-Module Navigation Switcher */}
+        {/* Active Selected Sub-Module Indicator (Only displays the active module) */}
         <div className="flex flex-wrap items-center gap-2 pt-1">
-          {/* Sub-Module 1: Generator */}
-          <button
-            type="button"
-            onClick={() => setActiveSubModule("generator")}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              activeSubModule === "generator"
-                ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/40"
-                : "bg-[#111728] border border-[#1C2844] text-slate-400 hover:text-white hover:border-slate-700"
-            }`}
-          >
-            <Sparkles className="w-4 h-4" />
-            DTR Generator (CS Form 48)
-          </button>
+          {activeSubModule === "generator" && (
+            <div className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-emerald-600 text-white shadow-lg shadow-emerald-900/40 border border-emerald-500/50">
+              <Sparkles className="w-4 h-4" />
+              <span>DTR Generator (CS Form 48)</span>
+              <span className="text-[10px] px-2 py-0.5 rounded bg-white/20 text-white font-mono uppercase tracking-wider">
+                Active Builder
+              </span>
+            </div>
+          )}
 
-          {/* Sub-Module 2: HRM - Module */}
-          <button
-            type="button"
-            onClick={() => setActiveSubModule("hrm")}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              activeSubModule === "hrm"
-                ? "bg-blue-600 text-white shadow-lg shadow-blue-900/40"
-                : "bg-[#111728] border border-[#1C2844] text-slate-400 hover:text-white hover:border-slate-700"
-            }`}
-          >
-            <Users2 className="w-4 h-4" />
-            HRM - module
-            <span
-              className={`px-2 py-0.5 rounded-full text-[10px] font-mono ${
-                activeSubModule === "hrm" ? "bg-white/20 text-white" : "bg-slate-800 text-slate-400"
-              }`}
-            >
-              {storageCounts.hrm}
-            </span>
-          </button>
+          {activeSubModule === "hrm" && (
+            <div className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-blue-600 text-white shadow-lg shadow-blue-900/40 border border-blue-500/50">
+              <Users2 className="w-4 h-4" />
+              <span>HRM - module</span>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-white/20 text-white">
+                {storageCounts.hrm} Records
+              </span>
+            </div>
+          )}
 
-          {/* Sub-Module 3: TOD - Module */}
-          <button
-            type="button"
-            onClick={() => setActiveSubModule("tod")}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              activeSubModule === "tod"
-                ? "bg-purple-600 text-white shadow-lg shadow-purple-900/40"
-                : "bg-[#111728] border border-[#1C2844] text-slate-400 hover:text-white hover:border-slate-700"
-            }`}
-          >
-            <Building2 className="w-4 h-4" />
-            TOD - module
-            <span
-              className={`px-2 py-0.5 rounded-full text-[10px] font-mono ${
-                activeSubModule === "tod" ? "bg-white/20 text-white" : "bg-slate-800 text-slate-400"
-              }`}
-            >
-              {storageCounts.tod}
-            </span>
-          </button>
+          {activeSubModule === "tod" && (
+            <div className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-purple-600 text-white shadow-lg shadow-purple-900/40 border border-purple-500/50">
+              <Building2 className="w-4 h-4" />
+              <span>TOD - module</span>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-white/20 text-white">
+                {storageCounts.tod} Records
+              </span>
+            </div>
+          )}
 
-          {/* Sub-Module 4: Provincial - Module */}
-          <button
-            type="button"
-            onClick={() => setActiveSubModule("provincial")}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              activeSubModule === "provincial"
-                ? "bg-amber-600 text-white shadow-lg shadow-amber-900/40"
-                : "bg-[#111728] border border-[#1C2844] text-slate-400 hover:text-white hover:border-slate-700"
-            }`}
-          >
-            <MapPin className="w-4 h-4" />
-            Provincial - module
-            <span
-              className={`px-2 py-0.5 rounded-full text-[10px] font-mono ${
-                activeSubModule === "provincial" ? "bg-white/20 text-white" : "bg-slate-800 text-slate-400"
-              }`}
-            >
-              {totalProvincialCount}
-            </span>
-          </button>
+          {activeSubModule === "provincial" && (
+            <div className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-amber-600 text-white shadow-lg shadow-amber-900/40 border border-amber-500/50">
+              <MapPin className="w-4 h-4" />
+              <span>Provincial - module</span>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-white/20 text-white">
+                {totalProvincialCount} Records
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Nested Tabs inside Provincial - module */}
@@ -1244,17 +1785,15 @@ export function DtrGenerator() {
                   key={p}
                   type="button"
                   onClick={() => setActiveProvinceTab(p)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer border ${
-                    isActive
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer border ${isActive
                       ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-md shadow-amber-950/40"
                       : "bg-[#111728] border-[#1C2844] text-slate-400 hover:text-white hover:border-slate-700"
-                  }`}
+                    }`}
                 >
                   <span>{p}</span>
                   <span
-                    className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                      isActive ? "bg-amber-400/20 text-amber-300" : "bg-slate-800 text-slate-500"
-                    }`}
+                    className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${isActive ? "bg-amber-400/20 text-amber-300" : "bg-slate-800 text-slate-500"
+                      }`}
                   >
                     {count}
                   </span>
@@ -1311,10 +1850,10 @@ export function DtrGenerator() {
       {/* ========================================================================= */}
       {activeSubModule === "generator" && (
         <div className="flex-1 flex flex-col lg:flex-row overflow-x-auto">
-          
+
           {/* LEFT COLUMN: DTR GENERATOR CONTROLS */}
           <div className="w-full lg:w-[380px] xl:w-[410px] bg-[#0C101A] border-r border-[#1A2235] p-5 space-y-6 shrink-0 print:hidden overflow-y-auto custom-scrollbar">
-            
+
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-sm font-black tracking-wide text-white uppercase">
@@ -1336,11 +1875,186 @@ export function DtrGenerator() {
               </button>
             </div>
 
+            {/* Section 0: OPEN TIME CLOCK (OTC) CLOUD INTEGRATION & FETCH (Collapsible / Compact when Saved) */}
+            {isOtcHidden ? (
+              <div className="flex items-center justify-between bg-gradient-to-r from-[#111A30]/80 to-[#0D1426]/80 border border-blue-500/30 px-3.5 py-2.5 rounded-xl shadow-md transition-all">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-7 h-7 rounded-lg bg-blue-500/20 border border-blue-500/40 flex items-center justify-center text-blue-400 shrink-0">
+                    <Cloud className="w-3.5 h-3.5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] font-bold text-white uppercase tracking-wider">
+                        Open Time Clock
+                      </span>
+                      {isOtcConnected && (
+                        <span className="px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-0.5">
+                          <Check className="w-2 h-2" /> Linked
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-400 font-mono">
+                      {otcUsername ? `Account: ${otcUsername}` : "Cloud API Integrated"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handleOtcLoginAndFetch(config.scope)}
+                    disabled={isOtcFetching}
+                    className="px-2.5 py-1 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-300 text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-all disabled:opacity-50"
+                    title="Sync / Fetch punches from Open Time Clock"
+                  >
+                    {isOtcFetching ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Cloud className="w-2.5 h-2.5" />}
+                    <span>Fetch</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsOtcHidden(false)}
+                    className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium border border-slate-700 transition-colors cursor-pointer"
+                    title="Show Open Time Clock configuration inputs"
+                  >
+                    Edit
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3 bg-gradient-to-b from-[#111A30] to-[#0D1426] border border-blue-500/40 p-3.5 rounded-xl shadow-lg relative overflow-hidden">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-lg bg-blue-500/20 border border-blue-500/40 flex items-center justify-center text-blue-400 shrink-0">
+                      <Cloud className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="text-[11px] font-black tracking-wider text-white uppercase flex items-center gap-1.5">
+                        Open Time Clock API
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      </h3>
+                      <p className="text-[9.5px] text-slate-400">Company ID: 94324 • Automatic DTR Fetch</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    {isOtcConnected && (
+                      <span className="px-2 py-0.5 rounded-full text-[9.5px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1">
+                        <Check className="w-2.5 h-2.5" /> Connected
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsOtcHidden(true);
+                        localStorage.setItem("dict_otc_hidden", "true");
+                      }}
+                      className="text-slate-400 hover:text-slate-200 p-1 rounded-md hover:bg-slate-800 transition-colors cursor-pointer"
+                      title="Hide Open Time Clock form"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-0.5">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-semibold text-slate-300 flex items-center gap-1">
+                      <span>Username</span>
+                      <span className="text-blue-400">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={otcUsername}
+                      onChange={(e) => setOtcUsername(e.target.value)}
+                      placeholder="e.g. Ace M. / ralphdt"
+                      className="w-full bg-[#090D18] border border-[#232F4D] focus:border-blue-500 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder:text-slate-600 focus:outline-none transition-colors font-medium"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-semibold text-slate-300 flex items-center justify-between">
+                      <span>Password</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowOtcPassword(!showOtcPassword)}
+                        className="text-[9px] text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+                      >
+                        {showOtcPassword ? "Hide" : "Show"}
+                      </button>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showOtcPassword ? "text" : "password"}
+                        value={otcPassword}
+                        onChange={(e) => setOtcPassword(e.target.value)}
+                        placeholder="••••••••"
+                        className="w-full bg-[#090D18] border border-[#232F4D] focus:border-blue-500 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder:text-slate-600 focus:outline-none transition-colors pr-7"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowOtcPassword(!showOtcPassword)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
+                      >
+                        {showOtcPassword ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-1 gap-2">
+                  <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={rememberOtcCreds}
+                      onChange={(e) => setRememberOtcCreds(e.target.checked)}
+                      className="rounded border-slate-700 bg-slate-800 text-blue-600 focus:ring-0 cursor-pointer"
+                    />
+                    <span>Remember login</span>
+                  </label>
+
+                  <button
+                    type="button"
+                    onClick={() => handleOtcLoginAndFetch(config.scope)}
+                    disabled={isOtcFetching}
+                    className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-[10.5px] font-bold flex items-center gap-1.5 transition-all shadow-md shadow-blue-900/40 cursor-pointer disabled:opacity-50"
+                    title="Authenticate and fetch time records for current Action Scope"
+                  >
+                    {isOtcFetching ? (
+                      <Loader2 className="w-3 h-3 animate-spin text-white" />
+                    ) : (
+                      <Cloud className="w-3 h-3 text-white" />
+                    )}
+                    <span>{isOtcFetching ? "Fetching Logs..." : "Login & Fetch OTC Logs"}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Section 1: PERSONNEL CONFIGURATIONS */}
-            <div className="space-y-3.5">
-              <h3 className="text-[11px] font-bold tracking-wider text-slate-400 uppercase">
-                1. PERSONNEL CONFIGURATIONS
-              </h3>
+            <div className="space-y-3.5 bg-[#0F1422] border border-[#1A2235] p-3.5 rounded-xl">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <h3 className="text-[11px] font-bold tracking-wider text-slate-300 uppercase flex items-center gap-1.5">
+                    <Cloud className="w-3.5 h-3.5 text-blue-400" />
+                    1. PERSONNEL CONFIGURATIONS
+                  </h3>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleSaveUserSetup}
+                  disabled={isSavingUserSetup}
+                  className="px-2.5 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 hover:text-white text-[10.5px] font-bold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50 shadow-sm"
+                  title="Save this configuration (Employee Name, Station/Province, Supervisor) to Turso Database"
+                >
+                  {isSavingUserSetup ? (
+                    <Loader2 className="w-3 h-3 animate-spin text-emerald-400" />
+                  ) : (
+                    <BookmarkCheck className="w-3 h-3 text-emerald-400" />
+                  )}
+                  <span>Save Setup</span>
+                </button>
+              </div>
 
               <div className="space-y-3">
                 <div>
@@ -1890,10 +2604,10 @@ export function DtrGenerator() {
 
           {/* RIGHT COLUMN: DUAL CS FORM NO. 48 PREVIEW */}
           <div className="flex-1 bg-[#07090E] p-4 lg:p-8 flex justify-center items-start overflow-x-auto print:p-0 print:m-0 print:bg-white print:overflow-visible print:block">
-            
+
             {/* Printable White Sheet Container (Contains 2 identical side-by-side Form 48s) */}
             <div className="bg-white text-black p-6 rounded shadow-2xl w-full max-w-[1050px] min-w-[860px] grid grid-cols-2 gap-6 print:shadow-none print:p-0 print:m-0 print:max-w-none print:w-full print:gap-4 print:grid-cols-2 select-text">
-              
+
               {/* COPY 1 (LEFT FORM) */}
               <DtrFormCopy
                 config={config}
@@ -1935,6 +2649,142 @@ export function DtrGenerator() {
       />
 
       {/* ========================================================================= */}
+      {/* OPEN TIME CLOCK (OTC) LOGIN & READY DIALOG MODAL                          */}
+      {/* ========================================================================= */}
+      {showOtcDialog && otcDialogData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-[#0D1322] border border-blue-500/40 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl relative">
+            
+            {otcDialogData.success ? (
+              <>
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shadow-md shrink-0">
+                      <Check className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-white uppercase tracking-wide">
+                        Open Time Clock Connected
+                      </h3>
+                      <p className="text-[11px] text-emerald-400 font-semibold mt-0.5">
+                        Credentials verified & time punches loaded
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowOtcDialog(false)}
+                    className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="bg-[#111728] border border-[#1E293B] p-4 rounded-xl space-y-2.5 text-xs text-slate-300">
+                  <div className="flex justify-between items-center pb-2 border-b border-[#1E293B]">
+                    <span className="text-slate-400">Employee Profile:</span>
+                    <span className="font-bold text-white text-right">{otcDialogData.employeeName}</span>
+                  </div>
+                  <div className="flex justify-between items-center pb-2 border-b border-[#1E293B]">
+                    <span className="text-slate-400">OTC Username:</span>
+                    <span className="font-mono font-semibold text-blue-300">{otcDialogData.userName}</span>
+                  </div>
+                  {otcDialogData.departmentName && (
+                    <div className="flex justify-between items-center pb-2 border-b border-[#1E293B]">
+                      <span className="text-slate-400">Department / Unit:</span>
+                      <span className="text-slate-200 font-medium">{otcDialogData.departmentName}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between items-center pb-2 border-b border-[#1E293B]">
+                    <span className="text-slate-400">Target Period:</span>
+                    <span className="font-bold text-amber-300">
+                      {MONTH_NAMES[config.month]} {config.year}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">Action Scope:</span>
+                    <span className="px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 font-semibold text-[10.5px]">
+                      {otcDialogData.scope}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-blue-950/40 border border-blue-500/30 rounded-xl text-xs text-blue-200 leading-relaxed space-y-1">
+                  <p className="font-semibold text-white flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-blue-400" />
+                    Live Synchronization Complete
+                  </p>
+                  <p className="text-[11px] text-slate-300">
+                    <strong>{otcDialogData.totalPunches} punch logs</strong> were parsed into daily morning and afternoon slots for <strong className="text-white">{otcDialogData.scope}</strong>. Off-days and weekends have been automatically adapted.
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#1E293B]">
+                  <button
+                    type="button"
+                    onClick={() => setShowOtcDialog(false)}
+                    className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all shadow-md shadow-blue-900/40 cursor-pointer"
+                  >
+                    Review CS Form 48
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-red-500/20 border border-red-500/40 flex items-center justify-center text-red-400 shadow-md shrink-0">
+                      <ShieldAlert className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-white uppercase tracking-wide">
+                        Authentication Failed
+                      </h3>
+                      <p className="text-[11px] text-red-400 font-semibold mt-0.5">
+                        Open Time Clock credentials not recognized
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowOtcDialog(false)}
+                    className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="bg-[#181119] border border-red-500/30 p-4 rounded-xl space-y-2.5 text-xs text-slate-300">
+                  <p className="text-red-200 font-medium">
+                    {otcDialogData.error || otcDialogData.message}
+                  </p>
+                  <ul className="list-disc list-inside text-[11px] text-slate-400 space-y-1 pt-1 border-t border-red-500/20">
+                    <li>Verify your Open Time Clock account username (e.g. <code>Ace M.</code> or full name).</li>
+                    <li>Ensure your company account is registered under Company ID <code>94324</code>.</li>
+                    <li>Check that your credentials are typed accurately.</li>
+                  </ul>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#1E293B]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowOtcDialog(false);
+                      setIsOtcHidden(false);
+                    }}
+                    className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-all shadow-md shadow-red-900/40 cursor-pointer"
+                  >
+                    Re-enter Credentials
+                  </button>
+                </div>
+              </>
+            )}
+
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
       {/* PNPKI .P12 PASSWORD REQUIREMENT MODAL                                     */}
       {/* ========================================================================= */}
       {showPasswordModal && (
@@ -1954,10 +2804,10 @@ export function DtrGenerator() {
                   {passwordModalReason === "account_sign"
                     ? "Enter your web application login password to authorize and digitally sign this DTR."
                     : passwordModalReason === "save"
-                    ? "Enter password before saving your .p12 certificate profile."
-                    : passwordModalReason === "apply"
-                    ? "Enter your .p12 password to unlock and apply this digital signature to your DTR."
-                    : "Enter your .p12 password to authorize and digitally sign this DTR."}
+                      ? "Enter password before saving your .p12 certificate profile."
+                      : passwordModalReason === "apply"
+                        ? "Enter your .p12 password to unlock and apply this digital signature to your DTR."
+                        : "Enter your .p12 password to authorize and digitally sign this DTR."}
                 </p>
               </div>
             </div>
@@ -2048,10 +2898,10 @@ export function DtrGenerator() {
                 {passwordModalReason === "account_sign"
                   ? "Authorize & Sign"
                   : passwordModalReason === "save"
-                  ? "Save Profile"
-                  : passwordModalReason === "apply"
-                  ? "Unlock & Apply"
-                  : "Authorize & Sign"}
+                    ? "Save Profile"
+                    : passwordModalReason === "apply"
+                      ? "Unlock & Apply"
+                      : "Authorize & Sign"}
               </button>
             </div>
           </div>
@@ -2087,7 +2937,7 @@ function DtrFormCopy({
 }: DtrFormCopyProps) {
   return (
     <div className="p-2 flex flex-col justify-between font-sans text-[11px] leading-tight bg-white select-text">
-      
+
       {/* Header */}
       <div className="text-center space-y-0.5">
         <div className="text-[9px] italic text-left tracking-tight font-sans">
@@ -2127,13 +2977,13 @@ function DtrFormCopy({
             <div className="flex items-center justify-end gap-1 text-[8px]">
               <span className="italic font-sans">Regular days</span>
               <span className="border-b border-black inline-block min-w-[100px] text-center font-sans font-bold px-1">
-                {config.regularHours || "\u00A0"}
+                {config.regularHours && config.regularHours.trim().toLowerCase() !== "regular days" ? config.regularHours : "\u00A0"}
               </span>
             </div>
             <div className="flex items-center justify-end gap-1 text-[8px]">
               <span className="italic font-sans">Saturdays</span>
               <span className="border-b border-black inline-block min-w-[100px] text-center font-sans font-bold px-1">
-                {config.saturdayHours || "\u00A0"}
+                {config.saturdayHours && config.saturdayHours.trim().toLowerCase() !== "saturdays" ? config.saturdayHours : "\u00A0"}
               </span>
             </div>
           </div>
@@ -2165,6 +3015,7 @@ function DtrFormCopy({
               if (row.isCustomLabel) {
                 const labelUpper = (row.customLabel || "").trim().toUpperCase();
                 const isWeekend = labelUpper.includes("SATURDAY") || labelUpper.includes("SUNDAY");
+                const isNoWork = labelUpper.includes("NO WORK");
                 const rowBg = isWeekend ? "#e5e7eb" : "#ffffff";
                 const rowClass = isWeekend
                   ? "h-[14px] bg-gray-200 hover:bg-gray-300/80 transition-colors group"
@@ -2177,7 +3028,7 @@ function DtrFormCopy({
                     style={{ backgroundColor: rowBg }}
                     className={rowClass}
                   >
-                    <td 
+                    <td
                       style={{ backgroundColor: rowBg }}
                       className={`border-r border-black font-bold text-center px-0.5 py-0 ${cellBgClass}`}
                     >
@@ -2196,14 +3047,20 @@ function DtrFormCopy({
                     <td
                       colSpan={6}
                       style={{ backgroundColor: rowBg }}
-                      className={`font-bold text-center text-black tracking-wider text-[8.5px] uppercase py-0 px-1 ${cellBgClass}`}
+                      className={`text-center tracking-wider text-[8.5px] uppercase py-0 px-1 ${cellBgClass} ${
+                        isNoWork ? "italic font-semibold text-gray-400" : "font-bold text-black"
+                      }`}
                     >
                       <input
                         type="text"
                         value={row.customLabel || ""}
                         onChange={(e) => onCellChange(idx, "customLabel", e.target.value)}
                         placeholder="SATURDAY / SUNDAY / HOLIDAY"
-                        className="w-full text-center bg-transparent focus:bg-white focus:outline-none font-bold text-[8.5px] uppercase tracking-wider text-black placeholder:text-slate-500 py-0"
+                        className={`w-full text-center bg-transparent focus:bg-white focus:outline-none uppercase tracking-wider placeholder:text-slate-400 py-0 ${
+                          isNoWork
+                            ? "italic font-semibold text-gray-400 text-[8px]"
+                            : "font-bold text-[8.5px] text-black"
+                        }`}
                       />
                     </td>
                   </tr>

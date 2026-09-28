@@ -13,7 +13,7 @@ interface DtrSignatureValidationModalProps {
 export const DtrSignatureValidationModal: React.FC<DtrSignatureValidationModalProps> = ({
   isOpen,
   onClose,
-  signerName = "Malto Ace Mata",
+  signerName = "Signer",
   signatureDate = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }),
   certificateIssuer = "DICT Philippine National Public Key Infrastructure (PNPKI)",
   certificateValidity = "Valid until 2028-08-31",

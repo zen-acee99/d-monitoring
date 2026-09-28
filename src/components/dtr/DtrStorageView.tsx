@@ -22,7 +22,11 @@ import {
   FileSignature,
   Loader2,
   AlertCircle,
-  Upload
+  AlertTriangle,
+  Upload,
+  Timer,
+  Clock3,
+  CalendarClock
 } from "lucide-react";
 import {
   DtrModuleCategory,
@@ -38,9 +42,9 @@ import {
 } from "@/data/dtrStorage";
 import { DtrPdfModal } from "./DtrPdfModal";
 import { DtrUploadModal } from "./DtrUploadModal";
-import { exportDtrToExcel } from "@/utils/dtrUtils";
-import { getSignedDtrVectorPdfBytes, downloadDtrVectorPdf, signUploadedArPdfBytes } from "@/utils/dtrVectorPdf";
-import { dtrGeneratorApi, dtrStorageApi, DtrGeneratorSignatureRecord } from "@/services/api";
+import { exportDtrToExcel, calculateDtrMetrics } from "@/utils/dtrUtils";
+import { getSignedDtrVectorPdfBytes, downloadDtrVectorPdf, signUploadedArPdfBytes, matchNames } from "@/utils/dtrVectorPdf";
+import { dtrGeneratorApi, dtrStorageApi, DtrGeneratorSignatureRecord, dtrScheduleSettingsApi, DtrWorkScheduleSetting } from "@/services/api";
 import { getCurrentUser, AUTH_EVENT } from "@/services/authStore";
 import { UserRecord } from "@/data/userStore";
 import { subscribeToDtrRealtime, broadcastLocalDtrEvent } from "@/services/dtrRealtime";
@@ -77,6 +81,19 @@ export function DtrStorageView({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isBulkSigning, setIsBulkSigning] = useState(false);
   const [bulkSignProgress, setBulkSignProgress] = useState<{ current: number; total: number } | null>(null);
+
+  // Active work schedule setting (Mon-Fri 8hrs vs 4-day 10hrs vs custom)
+  const [scheduleSetting, setScheduleSetting] = useState<DtrWorkScheduleSetting | null>(null);
+
+  useEffect(() => {
+    dtrScheduleSettingsApi.getSettings().then(setScheduleSetting).catch(() => {});
+    const handleScheduleChange = (e: any) => {
+      if (e?.detail) setScheduleSetting(e.detail);
+      else dtrScheduleSettingsApi.getSettings().then(setScheduleSetting).catch(() => {});
+    };
+    window.addEventListener("dict_dtr_schedule_settings_updated", handleScheduleChange);
+    return () => window.removeEventListener("dict_dtr_schedule_settings_updated", handleScheduleChange);
+  }, []);
 
   const showNotification = (msg: string) => {
     setNotification(msg);
@@ -298,15 +315,59 @@ export function DtrStorageView({
     return 0;
   };
 
-  // Sort scoped records descending so the newest upload appears in the first row
-  const sortedScopedRecords = [...scopedRecords].sort((a, b) => {
-    const timeA = getRecordTimestamp(a);
-    const timeB = getRecordTimestamp(b);
-    if (timeA !== timeB) {
-      return timeB - timeA; // Descending
+  // Helper to evaluate and compute attendance & compliance metrics for each record
+  const evaluateRecordMetrics = (r: DtrStorageItem) => {
+    let lateMins = typeof r.lateMinutes === "number" ? r.lateMinutes : 0;
+    let utHours = typeof r.undertimeHours === "number" ? r.undertimeHours : 0;
+    let utMinutes = typeof r.undertimeMinutes === "number" ? r.undertimeMinutes : 0;
+    let renderedHours = typeof r.totalHoursRendered === "number" ? r.totalHoursRendered : 0;
+    let renderedDays = typeof r.totalDaysRendered === "number" ? r.totalDaysRendered : 0;
+
+    if (r.rows && Array.isArray(r.rows) && r.rows.length > 0) {
+      const calc = calculateDtrMetrics(r.rows, scheduleSetting || undefined);
+      if (r.lateMinutes === undefined) {
+        lateMins = calc.lateMinutes;
+      }
+      if (r.undertimeHours === undefined && r.undertimeMinutes === undefined && calc.totalUndertimeMinutes > 0) {
+        utHours = calc.undertimeHours;
+        utMinutes = calc.undertimeMinutes;
+      }
+      if (!renderedHours && calc.totalHoursRendered > 0) {
+        renderedHours = calc.totalHoursRendered;
+      }
+      if (!renderedDays && calc.totalDaysRendered > 0) {
+        renderedDays = calc.totalDaysRendered;
+      }
     }
-    return (b.id || "").localeCompare(a.id || "");
-  });
+
+    const hasLate = lateMins > 0;
+    const totalUtMins = utHours * 60 + utMinutes;
+    const hasUndertime = totalUtMins > 0;
+
+    return {
+      ...r,
+      lateMinutes: lateMins,
+      undertimeHours: utHours,
+      undertimeMinutes: utMinutes,
+      totalHoursRendered: renderedHours,
+      totalDaysRendered: renderedDays,
+      hasLate,
+      hasUndertime,
+      totalUtMins,
+    };
+  };
+
+  // Sort scoped records descending so the newest upload appears in the first row
+  const sortedScopedRecords = [...scopedRecords]
+    .map(evaluateRecordMetrics)
+    .sort((a, b) => {
+      const timeA = getRecordTimestamp(a);
+      const timeB = getRecordTimestamp(b);
+      if (timeA !== timeB) {
+        return timeB - timeA; // Descending
+      }
+      return (b.id || "").localeCompare(a.id || "");
+    });
 
   const filteredRecords = sortedScopedRecords.filter((r) => {
     const matchesSearch =
@@ -341,12 +402,22 @@ export function DtrStorageView({
     );
   };
 
-  // Calculate statistics
-  const totalCount = scopedRecords.length;
-  const approvedCount = scopedRecords.filter((r) => r.status === "Approved").length;
-  const verifiedCount = scopedRecords.filter((r) => r.status === "Verified").length;
-  const pendingCount = scopedRecords.filter((r) => r.status === "Submitted").length;
-  const totalHours = scopedRecords.reduce((acc, r) => acc + (r.totalHoursRendered || 0), 0);
+  // Calculate statistics across scoped records in this view
+  const totalCount = sortedScopedRecords.length;
+  const approvedCount = sortedScopedRecords.filter((r) => r.status === "Approved").length;
+  const verifiedCount = sortedScopedRecords.filter((r) => r.status === "Verified").length;
+  const pendingCount = sortedScopedRecords.filter((r) => r.status === "Submitted").length;
+  const totalHours = sortedScopedRecords.reduce((acc, r) => acc + (r.totalHoursRendered || 0), 0);
+
+  // Late users & records
+  const lateRecords = sortedScopedRecords.filter((r) => r.hasLate);
+  const totalLateMinutes = lateRecords.reduce((acc, r) => acc + (r.lateMinutes || 0), 0);
+  const uniqueLateUsers = new Set(lateRecords.map((r) => r.employeeName.trim().toLowerCase())).size;
+
+  // Undertime users & records
+  const undertimeRecords = sortedScopedRecords.filter((r) => r.hasUndertime);
+  const totalUndertimeMins = undertimeRecords.reduce((acc, r) => acc + (r.totalUtMins || 0), 0);
+  const uniqueUndertimeUsers = new Set(undertimeRecords.map((r) => r.employeeName.trim().toLowerCase())).size;
 
   // Handlers
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
@@ -359,6 +430,8 @@ export function DtrStorageView({
   const handleDownloadRecord = async (item: DtrStorageItem) => {
     setDownloadingId(item.id);
     try {
+    const isAR = item.docType === "AR" || (item.pdfFileName && item.pdfFileName.startsWith("AR_"));
+    if (isAR) {
       let dataUrl = item.pdfDataUrl || getCachedPdfDataUrl(item.id);
       if (!dataUrl) {
         try {
@@ -381,29 +454,81 @@ export function DtrStorageView({
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = item.pdfFileName || `DTR_${item.employeeName}_${item.year}.pdf`;
+        a.download = item.pdfFileName || `AR_${item.employeeName}_${item.year}.pdf`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 1000);
-        showNotification(`✓ Downloaded ${item.pdfFileName || "signed DTR PDF"}`);
+        showNotification(`✓ Downloaded ${item.pdfFileName || "signed Accomplishment Report"}`);
         return;
       }
+    }
 
       const supervisorName = (item.supervisorName || "RENE JANE R. BUENA").trim();
       const supervisorTitle = (item.supervisorTitle || (item.province ? `Provincial Officer - ${item.province}` : "Provincial Officer")).trim();
       const signerName = (item.signerName || userSigProfile?.Name || currentUser?.name || "Super Admin").trim();
 
-      const p12Options = userSigProfile && (userSigProfile.hasP12 || userSigProfile.p12)
-        ? {
-            profileId: userSigProfile.id,
-            user_Id: userSigProfile.user_Id || String(currentUser?.id || ""),
-            p12Base64: userSigProfile.p12 || undefined,
-            signerName,
+      const isSupervisor = item.status === "Verified" || item.status === "Approved";
+      let p12Options: any = null;
+
+      let empProf: any = null;
+      if (item.employeeHasP12 || item.hasP12) {
+        try {
+          if (item.userId) {
+            const profs = await dtrGeneratorApi.getRecords({ user_Id: String(item.userId) });
+            empProf = profs.find((p) => p.user_Id === String(item.userId) || p.id === `dtr-sig-${item.userId}`);
           }
-        : {
-            signerName,
-          };
+          if (!empProf && item.employeeName) {
+            const profs = await dtrGeneratorApi.getRecords();
+            empProf = profs.find((p) => matchNames(p.Name, item.employeeName));
+          }
+        } catch {}
+      }
+
+      let supProf: any = null;
+      if (isSupervisor) {
+        try {
+          const allProfs = await dtrGeneratorApi.getRecords();
+          // Priority 1: Match signerName (who actually verified/signed it, e.g. "Malto Ace Mata")
+          if (item.signerName) {
+            supProf = allProfs.find((p) => matchNames(p.Name, item.signerName) && (p.hasP12 || p.p12));
+          }
+          // Priority 2: Match supervisorName (e.g. "Norly A. Tabo")
+          if (!supProf && supervisorName) {
+            supProf = allProfs.find((p) => matchNames(p.Name, supervisorName) && (p.hasP12 || p.p12));
+          }
+          // Priority 3: Current user if they have p12 and are not the employee
+          if (!supProf && userSigProfile && (userSigProfile.hasP12 || userSigProfile.p12) && !matchNames(userSigProfile.Name, item.employeeName)) {
+            supProf = userSigProfile;
+          }
+          // Priority 4: Any supervisor/PO profile with p12 distinct from employee
+          if (!supProf) {
+            supProf = allProfs.find((p) => (p.hasP12 || p.p12) && (!empProf || p.id !== empProf.id) && !matchNames(p.Name, item.employeeName));
+          }
+        } catch {}
+
+        p12Options = {
+          profileId: supProf?.id,
+          user_Id: supProf?.user_Id,
+          p12Base64: supProf?.p12 || undefined,
+          signerName: supProf?.Name || signerName,
+          signerRole: "supervisor" as const,
+          employeeProfileId: empProf?.id,
+          employeeUserId: empProf?.user_Id,
+          employeeP12Base64: empProf?.p12 || undefined,
+          employeeSignerName: empProf?.Name || item.employeeName,
+        };
+      } else if (empProf && (empProf.hasP12 || empProf.p12)) {
+        p12Options = {
+          profileId: empProf.id,
+          user_Id: empProf.user_Id,
+          p12Base64: empProf.p12 || undefined,
+          signerName: empProf.Name,
+          signerRole: "employee" as const,
+        };
+      }
+
+      const effectiveSignerName = isSupervisor ? (supProf?.Name || signerName) : (item.employeeSignerName || item.employeeName);
 
       await downloadDtrVectorPdf(
         {
@@ -420,13 +545,13 @@ export function DtrStorageView({
           employeeSignatureImage: item.employeeSignatureImage || item.signatureImage,
           employeeHasP12: item.employeeHasP12 ?? item.hasP12,
           employeeSignerName: item.employeeSignerName || item.employeeName,
-          supervisorSignatureImage: item.supervisorSignatureImage || (item.status !== "Submitted" ? userSigProfile?.image_digiSigned : undefined),
-          supervisorHasP12: Boolean(item.supervisorHasP12 && (item.status === "Verified" || item.status === "Approved")),
-          signerName,
+          supervisorSignatureImage: item.supervisorSignatureImage || (item.status !== "Submitted" ? (supProf?.image_digiSigned || userSigProfile?.image_digiSigned) : undefined),
+          supervisorHasP12: Boolean((item.supervisorHasP12 || supProf) && (item.status === "Verified" || item.status === "Approved")),
+          signerName: effectiveSignerName,
         } as any,
         item.rows,
-        item.supervisorSignatureImage || (item.status !== "Submitted" ? (userSigProfile?.image_digiSigned || item.signatureImage) : undefined),
-        Boolean((item.status === "Verified" || item.status === "Approved") && (item.supervisorHasP12 || userSigProfile?.hasP12)),
+        isSupervisor ? (item.supervisorSignatureImage || (item.status !== "Submitted" ? (supProf?.image_digiSigned || userSigProfile?.image_digiSigned || item.signatureImage) : undefined)) : (item.employeeSignatureImage || item.signatureImage),
+        Boolean(isSupervisor ? (item.supervisorHasP12 || supProf?.hasP12 || userSigProfile?.hasP12) : (item.employeeHasP12 && Boolean(p12Options))),
         p12Options
       );
 
@@ -488,6 +613,30 @@ export function DtrStorageView({
       }
     }
 
+    // Lookup employee profile for dual signing
+    let empP12Opts: any = {};
+    if (item.employeeHasP12 || item.hasP12) {
+      try {
+        let empProf = null;
+        if (item.userId) {
+          const profs = await dtrGeneratorApi.getRecords({ user_Id: String(item.userId) });
+          empProf = profs.find((p) => p.user_Id === String(item.userId) || p.id === `dtr-sig-${item.userId}`);
+        }
+        if (!empProf && item.employeeName) {
+          const profs = await dtrGeneratorApi.getRecords();
+          empProf = profs.find((p) => matchNames(p.Name, item.employeeName));
+        }
+        if (empProf && (empProf.hasP12 || empProf.p12)) {
+          empP12Opts = {
+            employeeProfileId: empProf.id,
+            employeeUserId: empProf.user_Id,
+            employeeP12Base64: empProf.p12 || undefined,
+            employeeSignerName: empProf.Name,
+          };
+        }
+      } catch {}
+    }
+
     // Standard DTR document signing
     const { bytes, resolvedSignerName } = await getSignedDtrVectorPdfBytes(
       {
@@ -511,7 +660,11 @@ export function DtrStorageView({
       item.rows,
       userSigProfile?.image_digiSigned || item.supervisorSignatureImage || item.signatureImage,
       hasP12Cert,
-      p12Options
+      {
+        ...p12Options,
+        ...empP12Opts,
+        signerRole: "supervisor",
+      }
     );
 
     let binary = "";
@@ -798,10 +951,10 @@ export function DtrStorageView({
         </div>
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <div className="bg-[#0C101D] border border-[#18233C] p-4 rounded-2xl">
-          <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+      {/* KPI Cards (Including Late & Undertime Counts & Hours) */}
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3.5">
+        <div className="bg-[#0C101D] border border-[#18233C] p-3.5 rounded-2xl">
+          <div className="text-[10.5px] font-semibold text-slate-400 uppercase tracking-wider">
             Total DTR Records
           </div>
           <div className="text-2xl font-black text-white font-mono mt-1">
@@ -812,8 +965,8 @@ export function DtrStorageView({
           </div>
         </div>
 
-        <div className="bg-[#0C101D] border border-[#18233C] p-4 rounded-2xl">
-          <div className="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-1">
+        <div className="bg-[#0C101D] border border-[#18233C] p-3.5 rounded-2xl">
+          <div className="text-[10.5px] font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-1">
             <CheckCircle2 className="w-3.5 h-3.5" /> Approved & Verified
           </div>
           <div className="text-2xl font-black text-emerald-400 font-mono mt-1">
@@ -824,8 +977,8 @@ export function DtrStorageView({
           </div>
         </div>
 
-        <div className="bg-[#0C101D] border border-[#18233C] p-4 rounded-2xl">
-          <div className="text-[11px] font-semibold text-amber-400 uppercase tracking-wider flex items-center gap-1">
+        <div className="bg-[#0C101D] border border-[#18233C] p-3.5 rounded-2xl">
+          <div className="text-[10.5px] font-semibold text-amber-400 uppercase tracking-wider flex items-center gap-1">
             <Clock className="w-3.5 h-3.5" /> Pending Review
           </div>
           <div className="text-2xl font-black text-amber-400 font-mono mt-1">
@@ -836,15 +989,47 @@ export function DtrStorageView({
           </div>
         </div>
 
-        <div className="bg-[#0C101D] border border-[#18233C] p-4 rounded-2xl">
-          <div className="text-[11px] font-semibold text-purple-400 uppercase tracking-wider">
-            Total Rendered Hours
+        <div className="bg-[#0C101D] border border-[#18233C] p-3.5 rounded-2xl">
+          <div className="text-[10.5px] font-semibold text-purple-400 uppercase tracking-wider flex items-center gap-1">
+            <CalendarClock className="w-3.5 h-3.5" /> Total Rendered Hours
           </div>
           <div className="text-2xl font-black text-purple-400 font-mono mt-1">
             {totalHours.toLocaleString()} hrs
           </div>
           <div className="text-[10px] text-slate-400 mt-0.5">
             Official regular working time
+          </div>
+        </div>
+
+        {/* Late Personnel & Records Count */}
+        <div className="bg-[#0C101D] border border-amber-500/30 bg-gradient-to-b from-amber-500/5 to-transparent p-3.5 rounded-2xl">
+          <div className="text-[10.5px] font-semibold text-amber-400 uppercase tracking-wider flex items-center gap-1">
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-400" /> Late Personnel
+          </div>
+          <div className="text-2xl font-black text-amber-400 font-mono mt-1 flex items-baseline gap-1.5">
+            <span>{uniqueLateUsers}</span>
+            <span className="text-xs font-normal text-amber-300/80">user{uniqueLateUsers !== 1 ? "s" : ""}</span>
+            <span className="text-xs font-bold text-slate-500">•</span>
+            <span className="text-sm font-semibold text-amber-300 font-mono">{lateRecords.length} DTR{lateRecords.length !== 1 ? "s" : ""}</span>
+          </div>
+          <div className="text-[10px] text-amber-400/80 mt-0.5">
+            {totalLateMinutes > 0 ? `${Math.floor(totalLateMinutes / 60)}h ${totalLateMinutes % 60}m tardiness` : "0 mins late (All on time)"}
+          </div>
+        </div>
+
+        {/* Undertime Records Count */}
+        <div className="bg-[#0C101D] border border-rose-500/30 bg-gradient-to-b from-rose-500/5 to-transparent p-3.5 rounded-2xl">
+          <div className="text-[10.5px] font-semibold text-rose-400 uppercase tracking-wider flex items-center gap-1">
+            <Clock3 className="w-3.5 h-3.5 text-rose-400" /> Undertime Records
+          </div>
+          <div className="text-2xl font-black text-rose-400 font-mono mt-1 flex items-baseline gap-1.5">
+            <span>{uniqueUndertimeUsers}</span>
+            <span className="text-xs font-normal text-rose-300/80">user{uniqueUndertimeUsers !== 1 ? "s" : ""}</span>
+            <span className="text-xs font-bold text-slate-500">•</span>
+            <span className="text-sm font-semibold text-rose-300 font-mono">{undertimeRecords.length} DTR{undertimeRecords.length !== 1 ? "s" : ""}</span>
+          </div>
+          <div className="text-[10px] text-rose-400/80 mt-0.5">
+            {totalUndertimeMins > 0 ? `${Math.floor(totalUndertimeMins / 60)}h ${totalUndertimeMins % 60}m undertime` : "0 hrs undertime (Full hours)"}
           </div>
         </div>
       </div>
@@ -902,6 +1087,7 @@ export function DtrStorageView({
                 )}
                 <th className="px-6 py-4">Personnel Profile</th>
                 <th className="px-5 py-4">Designation & Unit</th>
+                <th className="px-5 py-4">Attendance & Compliance</th>
                 <th className="px-5 py-4">Attached Document</th>
                 <th className="px-5 py-4">Status</th>
                 <th className="px-6 py-4 text-right">PDF Actions</th>
@@ -921,6 +1107,8 @@ export function DtrStorageView({
                     : displayStatus === "For Revision"
                     ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
                     : "bg-slate-700/40 text-slate-300 border-slate-600/40";
+
+                const isAR = item.docType === "AR" || (item.pdfFileName && item.pdfFileName.startsWith("AR_"));
 
                 return (
                   <tr
@@ -973,10 +1161,48 @@ export function DtrStorageView({
                       </div>
                     </td>
 
+                    {/* Attendance & Compliance (Late / Undertime / Hours) */}
+                    <td className="px-5 py-4 space-y-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {/* Late Badge */}
+                        {item.hasLate ? (
+                          <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-amber-500/15 border border-amber-500/30 text-amber-300 flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3 text-amber-400" />
+                            {item.lateMinutes} min late
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-lg text-[10px] font-semibold bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center gap-1">
+                            <Check className="w-3 h-3 text-emerald-400" />
+                            On-time
+                          </span>
+                        )}
+
+                        {/* Undertime Badge */}
+                        {item.hasUndertime ? (
+                          <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-rose-500/15 border border-rose-500/30 text-rose-300 flex items-center gap-1">
+                            <Clock3 className="w-3 h-3 text-rose-400" />
+                            {item.undertimeHours}h {item.undertimeMinutes}m undertime
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-lg text-[10px] font-semibold bg-blue-500/10 border border-blue-500/20 text-blue-300">
+                            Complete
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                        <span className="font-mono font-bold text-slate-300">
+                          {item.totalHoursRendered} hrs rendered
+                        </span>
+                        <span>•</span>
+                        <span>{item.totalDaysRendered || 0} days active</span>
+                      </div>
+                    </td>
+
                     {/* Attached Document info */}
                     <td className="px-5 py-4 space-y-1">
                       <div className="flex items-center gap-1.5 text-xs text-slate-300">
-                        {item.docType === "AR" || item.pdfFileName.startsWith("AR_") ? (
+                        {isAR ? (
                           <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
                             AR
                           </span>

@@ -27,7 +27,11 @@ import {
   Server,
   Activity,
   HardDrive,
-  FileText
+  FileText,
+  AlertTriangle,
+  XCircle,
+  CheckCircle,
+  Signal
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -65,6 +69,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [omadaOverview, setOmadaOverview] = useState<OmadaOverview | null>(null);
   const [selectedSupplier, setSelectedSupplier] = useState<string>("ALL");
+  const [selectedOnlineStatus, setSelectedOnlineStatus] = useState<string>("ALL");
   const [highlightApiData, setHighlightApiData] = useState<boolean>(true);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
 
@@ -149,6 +154,146 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
   const siteTypeData = useMemo(() => getSiteTypeDistribution(sites), [sites]);
   const municipalData = useMemo(() => getMunicipalityDistribution(sites), [sites]);
 
+  // Compute live Supplier 1 vs Supplier 2 Online/Offline metrics
+  const supplierMetrics = useMemo(() => {
+    const s1 = {
+      name: "Supplier 1 (PHS / HEI / Public Schools)",
+      totalSites: 0,
+      onlineSites: 0,
+      degradedSites: 0,
+      offlineSites: 0,
+      onlineDevices: 0,
+      offlineDevices: 0,
+      totalDevices: 0,
+    };
+    const s2 = {
+      name: "Supplier 2 (LGU Halls / PICS-MUN)",
+      totalSites: 0,
+      onlineSites: 0,
+      degradedSites: 0,
+      offlineSites: 0,
+      onlineDevices: 0,
+      offlineDevices: 0,
+      totalDevices: 0,
+    };
+
+    sites.forEach((site: any) => {
+      const isS1 =
+        (site.omadaSupplier || site.omadaSupplierId || "").toLowerCase().includes("1") ||
+        (site.fundSource && site.fundSource.includes("PFIAPS")) ||
+        ["PES", "PHS", "HEI-LUC"].includes(site.siteType);
+      const target = isS1 ? s1 : s2;
+
+      target.totalSites += 1;
+      const onlineDev = site.onlineDevicesCount ?? (site.status === "Offline" ? 0 : site.apCount || 1);
+      const offlineDev = site.offlineDevicesCount ?? (site.status === "Offline" ? (site.apCount || 1) : 0);
+      const totalDev = site.totalDevicesCount ?? (onlineDev + offlineDev);
+
+      target.onlineDevices += onlineDev;
+      target.offlineDevices += offlineDev;
+      target.totalDevices += totalDev;
+
+      const st =
+        site.siteOnlineStatus ||
+        (site.status === "Offline"
+          ? "Offline"
+          : offlineDev === 0 && onlineDev > 0
+          ? "Online"
+          : onlineDev > 0
+          ? "Degraded"
+          : "Offline");
+
+      if (st === "Online") target.onlineSites += 1;
+      else if (st === "Degraded") target.degradedSites += 1;
+      else target.offlineSites += 1;
+    });
+
+    const totalSites = s1.totalSites + s2.totalSites;
+    const totalOnlineSites = s1.onlineSites + s2.onlineSites;
+    const totalDegradedSites = s1.degradedSites + s2.degradedSites;
+    const totalOfflineSites = s1.offlineSites + s2.offlineSites;
+    const totalOnlineDevices = s1.onlineDevices + s2.onlineDevices;
+    const totalOfflineDevices = s1.offlineDevices + s2.offlineDevices;
+    const totalDevices = s1.totalDevices + s2.totalDevices;
+
+    return {
+      s1,
+      s2,
+      combined: {
+        totalSites,
+        onlineSites: totalOnlineSites,
+        degradedSites: totalDegradedSites,
+        offlineSites: totalOfflineSites,
+        onlineDevices: totalOnlineDevices,
+        offlineDevices: totalOfflineDevices,
+        totalDevices,
+        siteHealthPct: totalSites > 0 ? Math.round(((totalOnlineSites + totalDegradedSites * 0.5) / totalSites) * 100) : 100,
+        deviceHealthPct: totalDevices > 0 ? Math.round((totalOnlineDevices / totalDevices) * 100) : 100,
+      },
+    };
+  }, [sites]);
+
+  // Chart datasets for visual analytics
+  const supplierComparisonChartData = useMemo(() => {
+    return [
+      {
+        name: "Supplier 1 (Schools / FOC)",
+        Online: supplierMetrics.s1.onlineSites,
+        Degraded: supplierMetrics.s1.degradedSites,
+        Offline: supplierMetrics.s1.offlineSites,
+        totalSites: supplierMetrics.s1.totalSites,
+      },
+      {
+        name: "Supplier 2 (LGUs / LEO)",
+        Online: supplierMetrics.s2.onlineSites,
+        Degraded: supplierMetrics.s2.degradedSites,
+        Offline: supplierMetrics.s2.offlineSites,
+        totalSites: supplierMetrics.s2.totalSites,
+      },
+    ];
+  }, [supplierMetrics]);
+
+  const sectorCapacityChartData = useMemo(() => {
+    const elem = sites.filter((s) => s.siteType === "PES");
+    const high = sites.filter((s) => s.siteType === "PHS");
+    const college = sites.filter((s) => s.siteType === "HEI-LUC");
+    const lgu = sites.filter((s) => s.siteType === "LGU-HALL");
+    const pc = sites.filter((s) => s.siteType === "PC" || s.siteType === "PFO");
+
+    return [
+      {
+        sector: "Elementary",
+        Sites: elem.length,
+        APs: elem.reduce((a, b) => a + (b.apCount || 0), 0),
+        Capacity: Math.round(elem.reduce((a, b) => a + (b.apCount || 0), 0) * 45),
+      },
+      {
+        sector: "High Schools",
+        Sites: high.length,
+        APs: high.reduce((a, b) => a + (b.apCount || 0), 0),
+        Capacity: Math.round(high.reduce((a, b) => a + (b.apCount || 0), 0) * 45),
+      },
+      {
+        sector: "Colleges / HEI",
+        Sites: college.length,
+        APs: college.reduce((a, b) => a + (b.apCount || 0), 0),
+        Capacity: Math.round(college.reduce((a, b) => a + (b.apCount || 0), 0) * 45),
+      },
+      {
+        sector: "LGU Halls",
+        Sites: lgu.length,
+        APs: lgu.reduce((a, b) => a + (b.apCount || 0), 0),
+        Capacity: Math.round(lgu.reduce((a, b) => a + (b.apCount || 0), 0) * 45),
+      },
+      {
+        sector: "Capitols/Offices",
+        Sites: pc.length,
+        APs: pc.reduce((a, b) => a + (b.apCount || 0), 0),
+        Capacity: Math.round(pc.reduce((a, b) => a + (b.apCount || 0), 0) * 45),
+      },
+    ];
+  }, [sites]);
+
   // Province list
   const provincesList = useMemo(() => {
     const set = new Set(sites.map((s) => s.province || "Albay").filter(Boolean));
@@ -199,9 +344,22 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
         (selectedSupplier === "supplier1" && (omadaSupplier.includes("supplier 1") || omadaSupplier === "supplier1")) ||
         (selectedSupplier === "supplier2" && (omadaSupplier.includes("supplier 2") || omadaSupplier === "supplier2"));
 
-      return matchesSearch && matchesType && matchesLink && matchesFund && matchesProvince && matchesMun && matchesSupplier;
+      const siteSt =
+        (s as any).siteOnlineStatus ||
+        (s.status === "Offline"
+          ? "Offline"
+          : ((s as any).offlineDevicesCount ?? 0) === 0 && ((s as any).onlineDevicesCount ?? 1) > 0
+          ? "Online"
+          : ((s as any).onlineDevicesCount ?? 0) > 0
+          ? "Degraded"
+          : "Offline");
+
+      const matchesOnlineStatus =
+        selectedOnlineStatus === "ALL" || siteSt === selectedOnlineStatus;
+
+      return matchesSearch && matchesType && matchesLink && matchesFund && matchesProvince && matchesMun && matchesSupplier && matchesOnlineStatus;
     });
-  }, [sites, searchQuery, selectedSiteType, selectedLinkType, selectedFundSource, selectedProvince, selectedMunicipality, selectedSupplier]);
+  }, [sites, searchQuery, selectedSiteType, selectedLinkType, selectedFundSource, selectedProvince, selectedMunicipality, selectedSupplier, selectedOnlineStatus]);
 
   // Municipal list for dropdown
   const municipalitiesList = useMemo(() => {
@@ -233,59 +391,116 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
   return (
     <div className="space-y-6">
       {/* Top Banner KPI Header */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
         {/* Total Operational Sites */}
-        <div className="bg-[#0C101A] border-t-2 border-t-blue-500 border-x border-b border-[#1A2235] rounded-xl p-4 relative overflow-hidden group hover:border-blue-500/50 transition-colors">
+        <div
+          onClick={() => {
+            setSelectedOnlineStatus("ALL");
+            setSelectedSupplier("ALL");
+          }}
+          className="bg-[#0C101A] border-t-2 border-t-blue-500 border-x border-b border-[#1A2235] rounded-xl p-3.5 relative overflow-hidden group hover:border-blue-500/50 transition-all cursor-pointer"
+        >
           <div className="flex items-center justify-between text-slate-400 mb-1">
-            <span className="text-xs font-bold uppercase tracking-wider">Total Sites</span>
+            <span className="text-[11px] font-bold uppercase tracking-wider">Total Sites</span>
             <Wifi className="w-4 h-4 text-blue-400" />
           </div>
           <div className="text-2xl font-bold font-mono text-white mt-1">{summary.totalSites}</div>
-          <p className="text-[11px] text-blue-400 mt-0.5 flex items-center gap-1 font-medium">
-            <CheckCircle2 className="w-3 h-3" /> 100% Operational
+          <p className="text-[10px] text-blue-400 mt-0.5 flex items-center gap-1 font-medium truncate font-mono">
+            S1: {supplierMetrics.s1.totalSites} | S2: {supplierMetrics.s2.totalSites}
+          </p>
+        </div>
+
+        {/* Live Online Sites */}
+        <div
+          onClick={() => {
+            setSelectedOnlineStatus(selectedOnlineStatus === "Online" ? "ALL" : "Online");
+          }}
+          className={`bg-[#0C101A] border-t-2 border-t-emerald-500 border-x border-b rounded-xl p-3.5 relative overflow-hidden group transition-all cursor-pointer ${
+            selectedOnlineStatus === "Online"
+              ? "border-emerald-500 bg-emerald-950/20 shadow-[0_0_12px_rgba(16,185,129,0.2)]"
+              : "border-[#1A2235] hover:border-emerald-500/50"
+          }`}
+        >
+          <div className="flex items-center justify-between text-slate-400 mb-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-300">Online Sites</span>
+            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+          </div>
+          <div className="text-2xl font-bold font-mono text-emerald-400 mt-1">{supplierMetrics.combined.onlineSites}</div>
+          <p className="text-[10px] text-emerald-400 mt-0.5 flex items-center gap-1 font-medium truncate font-mono">
+            S1: {supplierMetrics.s1.onlineSites} | S2: {supplierMetrics.s2.onlineSites}
+          </p>
+        </div>
+
+        {/* Degraded / Partial Sites */}
+        <div
+          onClick={() => {
+            setSelectedOnlineStatus(selectedOnlineStatus === "Degraded" ? "ALL" : "Degraded");
+          }}
+          className={`bg-[#0C101A] border-t-2 border-t-amber-500 border-x border-b rounded-xl p-3.5 relative overflow-hidden group transition-all cursor-pointer ${
+            selectedOnlineStatus === "Degraded"
+              ? "border-amber-500 bg-amber-950/20 shadow-[0_0_12px_rgba(245,158,11,0.2)]"
+              : "border-[#1A2235] hover:border-amber-500/50"
+          }`}
+        >
+          <div className="flex items-center justify-between text-slate-400 mb-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-amber-300">Degraded Sites</span>
+            <AlertTriangle className="w-4 h-4 text-amber-400" />
+          </div>
+          <div className="text-2xl font-bold font-mono text-amber-400 mt-1">{supplierMetrics.combined.degradedSites}</div>
+          <p className="text-[10px] text-amber-400 mt-0.5 flex items-center gap-1 font-medium truncate font-mono">
+            S1: {supplierMetrics.s1.degradedSites} | S2: {supplierMetrics.s2.degradedSites}
+          </p>
+        </div>
+
+        {/* Live Offline Sites */}
+        <div
+          onClick={() => {
+            setSelectedOnlineStatus(selectedOnlineStatus === "Offline" ? "ALL" : "Offline");
+          }}
+          className={`bg-[#0C101A] border-t-2 border-t-red-500 border-x border-b rounded-xl p-3.5 relative overflow-hidden group transition-all cursor-pointer ${
+            selectedOnlineStatus === "Offline"
+              ? "border-red-500 bg-red-950/20 shadow-[0_0_12px_rgba(239,68,68,0.2)]"
+              : "border-[#1A2235] hover:border-red-500/50"
+          }`}
+        >
+          <div className="flex items-center justify-between text-slate-400 mb-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-red-300">Offline Sites</span>
+            <XCircle className="w-4 h-4 text-red-400" />
+          </div>
+          <div className="text-2xl font-bold font-mono text-red-400 mt-1">{supplierMetrics.combined.offlineSites}</div>
+          <p className="text-[10px] text-red-400 mt-0.5 flex items-center gap-1 font-medium truncate font-mono">
+            S1: {supplierMetrics.s1.offlineSites} | S2: {supplierMetrics.s2.offlineSites}
           </p>
         </div>
 
         {/* Total Access Points (APs) */}
-        <div className="bg-[#0C101A] border-t-2 border-t-emerald-500 border-x border-b border-[#1A2235] rounded-xl p-4 relative overflow-hidden group hover:border-emerald-500/50 transition-colors">
+        <div className="bg-[#0C101A] border-t-2 border-t-cyan-500 border-x border-b border-[#1A2235] rounded-xl p-3.5 relative overflow-hidden group hover:border-cyan-500/50 transition-colors">
           <div className="flex items-center justify-between text-slate-400 mb-1">
-            <span className="text-xs font-bold uppercase tracking-wider">Access Points</span>
-            <Radio className="w-4 h-4 text-emerald-400" />
+            <span className="text-[11px] font-bold uppercase tracking-wider">Access Points</span>
+            <Radio className="w-4 h-4 text-cyan-400" />
           </div>
           <div className="text-2xl font-bold font-mono text-white mt-1">{summary.totalAccessPoints}</div>
-          <p className="text-[11px] text-emerald-400 mt-0.5 flex items-center gap-1 font-medium">
-            Avg. {summary.totalSites > 0 ? (summary.totalAccessPoints / summary.totalSites).toFixed(1) : 0} APs / Site
+          <p className="text-[10px] text-cyan-400 mt-0.5 flex items-center gap-1 font-medium truncate font-mono">
+            {supplierMetrics.combined.onlineDevices} Online / {supplierMetrics.combined.offlineDevices} Off
           </p>
         </div>
 
         {/* Fiber Optic (FOC) */}
-        <div className="bg-[#0C101A] border-t-2 border-t-teal-500 border-x border-b border-[#1A2235] rounded-xl p-4 relative overflow-hidden group hover:border-teal-500/50 transition-colors">
+        <div className="bg-[#0C101A] border-t-2 border-t-teal-500 border-x border-b border-[#1A2235] rounded-xl p-3.5 relative overflow-hidden group hover:border-teal-500/50 transition-colors">
           <div className="flex items-center justify-between text-slate-400 mb-1">
-            <span className="text-xs font-bold uppercase tracking-wider">Fiber (FOC)</span>
+            <span className="text-[11px] font-bold uppercase tracking-wider">Fiber (FOC)</span>
             <Cable className="w-4 h-4 text-teal-400" />
           </div>
           <div className="text-2xl font-bold font-mono text-white mt-1">{summary.focSitesCount}</div>
-          <p className="text-[11px] text-teal-400 mt-0.5 font-medium">
+          <p className="text-[10px] text-teal-400 mt-0.5 font-medium truncate">
             {summary.totalSites > 0 ? Math.round((summary.focSitesCount / summary.totalSites) * 100) : 0}% Terrestrial Fiber
           </p>
         </div>
 
-        {/* Satellite (LEO) */}
-        <div className="bg-[#0C101A] border-t-2 border-t-sky-500 border-x border-b border-[#1A2235] rounded-xl p-4 relative overflow-hidden group hover:border-sky-500/50 transition-colors">
-          <div className="flex items-center justify-between text-slate-400 mb-1">
-            <span className="text-xs font-bold uppercase tracking-wider">Satellite (LEO)</span>
-            <Satellite className="w-4 h-4 text-sky-400" />
-          </div>
-          <div className="text-2xl font-bold font-mono text-white mt-1">{summary.leoSitesCount}</div>
-          <p className="text-[11px] text-sky-400 mt-0.5 font-medium">
-            {summary.totalSites > 0 ? Math.round((summary.leoSitesCount / summary.totalSites) * 100) : 0}% Starlink / LEO Dish
-          </p>
-        </div>
-
         {/* Educational Beneficiaries */}
-        <div className="bg-[#0C101A] border-t-2 border-t-amber-500 border-x border-b border-[#1A2235] rounded-xl p-4 relative overflow-hidden group hover:border-amber-500/50 transition-colors">
+        <div className="bg-[#0C101A] border-t-2 border-t-amber-500 border-x border-b border-[#1A2235] rounded-xl p-3.5 relative overflow-hidden group hover:border-amber-500/50 transition-colors">
           <div className="flex items-center justify-between text-slate-400 mb-1">
-            <span className="text-xs font-bold uppercase tracking-wider">Schools & HEIs</span>
+            <span className="text-[11px] font-bold uppercase tracking-wider">Schools & HEIs</span>
             <GraduationCap className="w-4 h-4 text-amber-400" />
           </div>
           <div className="text-2xl font-bold font-mono text-white mt-1">
@@ -294,19 +509,19 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
               return t.includes("school") || t.includes("college") || t.includes("hei") || t === "pes" || t === "phs" || t === "hei-luc";
             }).length}
           </div>
-          <p className="text-[11px] text-amber-400 mt-0.5 font-medium">
-            Elementary, High Schools & Colleges
+          <p className="text-[10px] text-amber-400 mt-0.5 font-medium truncate">
+            Schools & Colleges
           </p>
         </div>
 
         {/* Municipal Reach */}
-        <div className="bg-[#0C101A] border-t-2 border-t-purple-500 border-x border-b border-[#1A2235] rounded-xl p-4 relative overflow-hidden group hover:border-purple-500/50 transition-colors">
+        <div className="bg-[#0C101A] border-t-2 border-t-purple-500 border-x border-b border-[#1A2235] rounded-xl p-3.5 relative overflow-hidden group hover:border-purple-500/50 transition-colors">
           <div className="flex items-center justify-between text-slate-400 mb-1">
-            <span className="text-xs font-bold uppercase tracking-wider">Municipalities</span>
+            <span className="text-[11px] font-bold uppercase tracking-wider">Municipalities</span>
             <MapPin className="w-4 h-4 text-purple-400" />
           </div>
           <div className="text-2xl font-bold font-mono text-white mt-1">{summary.totalMunicipalities}</div>
-          <p className="text-[11px] text-purple-400 mt-0.5 font-medium">
+          <p className="text-[10px] text-purple-400 mt-0.5 font-medium truncate">
             Across Albay Province
           </p>
         </div>
@@ -398,6 +613,241 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
       {/* Tab: Executive Visual Analytics */}
       {activeTab === "overview" && (
         <div className="space-y-6">
+          {/* Omada Live NOC Telemetry & Supplier Health (Online vs Offline) */}
+          <div className="bg-[#0C101A] border border-[#1A2235] rounded-xl p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-3 border-b border-[#1A2235]">
+              <div>
+                <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-emerald-400" />
+                  Omada Live Northbound NOC Telemetry: Online & Offline Health
+                </h4>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Real-time synchronization across Supplier 1 and Supplier 2 Cloud Controllers
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  {supplierMetrics.combined.deviceHealthPct}% Device Availability
+                </span>
+              </div>
+            </div>
+
+            {/* Supplier Cards Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Supplier 1 NOC Card */}
+              <div className="bg-[#07090E] border border-blue-500/30 hover:border-blue-500/60 transition-all rounded-xl p-4 flex flex-col justify-between space-y-3 relative overflow-hidden">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                      <Server className="w-4 h-4" />
+                    </span>
+                    <div>
+                      <h5 className="font-bold text-white text-xs">Supplier 1</h5>
+                      <p className="text-[10px] text-blue-400 font-mono">PHS / HEI / Schools</p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-mono font-bold text-white px-2 py-0.5 rounded bg-blue-500/20 border border-blue-500/40">
+                    {supplierMetrics.s1.totalSites} Sites
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 text-center pt-2 border-t border-[#1A2235]">
+                  <div className="p-2 rounded bg-[#0C101A] border border-emerald-500/30">
+                    <span className="text-[10px] text-emerald-400 block font-semibold flex items-center justify-center gap-1">
+                      <CheckCircle className="w-3 h-3" /> Online
+                    </span>
+                    <span className="text-sm font-bold font-mono text-white">{supplierMetrics.s1.onlineSites}</span>
+                  </div>
+                  <div className="p-2 rounded bg-[#0C101A] border border-amber-500/30">
+                    <span className="text-[10px] text-amber-400 block font-semibold flex items-center justify-center gap-1">
+                      <AlertTriangle className="w-3 h-3" /> Degraded
+                    </span>
+                    <span className="text-sm font-bold font-mono text-white">{supplierMetrics.s1.degradedSites}</span>
+                  </div>
+                  <div className="p-2 rounded bg-[#0C101A] border border-red-500/30">
+                    <span className="text-[10px] text-red-400 block font-semibold flex items-center justify-center gap-1">
+                      <XCircle className="w-3 h-3" /> Offline
+                    </span>
+                    <span className="text-sm font-bold font-mono text-white">{supplierMetrics.s1.offlineSites}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 pt-1 text-xs">
+                  <div className="flex justify-between text-[11px] font-mono">
+                    <span className="text-slate-400">Hardware APs / Gateways:</span>
+                    <span className="text-white font-bold">
+                      <span className="text-emerald-400">{supplierMetrics.s1.onlineDevices} Online</span> / {supplierMetrics.s1.totalDevices} Total ({supplierMetrics.s1.offlineDevices} Off)
+                    </span>
+                  </div>
+                  <div className="w-full bg-[#1A2235] h-1.5 rounded-full overflow-hidden">
+                    <div
+                      className="bg-blue-500 h-full rounded-full transition-all duration-500"
+                      style={{
+                        width: `${
+                          supplierMetrics.s1.totalDevices > 0
+                            ? Math.round((supplierMetrics.s1.onlineDevices / supplierMetrics.s1.totalDevices) * 100)
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => {
+                    setSelectedSupplier("supplier1");
+                    setActiveTab("directory");
+                  }}
+                  className="w-full py-1.5 rounded bg-blue-600/10 hover:bg-blue-600 text-blue-300 hover:text-white transition-colors text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  Filter Supplier 1 Sites ({supplierMetrics.s1.totalSites})
+                </button>
+              </div>
+
+              {/* Supplier 2 NOC Card */}
+              <div className="bg-[#07090E] border border-emerald-500/30 hover:border-emerald-500/60 transition-all rounded-xl p-4 flex flex-col justify-between space-y-3 relative overflow-hidden">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                      <Server className="w-4 h-4" />
+                    </span>
+                    <div>
+                      <h5 className="font-bold text-white text-xs">Supplier 2</h5>
+                      <p className="text-[10px] text-emerald-400 font-mono">LGU Halls & PICS-MUN</p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-mono font-bold text-white px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40">
+                    {supplierMetrics.s2.totalSites} Sites
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 text-center pt-2 border-t border-[#1A2235]">
+                  <div className="p-2 rounded bg-[#0C101A] border border-emerald-500/30">
+                    <span className="text-[10px] text-emerald-400 block font-semibold flex items-center justify-center gap-1">
+                      <CheckCircle className="w-3 h-3" /> Online
+                    </span>
+                    <span className="text-sm font-bold font-mono text-white">{supplierMetrics.s2.onlineSites}</span>
+                  </div>
+                  <div className="p-2 rounded bg-[#0C101A] border border-amber-500/30">
+                    <span className="text-[10px] text-amber-400 block font-semibold flex items-center justify-center gap-1">
+                      <AlertTriangle className="w-3 h-3" /> Degraded
+                    </span>
+                    <span className="text-sm font-bold font-mono text-white">{supplierMetrics.s2.degradedSites}</span>
+                  </div>
+                  <div className="p-2 rounded bg-[#0C101A] border border-red-500/30">
+                    <span className="text-[10px] text-red-400 block font-semibold flex items-center justify-center gap-1">
+                      <XCircle className="w-3 h-3" /> Offline
+                    </span>
+                    <span className="text-sm font-bold font-mono text-white">{supplierMetrics.s2.offlineSites}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 pt-1 text-xs">
+                  <div className="flex justify-between text-[11px] font-mono">
+                    <span className="text-slate-400">Hardware APs / Gateways:</span>
+                    <span className="text-white font-bold">
+                      <span className="text-emerald-400">{supplierMetrics.s2.onlineDevices} Online</span> / {supplierMetrics.s2.totalDevices} Total ({supplierMetrics.s2.offlineDevices} Off)
+                    </span>
+                  </div>
+                  <div className="w-full bg-[#1A2235] h-1.5 rounded-full overflow-hidden">
+                    <div
+                      className="bg-emerald-500 h-full rounded-full transition-all duration-500"
+                      style={{
+                        width: `${
+                          supplierMetrics.s2.totalDevices > 0
+                            ? Math.round((supplierMetrics.s2.onlineDevices / supplierMetrics.s2.totalDevices) * 100)
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => {
+                    setSelectedSupplier("supplier2");
+                    setActiveTab("directory");
+                  }}
+                  className="w-full py-1.5 rounded bg-emerald-600/10 hover:bg-emerald-600 text-emerald-300 hover:text-white transition-colors text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  Filter Supplier 2 Sites ({supplierMetrics.s2.totalSites})
+                </button>
+              </div>
+
+              {/* Combined Province-Wide Health Card */}
+              <div className="bg-[#07090E] border border-purple-500/30 hover:border-purple-500/60 transition-all rounded-xl p-4 flex flex-col justify-between space-y-3 relative overflow-hidden">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1.5 rounded-lg bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                      <Signal className="w-4 h-4" />
+                    </span>
+                    <div>
+                      <h5 className="font-bold text-white text-xs">Combined Network</h5>
+                      <p className="text-[10px] text-purple-400 font-mono">Albay Free Wi-Fi 4 All</p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-mono font-bold text-white px-2 py-0.5 rounded bg-purple-500/20 border border-purple-500/40">
+                    {supplierMetrics.combined.totalSites} Total Sites
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 text-center pt-2 border-t border-[#1A2235]">
+                  <div className="p-2 rounded bg-[#0C101A] border border-emerald-500/30">
+                    <span className="text-[10px] text-emerald-400 block font-semibold flex items-center justify-center gap-1">
+                      <CheckCircle className="w-3 h-3" /> Online
+                    </span>
+                    <span className="text-sm font-bold font-mono text-white">{supplierMetrics.combined.onlineSites}</span>
+                  </div>
+                  <div className="p-2 rounded bg-[#0C101A] border border-amber-500/30">
+                    <span className="text-[10px] text-amber-400 block font-semibold flex items-center justify-center gap-1">
+                      <AlertTriangle className="w-3 h-3" /> Partial
+                    </span>
+                    <span className="text-sm font-bold font-mono text-white">{supplierMetrics.combined.degradedSites}</span>
+                  </div>
+                  <div className="p-2 rounded bg-[#0C101A] border border-red-500/30">
+                    <span className="text-[10px] text-red-400 block font-semibold flex items-center justify-center gap-1">
+                      <XCircle className="w-3 h-3" /> Offline
+                    </span>
+                    <span className="text-sm font-bold font-mono text-white">{supplierMetrics.combined.offlineSites}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 pt-1 text-xs">
+                  <div className="flex justify-between text-[11px] font-mono">
+                    <span className="text-slate-400">Total Deployed Hardware:</span>
+                    <span className="text-white font-bold">
+                      <span className="text-emerald-400">{supplierMetrics.combined.onlineDevices} Online</span> / {supplierMetrics.combined.totalDevices} Total ({supplierMetrics.combined.offlineDevices} Off)
+                    </span>
+                  </div>
+                  <div className="w-full bg-[#1A2235] h-1.5 rounded-full overflow-hidden">
+                    <div
+                      className="bg-purple-500 h-full rounded-full transition-all duration-500"
+                      style={{
+                        width: `${
+                          supplierMetrics.combined.totalDevices > 0
+                            ? Math.round((supplierMetrics.combined.onlineDevices / supplierMetrics.combined.totalDevices) * 100)
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => {
+                    setSelectedSupplier("ALL");
+                    setSelectedOnlineStatus("ALL");
+                    setActiveTab("directory");
+                  }}
+                  className="w-full py-1.5 rounded bg-purple-600/10 hover:bg-purple-600 text-purple-300 hover:text-white transition-colors text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  View Full Network Directory ({supplierMetrics.combined.totalSites})
+                </button>
+              </div>
+            </div>
+          </div>
+
           {/* Grid of Analytical Visualizations */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             {/* Donut Chart: Site Type & Facility Breakdown */}
@@ -569,6 +1019,102 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
             </div>
           </div>
 
+          {/* New 2-Column Visual Charts: Supplier Health & Sector Capacity */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            {/* Chart 1: Fleet Operational Health Comparison (Supplier 1 vs Supplier 2) */}
+            <div className="lg:col-span-6 bg-[#0C101A] border border-[#1A2235] rounded-xl p-5 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                    <BarChart3 className="w-4 h-4 text-emerald-400" />
+                    Supplier Fleet NOC Health & Telemetry State
+                  </h4>
+                  <span className="text-[11px] text-slate-400 font-mono">
+                    {supplierMetrics.combined.deviceHealthPct}% Availability
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Comparison of Online, Degraded, and Offline site counts between Supplier 1 and Supplier 2
+                </p>
+              </div>
+
+              <div className="h-64 my-3">
+                <ResponsiveContainer width="100%" height="100%">
+                  <RechartsBarChart data={supplierComparisonChartData} margin={{ top: 15, right: 15, left: -10, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1A2235" />
+                    <XAxis dataKey="name" stroke="#94A3B8" fontSize={11} tickLine={false} />
+                    <YAxis stroke="#94A3B8" fontSize={11} tickLine={false} axisLine={false} />
+                    <RechartsTooltip
+                      contentStyle={{
+                        backgroundColor: "#07090E",
+                        borderColor: "#1A2235",
+                        borderRadius: "8px",
+                        fontSize: "12px",
+                      }}
+                    />
+                    <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }} />
+                    <Bar dataKey="Online" fill="#10B981" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="Degraded" fill="#F59E0B" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="Offline" fill="#EF4444" radius={[4, 4, 0, 0]} />
+                  </RechartsBarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[#1A2235] text-[11px] text-slate-400 font-mono">
+                <div>Supplier 1: <strong className="text-emerald-400">{supplierMetrics.s1.onlineSites} Online</strong>, <strong className="text-red-400">{supplierMetrics.s1.offlineSites} Off</strong></div>
+                <div>Supplier 2: <strong className="text-emerald-400">{supplierMetrics.s2.onlineSites} Online</strong>, <strong className="text-red-400">{supplierMetrics.s2.offlineSites} Off</strong></div>
+              </div>
+            </div>
+
+            {/* Chart 2: Access Point Capacity & Citizen Reach by Sector */}
+            <div className="lg:col-span-6 bg-[#0C101A] border border-[#1A2235] rounded-xl p-5 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                    <TrendingUp className="w-4 h-4 text-blue-400" />
+                    Access Points & Concurrent Citizen Capacity Reach
+                  </h4>
+                  <span className="text-[11px] text-blue-400 font-mono">
+                    ~{(summary.totalApsCount * 45).toLocaleString()} Peak Users
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Access point hardware density and estimated concurrent user throughput per institution
+                </p>
+              </div>
+
+              <div className="h-64 my-3">
+                <ResponsiveContainer width="100%" height="100%">
+                  <RechartsBarChart data={sectorCapacityChartData} margin={{ top: 15, right: 15, left: -10, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1A2235" />
+                    <XAxis dataKey="sector" stroke="#94A3B8" fontSize={10} tickLine={false} />
+                    <YAxis stroke="#94A3B8" fontSize={11} tickLine={false} axisLine={false} />
+                    <RechartsTooltip
+                      contentStyle={{
+                        backgroundColor: "#07090E",
+                        borderColor: "#1A2235",
+                        borderRadius: "8px",
+                        fontSize: "12px",
+                      }}
+                      formatter={(val: number, name: string) => [
+                        name === "Capacity" ? `~${val.toLocaleString()} Users` : `${val}`,
+                        name === "Capacity" ? "Est. Concurrent Capacity" : name === "APs" ? "Access Points" : "Total Sites"
+                      ]}
+                    />
+                    <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "8px" }} />
+                    <Bar dataKey="Sites" fill="#6366F1" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="APs" fill="#06B6D4" radius={[4, 4, 0, 0]} />
+                  </RechartsBarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="flex items-center justify-between pt-2 border-t border-[#1A2235] text-[11px] text-slate-400 font-mono">
+                <span>Schools & Colleges: <strong className="text-white">{summary.pesCount + summary.phsCount + summary.heiCount} Sites</strong></span>
+                <span>Total Network APs: <strong className="text-cyan-400">{summary.totalApsCount} APs</strong></span>
+              </div>
+            </div>
+          </div>
+
           {/* Municipal Density Bar Chart */}
           <div className="bg-[#0C101A] border border-[#1A2235] rounded-xl p-5">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-4">
@@ -707,10 +1253,10 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
 
             {/* Filter Pills */}
             <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[#1A2235]/60">
-              {/* Supplier & Facility Filters */}
-              <div className="flex flex-wrap items-center gap-1.5">
+              {/* Supplier & Status Filters */}
+              <div className="flex flex-wrap items-center gap-2">
                 {/* Supplier Filter Group */}
-                <div className="flex items-center gap-1 mr-2 pr-2 border-r border-[#1A2235]">
+                <div className="flex items-center gap-1 mr-1 pr-2 border-r border-[#1A2235]">
                   <span className="text-[11px] font-semibold text-slate-400 mr-1 flex items-center gap-1">
                     <Server className="w-3 h-3 text-blue-400" /> Controller:
                   </span>
@@ -733,7 +1279,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                     }`}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
-                    Supplier 1 ({sites.filter((s) => ((s as any).omadaSupplier || "").includes("Supplier 1")).length})
+                    Supplier 1 ({supplierMetrics.s1.totalSites})
                   </button>
                   <button
                     onClick={() => setSelectedSupplier(selectedSupplier === "supplier2" ? "ALL" : "supplier2")}
@@ -744,47 +1290,99 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                     }`}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                    Supplier 2 ({sites.filter((s) => ((s as any).omadaSupplier || "").includes("Supplier 2")).length})
+                    Supplier 2 ({supplierMetrics.s2.totalSites})
+                  </button>
+                </div>
+
+                {/* Status Filter Group (Online / Degraded / Offline) */}
+                <div className="flex items-center gap-1 mr-1 pr-2 border-r border-[#1A2235]">
+                  <span className="text-[11px] font-semibold text-slate-400 mr-1 flex items-center gap-1">
+                    <Activity className="w-3 h-3 text-emerald-400" /> State:
+                  </span>
+                  <button
+                    onClick={() => setSelectedOnlineStatus("ALL")}
+                    className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-all ${
+                      selectedOnlineStatus === "ALL"
+                        ? "bg-white text-slate-900"
+                        : "bg-[#07090E] text-slate-400 border border-[#1A2235] hover:text-white"
+                    }`}
+                  >
+                    All
+                  </button>
+                  <button
+                    onClick={() => setSelectedOnlineStatus(selectedOnlineStatus === "Online" ? "ALL" : "Online")}
+                    className={`px-2 py-0.5 rounded text-[10px] font-semibold border transition-all flex items-center gap-1 ${
+                      selectedOnlineStatus === "Online"
+                        ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/60 shadow-[0_0_8px_rgba(16,185,129,0.3)]"
+                        : "bg-[#07090E] text-slate-400 border-[#1A2235] hover:text-white"
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    Online ({supplierMetrics.combined.onlineSites})
+                  </button>
+                  <button
+                    onClick={() => setSelectedOnlineStatus(selectedOnlineStatus === "Degraded" ? "ALL" : "Degraded")}
+                    className={`px-2 py-0.5 rounded text-[10px] font-semibold border transition-all flex items-center gap-1 ${
+                      selectedOnlineStatus === "Degraded"
+                        ? "bg-amber-500/20 text-amber-300 border-amber-500/60 shadow-[0_0_8px_rgba(245,158,11,0.3)]"
+                        : "bg-[#07090E] text-slate-400 border-[#1A2235] hover:text-white"
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                    Degraded ({supplierMetrics.combined.degradedSites})
+                  </button>
+                  <button
+                    onClick={() => setSelectedOnlineStatus(selectedOnlineStatus === "Offline" ? "ALL" : "Offline")}
+                    className={`px-2 py-0.5 rounded text-[10px] font-semibold border transition-all flex items-center gap-1 ${
+                      selectedOnlineStatus === "Offline"
+                        ? "bg-red-500/20 text-red-300 border-red-500/60 shadow-[0_0_8px_rgba(239,68,68,0.3)]"
+                        : "bg-[#07090E] text-slate-400 border-[#1A2235] hover:text-white"
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                    Offline ({supplierMetrics.combined.offlineSites})
                   </button>
                 </div>
 
                 {/* Facility Category Filters */}
-                <span className="text-[11px] font-semibold text-slate-400 mr-1 flex items-center gap-1">
-                  <Filter className="w-3 h-3" /> Facility:
-                </span>
-                <button
-                  onClick={() => setSelectedSiteType("ALL")}
-                  className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-all ${
-                    selectedSiteType === "ALL"
-                      ? "bg-white text-slate-900"
-                      : "bg-[#07090E] text-slate-400 border border-[#1A2235] hover:text-white"
-                  }`}
-                >
-                  All
-                </button>
-                {(["LGU-HALL", "PES", "PHS", "HEI-LUC", "PC", "PFO"] as SiteType[]).map((st) => {
-                  const cfg = SITE_TYPE_CONFIG[st];
-                  const count = sites.filter((s) => getSiteTypeConfig(s.siteType).shortLabel === cfg.shortLabel).length;
-                  const isActive = selectedSiteType === st;
+                <div className="flex items-center gap-1">
+                  <span className="text-[11px] font-semibold text-slate-400 mr-1 flex items-center gap-1">
+                    <Filter className="w-3 h-3" /> Facility:
+                  </span>
+                  <button
+                    onClick={() => setSelectedSiteType("ALL")}
+                    className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-all ${
+                      selectedSiteType === "ALL"
+                        ? "bg-white text-slate-900"
+                        : "bg-[#07090E] text-slate-400 border border-[#1A2235] hover:text-white"
+                    }`}
+                  >
+                    All
+                  </button>
+                  {(["LGU-HALL", "PES", "PHS", "HEI-LUC", "PC", "PFO"] as SiteType[]).map((st) => {
+                    const cfg = SITE_TYPE_CONFIG[st];
+                    const count = sites.filter((s) => getSiteTypeConfig(s.siteType).shortLabel === cfg.shortLabel).length;
+                    const isActive = selectedSiteType === st;
 
-                  return (
-                    <button
-                      key={st}
-                      onClick={() => setSelectedSiteType(isActive ? "ALL" : st)}
-                      className={`px-2 py-0.5 rounded text-[10px] font-semibold border transition-all flex items-center gap-1 ${
-                        isActive ? "ring-1 ring-white/50" : "hover:border-slate-600 opacity-80 hover:opacity-100"
-                      }`}
-                      style={{
-                        backgroundColor: isActive ? cfg.bgColor : "#07090E",
-                        color: isActive ? cfg.textColor : "#94A3B8",
-                        borderColor: isActive ? cfg.borderColor : "#1A2235",
-                      }}
-                    >
-                      <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: cfg.color }} />
-                      {cfg.shortLabel} ({count})
-                    </button>
-                  );
-                })}
+                    return (
+                      <button
+                        key={st}
+                        onClick={() => setSelectedSiteType(isActive ? "ALL" : st)}
+                        className={`px-2 py-0.5 rounded text-[10px] font-semibold border transition-all flex items-center gap-1 ${
+                          isActive ? "ring-1 ring-white/50" : "hover:border-slate-600 opacity-80 hover:opacity-100"
+                        }`}
+                        style={{
+                          backgroundColor: isActive ? cfg.bgColor : "#07090E",
+                          color: isActive ? cfg.textColor : "#94A3B8",
+                          borderColor: isActive ? cfg.borderColor : "#1A2235",
+                        }}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: cfg.color }} />
+                        {cfg.shortLabel} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               {/* Secondary Filters: Link Type, Municipality, and API Highlight Toggle */}
@@ -867,7 +1465,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                       )}
                     </div>
                   </th>
-                  <th className="px-4 py-3.5 text-center font-semibold">AP Count</th>
+                  <th className="px-4 py-3.5 text-center font-semibold">AP Status & Count</th>
                   <th className="px-4 py-3.5 font-semibold">
                     <div className="flex items-center gap-1.5">
                       <span>Omada Controller & IP</span>
@@ -893,13 +1491,30 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                   const omadaIp = (site as any).omadaPublicIp;
                   const isApiSynced = Boolean(omadaSupplier || omadaRouter || omadaIp || (site as any).omadaSiteId);
 
+                  const onlineDev = (site as any).onlineDevicesCount ?? (site.status === "Offline" ? 0 : site.apCount || 1);
+                  const offlineDev = (site as any).offlineDevicesCount ?? (site.status === "Offline" ? (site.apCount || 1) : 0);
+                  const totalDev = (site as any).totalDevicesCount ?? (onlineDev + offlineDev);
+                  const siteSt =
+                    (site as any).siteOnlineStatus ||
+                    (site.status === "Offline"
+                      ? "Offline"
+                      : offlineDev === 0 && onlineDev > 0
+                      ? "Online"
+                      : onlineDev > 0
+                      ? "Degraded"
+                      : "Offline");
+
                   return (
                     <tr
                       key={site.id}
                       className={`transition-colors group ${
                         isApiSynced && highlightApiData
                           ? `bg-[#0B1120] hover:bg-[#111A30] border-l-4 ${
-                              omadaSupplier?.includes("1") ? "border-l-blue-500" : "border-l-emerald-400"
+                              siteSt === "Online"
+                                ? "border-l-emerald-500"
+                                : siteSt === "Degraded"
+                                ? "border-l-amber-500"
+                                : "border-l-red-500"
                             }`
                           : "hover:bg-[#111520]"
                       }`}
@@ -990,16 +1605,31 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                       </td>
 
                       <td className="px-4 py-3.5 text-center">
-                        <span
-                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-mono font-bold border ${
-                            isApiSynced && highlightApiData
-                              ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300 shadow-[0_0_8px_rgba(16,185,129,0.3)]"
-                              : "bg-[#141B2D] border-[#1E293B] text-emerald-400"
-                          }`}
-                        >
-                          <Radio className="w-3 h-3 text-emerald-400" />
-                          <span>{site.apCount} APs</span>
-                        </span>
+                        <div className="flex flex-col items-center gap-1">
+                          <span
+                            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-mono font-bold border ${
+                              siteSt === "Online"
+                                ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300 shadow-[0_0_8px_rgba(16,185,129,0.3)]"
+                                : siteSt === "Degraded"
+                                ? "bg-amber-500/20 border-amber-500/40 text-amber-300 shadow-[0_0_8px_rgba(245,158,11,0.3)]"
+                                : "bg-red-500/20 border-red-500/40 text-red-300 shadow-[0_0_8px_rgba(239,68,68,0.3)]"
+                            }`}
+                          >
+                            <span
+                              className={`w-1.5 h-1.5 rounded-full ${
+                                siteSt === "Online"
+                                  ? "bg-emerald-400"
+                                  : siteSt === "Degraded"
+                                  ? "bg-amber-400"
+                                  : "bg-red-400"
+                              }`}
+                            />
+                            <span>{siteSt}</span>
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-400">
+                            {onlineDev}/{totalDev} APs Online
+                          </span>
+                        </div>
                       </td>
 
                       <td className="px-4 py-3.5">
@@ -1065,6 +1695,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                   onClick={() => {
                     setSearchQuery("");
                     setSelectedSupplier("ALL");
+                    setSelectedOnlineStatus("ALL");
                     setSelectedSiteType("ALL");
                     setSelectedLinkType("ALL");
                     setSelectedMunicipality("ALL");
@@ -1088,29 +1719,75 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
         >
           <div className="space-y-4 text-sm">
             {/* Status Header Badge */}
-            <div className="p-4 rounded-xl border border-blue-500/30 bg-[#07090E] flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-blue-500/10 text-blue-400">
-                  <Wifi className="w-6 h-6" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h4 className="font-bold text-base text-white">{selectedSite.locationName}</h4>
-                    {(selectedSite as any).omadaSupplier && (
-                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-blue-500/15 text-blue-300 border border-blue-500/30">
-                        {(selectedSite as any).omadaSupplier}
-                      </span>
-                    )}
+            {(() => {
+              const onlineDev = (selectedSite as any).onlineDevicesCount ?? (selectedSite.status === "Offline" ? 0 : selectedSite.apCount || 1);
+              const offlineDev = (selectedSite as any).offlineDevicesCount ?? (selectedSite.status === "Offline" ? (selectedSite.apCount || 1) : 0);
+              const totalDev = (selectedSite as any).totalDevicesCount ?? (onlineDev + offlineDev);
+              const siteSt =
+                (selectedSite as any).siteOnlineStatus ||
+                (selectedSite.status === "Offline"
+                  ? "Offline"
+                  : offlineDev === 0 && onlineDev > 0
+                  ? "Online"
+                  : onlineDev > 0
+                  ? "Degraded"
+                  : "Offline");
+
+              return (
+                <div className="p-4 rounded-xl border border-[#1A2235] bg-[#07090E] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                      <Wifi className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h4 className="font-bold text-base text-white">{selectedSite.locationName}</h4>
+                        {(selectedSite as any).omadaSupplier && (
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                              (selectedSite as any).omadaSupplier.includes("1")
+                                ? "bg-blue-500/15 text-blue-300 border-blue-500/30"
+                                : "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                            }`}
+                          >
+                            {(selectedSite as any).omadaSupplier}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {selectedSite.barangay}, {selectedSite.municipality}, {selectedSite.province}
+                      </p>
+                    </div>
                   </div>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    {selectedSite.barangay}, {selectedSite.municipality}, {selectedSite.province}
-                  </p>
+
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`px-3 py-1 rounded-full text-xs font-bold border uppercase tracking-wider flex items-center gap-1.5 ${
+                        siteSt === "Online"
+                          ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300 shadow-[0_0_10px_rgba(16,185,129,0.25)]"
+                          : siteSt === "Degraded"
+                          ? "bg-amber-500/15 border-amber-500/40 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.25)]"
+                          : "bg-red-500/15 border-red-500/40 text-red-300 shadow-[0_0_10px_rgba(239,68,68,0.25)]"
+                      }`}
+                    >
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          siteSt === "Online"
+                            ? "bg-emerald-400"
+                            : siteSt === "Degraded"
+                            ? "bg-amber-400"
+                            : "bg-red-400"
+                        }`}
+                      />
+                      <span>{siteSt}</span>
+                    </span>
+                    <span className="text-xs font-mono font-bold text-slate-300 px-2 py-1 rounded bg-[#0C101A] border border-[#1A2235]">
+                      {onlineDev}/{totalDev} Devices Up
+                    </span>
+                  </div>
                 </div>
-              </div>
-              <span className="px-3 py-1 rounded-full text-xs font-bold border border-emerald-500/40 bg-emerald-500/15 text-emerald-400 uppercase tracking-wider">
-                {selectedSite.status}
-              </span>
-            </div>
+              );
+            })()}
 
             {/* Live Omada Controller Hardware Specifications */}
             {((selectedSite as any).omadaRouterModel || (selectedSite as any).omadaApModels || (selectedSite as any).omadaPublicIp) && (

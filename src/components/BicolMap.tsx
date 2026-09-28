@@ -142,13 +142,65 @@ const KNOWN_COORDINATES: Record<string, [number, number]> = {
   "lgu iriga": [13.4189, 123.4194],
 
   // ==========================================
-  // 4. CATANDUANES - VIRAC
+  // 4. CATANDUANES - ALL MUNICIPALITIES & HUBS
   // ==========================================
   "virac municipal hall": [13.5833, 124.2333],
   "lgu virac": [13.5833, 124.2333],
   "nbp virac": [13.5845, 124.2340],
   "virac disaster risk office": [13.5850, 124.2350],
   "dtc catanduanes": [13.5840, 124.2335],
+  "catanduanes state university": [13.5900, 124.2370],
+  "catanduanes provincial capitol": [13.5840, 124.2350],
+  
+  // Pandan (North)
+  "pandan municipal hall": [14.0500, 124.1667],
+  "lgu pandan": [14.0500, 124.1667],
+  "pandan national high school": [14.0520, 124.1680],
+
+  // Caramoran (North-West)
+  "caramoran municipal hall": [13.9000, 124.1333],
+  "lgu caramoran": [13.9000, 124.1333],
+  "caramoran rural development high school": [13.9020, 124.1350],
+
+  // Bagamanoc (North-East)
+  "bagamanoc municipal hall": [13.9333, 124.2833],
+  "lgu bagamanoc": [13.9333, 124.2833],
+  "bagamanoc rural development high school": [13.9350, 124.2850],
+
+  // Panganiban / Payo (North-East)
+  "panganiban municipal hall": [13.9000, 124.3000],
+  "lgu panganiban": [13.9000, 124.3000],
+  "panganiban national high school": [13.9020, 124.3020],
+
+  // Viga (North-East)
+  "viga municipal hall": [13.8833, 124.3000],
+  "lgu viga": [13.8833, 124.3000],
+  "viga rural development high school": [13.8850, 124.3020],
+
+  // Gigmoto (East Coast)
+  "gigmoto municipal hall": [13.7833, 124.3833],
+  "lgu gigmoto": [13.7833, 124.3833],
+  "gigmoto national high school": [13.7850, 124.3850],
+
+  // Baras (East Coast - Puraran)
+  "baras municipal hall": [13.6833, 124.3667],
+  "lgu baras": [13.6833, 124.3667],
+  "puraran surf beach hub": [13.6700, 124.3900],
+
+  // San Andres / Calolbon (West Coast)
+  "san andres municipal hall": [13.6000, 124.1000],
+  "lgu san andres": [13.6000, 124.1000],
+  "san andres vocational school": [13.6020, 124.1020],
+
+  // San Miguel (Central)
+  "san miguel municipal hall": [13.6500, 124.3000],
+  "lgu san miguel": [13.6500, 124.3000],
+  "san miguel national high school": [13.6520, 124.3020],
+
+  // Bato (South-East)
+  "bato municipal hall": [13.6000, 124.2833],
+  "lgu bato": [13.6000, 124.2833],
+  "bato national high school": [13.6020, 124.2850],
 
   // ==========================================
   // 5. SORSOGON - SORSOGON CITY
@@ -167,21 +219,70 @@ const KNOWN_COORDINATES: Record<string, [number, number]> = {
   "masbate port disaster sub-hub": [12.3710, 123.6260],
 };
 
+// Helper to resolve municipality coordinates from MUNICIPALITY_COORDINATES
+function findMunicipalityCoordinates(municipality?: string, province?: string): [number, number] | null {
+  if (!municipality && !province) return null;
+  
+  const munClean = (municipality || "")
+    .toLowerCase()
+    .replace(/^city of\s+/i, "")
+    .replace(/\s+city$/i, "")
+    .replace(/^municipality of\s+/i, "")
+    .trim()
+    .replace(/[^a-z0-9]/g, "-");
+
+  const provClean = (province || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]/g, "-");
+
+  if (munClean) {
+    // 1. Check exact prov-mun key
+    if (provClean) {
+      const fullKey = `${provClean}-${munClean}`;
+      if (MUNICIPALITY_COORDINATES[fullKey]) {
+        return MUNICIPALITY_COORDINATES[fullKey];
+      }
+    }
+
+    // 2. Search anywhere in MUNICIPALITY_COORDINATES
+    for (const [key, coords] of Object.entries(MUNICIPALITY_COORDINATES)) {
+      const keyMun = key.split("-").slice(1).join("-");
+      if (keyMun === munClean || key.includes(munClean) || munClean.includes(keyMun)) {
+        return coords;
+      }
+    }
+  }
+
+  // 3. Fallback to province center
+  if (province && PROVINCE_CENTERS[province]) {
+    return PROVINCE_CENTERS[province].center;
+  }
+
+  return null;
+}
+
 // Calculate precise coordinate for any project site
-function getSiteCoordinates(site: MapSite, baseCoords: [number, number]): [number, number] {
-  if (site.latitude && site.longitude && !isNaN(site.latitude) && !isNaN(site.longitude)) {
+function getSiteCoordinates(site: MapSite, baseCoords?: [number, number]): [number, number] {
+  if (site.latitude && site.longitude && !isNaN(site.latitude) && !isNaN(site.longitude) && (site.latitude !== 0 || site.longitude !== 0)) {
     return [site.latitude, site.longitude];
   }
-  const key = `${site.siteName} ${site.barangay || ""} ${site.details || ""}`.toLowerCase();
+  const key = `${site.siteName || ""} ${site.barangay || ""} ${site.municipality || ""} ${site.details || ""}`.toLowerCase();
   for (const [name, coords] of Object.entries(KNOWN_COORDINATES)) {
     if (key.includes(name)) return coords;
   }
+
+  // Look up municipality from dictionary
+  const munCoords = findMunicipalityCoordinates(site.municipality, site.province);
+  const targetBase = munCoords || baseCoords || [13.1391, 123.7438];
+
   // If it's an eLGU Hall, place it right at the town center coordinate
   if (site.projectId === "elgu") {
-    return baseCoords;
+    return targetBase;
   }
+
   // Deterministic distributed coordinate offset around municipality center
-  const str = `${site.id}-${site.siteName}-${site.barangay || ""}`;
+  const str = `${site.id}-${site.siteName || ""}-${site.barangay || ""}`;
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     hash = (hash << 5) - hash + str.charCodeAt(i);
@@ -190,8 +291,8 @@ function getSiteCoordinates(site: MapSite, baseCoords: [number, number]): [numbe
   const angle = ((Math.abs(hash) % 360) * Math.PI) / 180;
   const dist = 0.003 + ((Math.abs(hash >> 2) % 12) / 1000); // tightly grouped 300m - 1.5km radius
   return [
-    baseCoords[0] + Math.sin(angle) * dist,
-    baseCoords[1] + Math.cos(angle) * dist * 1.15,
+    targetBase[0] + Math.sin(angle) * dist,
+    targetBase[1] + Math.cos(angle) * dist * 1.15,
   ];
 }
 
@@ -338,12 +439,12 @@ export function BicolMap() {
   const regionalClusters = useMemo(() => {
     if (!allMapSites || allMapSites.length === 0) return [];
 
-    // 1. Geocode all sites
+    // 1. Geocode all sites using GPS coordinates or municipality dictionary
     const geocoded = allMapSites.map((s) => {
       let lat = s.latitude;
       let lng = s.longitude;
-      if (!lat || !lng || isNaN(lat) || isNaN(lng)) {
-        const coords = getSiteCoordinates(s, [13.1391, 123.7438]);
+      if (!lat || !lng || isNaN(lat) || isNaN(lng) || (lat === 0 && lng === 0)) {
+        const coords = getSiteCoordinates(s);
         lat = coords[0];
         lng = coords[1];
       }
@@ -371,7 +472,15 @@ export function BicolMap() {
         const d = Math.hypot(c.lat - site.lat, c.lng - site.lng);
         if (d < radius && d < minDist) {
           minDist = d;
+        }
+      }
+
+      // Check if matching cluster exists
+      for (const c of clusters) {
+        const d = Math.hypot(c.lat - site.lat, c.lng - site.lng);
+        if (d < radius && (site.province ? c.province.toLowerCase() === site.province.toLowerCase() : true)) {
           best = c;
+          break;
         }
       }
 
@@ -460,11 +569,15 @@ export function BicolMap() {
   // Sites scattered in overview map when a cluster is clicked
   const scatteredOverviewSites = useMemo(() => {
     if (!activeCluster) return [];
-    const base = [activeCluster.lat, activeCluster.lng] as [number, number];
-    return activeCluster.sites.map((site: any) => ({
-      ...site,
-      coords: getSiteCoordinates(site, base),
-    }));
+    return activeCluster.sites.map((site: any) => {
+      const siteCoords: [number, number] = (site.lat && site.lng && !isNaN(site.lat) && !isNaN(site.lng))
+        ? [site.lat, site.lng]
+        : getSiteCoordinates(site, [activeCluster.lat, activeCluster.lng]);
+      return {
+        ...site,
+        coords: siteCoords,
+      };
+    });
   }, [activeCluster]);
 
   const filteredScatteredOverviewSites = useMemo(() => {
@@ -476,12 +589,23 @@ export function BicolMap() {
   // Center & zoom calculation for overview map
   const overviewCenterCoords = useMemo<[number, number]>(() => {
     if (overviewMode === "scattered" && activeCluster) {
+      if (activeCluster.province?.toLowerCase() === "catanduanes" || activeCluster.name?.toLowerCase().includes("catanduanes")) {
+        return [13.80, 124.23];
+      }
       return [activeCluster.lat, activeCluster.lng];
     }
     return [13.45, 123.35];
   }, [overviewMode, activeCluster]);
 
-  const overviewZoomLevel = overviewMode === "scattered" ? 13 : 8;
+  const overviewZoomLevel = useMemo(() => {
+    if (overviewMode === "scattered") {
+      if (activeCluster?.province?.toLowerCase() === "catanduanes" || activeCluster?.name?.toLowerCase().includes("catanduanes")) {
+        return 10;
+      }
+      return 12;
+    }
+    return 8;
+  }, [overviewMode, activeCluster]);
 
   // Center & zoom for full-screen modal
   const mapCenterCoords = useMemo<[number, number]>(() => {

@@ -44,6 +44,8 @@ export interface DtrStorageItem {
   totalHoursRendered: number;
   undertimeHours: number;
   undertimeMinutes: number;
+  lateMinutes?: number;
+  lateHours?: number;
   status: "Submitted" | "Verified" | "Approved" | "For Revision";
   submittedDate: string;
   pdfFileName: string;

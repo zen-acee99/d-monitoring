@@ -1,11 +1,16 @@
 import React, { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Home, Users, Activity, Download, Calendar, CreditCard, Settings, X, MapPin, Box, Database, ShieldAlert, Radio, Server, CheckSquare, FileText, Clock, Link as LinkIcon, Lock, LogOut } from "lucide-react";
+import {
+  Home, Users, Activity, Download, Calendar, CreditCard, Settings, X, MapPin, Box, Database,
+  ShieldAlert, Radio, Server, CheckSquare, FileText, Clock, Link as LinkIcon, Lock, LogOut,
+  Sparkles, Users2, Building2, ChevronDown, ChevronRight
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getCurrentUser, setCurrentUser, hasModuleAccess, AUTH_EVENT, refreshCurrentUser, refreshSystemModules, getCachedSystemModules } from "@/services/authStore";
 import { UserRecord } from "@/data/userStore";
 import { signOutGoogle } from "@/services/firebaseAuth";
 import { SystemModule } from "@/services/api";
+import { getDtrStorage, syncDtrStorageWithBackend } from "@/data/dtrStorage";
 
 interface NavItem {
   name: string;
@@ -44,6 +49,24 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
   const navigate = useNavigate();
   const [currentUser, setCurrentUserState] = useState<UserRecord | null>(() => getCurrentUser());
   const [systemModules, setSystemModules] = useState<SystemModule[]>(() => getCachedSystemModules());
+  const [isDtrExpanded, setIsDtrExpanded] = useState<boolean>(() => location.pathname.startsWith("/dtr"));
+  const [dtrCounts, setDtrCounts] = useState<{ hrm: number; tod: number; provincial: number }>({
+    hrm: 0,
+    tod: 0,
+    provincial: 0,
+  });
+
+  const updateDtrCounts = () => {
+    try {
+      const records = getDtrStorage();
+      const hrm = records.filter((r) => r.module === "HRM").length;
+      const tod = records.filter((r) => r.module === "TOD").length;
+      const provincial = records.filter((r) => r.module === "PROVINCIAL").length;
+      setDtrCounts({ hrm, tod, provincial });
+    } catch {
+      setDtrCounts({ hrm: 0, tod: 0, provincial: 0 });
+    }
+  };
 
   const handleLogout = async () => {
     try {
@@ -60,6 +83,9 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
       if (list && list.length > 0) setSystemModules(list);
     });
 
+    updateDtrCounts();
+    syncDtrStorageWithBackend().then(() => updateDtrCounts()).catch(() => {});
+
     const handleAuthChange = () => {
       setCurrentUserState(getCurrentUser());
     };
@@ -67,18 +93,34 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
       setSystemModules(getCachedSystemModules());
       setCurrentUserState(getCurrentUser());
     };
+    const handleStorageUpdate = () => {
+      updateDtrCounts();
+    };
 
     window.addEventListener(AUTH_EVENT, handleAuthChange);
     window.addEventListener("dict_users_updated", handleAuthChange);
     window.addEventListener("dict_modules_updated", handleModulesChange);
+    window.addEventListener("dict_dtr_storage_updated", handleStorageUpdate);
     window.addEventListener("storage", handleAuthChange);
+    window.addEventListener("storage", handleStorageUpdate);
     return () => {
       window.removeEventListener(AUTH_EVENT, handleAuthChange);
       window.removeEventListener("dict_users_updated", handleAuthChange);
       window.removeEventListener("dict_modules_updated", handleModulesChange);
+      window.removeEventListener("dict_dtr_storage_updated", handleStorageUpdate);
       window.removeEventListener("storage", handleAuthChange);
+      window.removeEventListener("storage", handleStorageUpdate);
     };
   }, []);
+
+  // Auto expand DTR when navigating to /dtr
+  useEffect(() => {
+    if (location.pathname.startsWith("/dtr")) {
+      setIsDtrExpanded(true);
+    }
+  }, [location.pathname]);
+
+  const currentTab = new URLSearchParams(location.search).get("tab") || "generator";
 
   return (
     <aside
@@ -107,8 +149,171 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
       <div className="flex-1 overflow-y-auto custom-scrollbar py-3 px-3 space-y-5 min-h-0">
         <div className="space-y-1">
           {mainNav.map((item) => {
+            const isDtrItem = item.code === "MOD_DTR";
             const isActive = location.pathname === item.path;
             const hasAccess = hasModuleAccess(currentUser, item.code);
+
+            if (isDtrItem) {
+              return (
+                <div key={item.name} className="space-y-1">
+                  <div
+                    onClick={() => {
+                      if (!hasAccess) return;
+                      setIsDtrExpanded((prev) => !prev);
+                      if (!location.pathname.startsWith("/dtr")) {
+                        navigate("/dtr");
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        if (!hasAccess) return;
+                        setIsDtrExpanded((prev) => !prev);
+                        if (!location.pathname.startsWith("/dtr")) {
+                          navigate("/dtr");
+                        }
+                      }
+                    }}
+                    className={cn(
+                      "flex items-center justify-between rounded-lg px-3.5 py-2.5 text-sm font-medium transition-all duration-200 relative select-none group cursor-pointer",
+                      !hasAccess
+                        ? "text-slate-500/60 opacity-50 cursor-not-allowed hover:bg-transparent border border-transparent"
+                        : isActive
+                        ? "bg-gradient-to-r from-blue-600/20 to-transparent text-blue-400 border border-blue-500/30"
+                        : "text-slate-400 hover:bg-white/5 hover:text-white border border-transparent"
+                    )}
+                  >
+                    {isActive && hasAccess && (
+                      <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-blue-500 rounded-r-full shadow-[0_0_10px_rgba(59,130,246,0.8)]" />
+                    )}
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      <item.icon className="h-[18px] w-[18px] shrink-0" />
+                      <span className="truncate font-semibold">{item.name}</span>
+                    </div>
+                    {hasAccess ? (
+                      <div className="p-1 rounded-md text-slate-400 group-hover:text-white transition-colors">
+                        <ChevronDown
+                          className={cn(
+                            "w-4 h-4 transition-transform duration-200",
+                            isDtrExpanded ? "rotate-0 text-blue-400" : "-rotate-90 text-slate-400"
+                          )}
+                        />
+                      </div>
+                    ) : (
+                      <Lock className="w-3.5 h-3.5 ml-auto text-amber-500/80 shrink-0" />
+                    )}
+                  </div>
+
+                  {/* Sub-modules under DTR Generator */}
+                  {hasAccess && isDtrExpanded && (
+                    <div className="pl-3 pr-1 py-1 space-y-1 border-l-2 border-[#1E293B] ml-4 animate-in fade-in slide-in-from-top-1 duration-150">
+                      {/* Sub-module 1: Generator */}
+                      <Link
+                        to="/dtr?tab=generator"
+                        onClick={() => setIsOpen(false)}
+                        className={cn(
+                          "flex items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-all duration-150 select-none",
+                          isActive && currentTab === "generator"
+                            ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 shadow-sm"
+                            : "text-slate-400 hover:bg-white/5 hover:text-slate-200 border border-transparent"
+                        )}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Sparkles className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <span className="truncate">CS Form 48</span>
+                        </div>
+                        <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono">
+                          Builder
+                        </span>
+                      </Link>
+
+                      {/* Sub-module 2: HRM - module */}
+                      <Link
+                        to="/dtr?tab=hrm"
+                        onClick={() => setIsOpen(false)}
+                        className={cn(
+                          "flex items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-all duration-150 select-none",
+                          isActive && currentTab === "hrm"
+                            ? "bg-blue-500/20 text-blue-400 border border-blue-500/40 shadow-sm"
+                            : "text-slate-400 hover:bg-white/5 hover:text-slate-200 border border-transparent"
+                        )}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Users2 className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                          <span className="truncate">HRM - module</span>
+                        </div>
+                        <span
+                          className={cn(
+                            "px-1.5 py-0.5 rounded-full text-[10px] font-mono",
+                            isActive && currentTab === "hrm"
+                              ? "bg-blue-500/30 text-white font-bold"
+                              : "bg-slate-800 text-slate-400"
+                          )}
+                        >
+                          {dtrCounts.hrm}
+                        </span>
+                      </Link>
+
+                      {/* Sub-module 3: TOD - module */}
+                      <Link
+                        to="/dtr?tab=tod"
+                        onClick={() => setIsOpen(false)}
+                        className={cn(
+                          "flex items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-all duration-150 select-none",
+                          isActive && currentTab === "tod"
+                            ? "bg-purple-500/20 text-purple-400 border border-purple-500/40 shadow-sm"
+                            : "text-slate-400 hover:bg-white/5 hover:text-slate-200 border border-transparent"
+                        )}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Building2 className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                          <span className="truncate">TOD - module</span>
+                        </div>
+                        <span
+                          className={cn(
+                            "px-1.5 py-0.5 rounded-full text-[10px] font-mono",
+                            isActive && currentTab === "tod"
+                              ? "bg-purple-500/30 text-white font-bold"
+                              : "bg-slate-800 text-slate-400"
+                          )}
+                        >
+                          {dtrCounts.tod}
+                        </span>
+                      </Link>
+
+                      {/* Sub-module 4: Provincial - module */}
+                      <Link
+                        to="/dtr?tab=provincial"
+                        onClick={() => setIsOpen(false)}
+                        className={cn(
+                          "flex items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-all duration-150 select-none",
+                          isActive && currentTab === "provincial"
+                            ? "bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm"
+                            : "text-slate-400 hover:bg-white/5 hover:text-slate-200 border border-transparent"
+                        )}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <MapPin className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                          <span className="truncate">Provincial</span>
+                        </div>
+                        <span
+                          className={cn(
+                            "px-1.5 py-0.5 rounded-full text-[10px] font-mono",
+                            isActive && currentTab === "provincial"
+                              ? "bg-amber-500/30 text-white font-bold"
+                              : "bg-slate-800 text-slate-400"
+                          )}
+                        >
+                          {dtrCounts.provincial}
+                        </span>
+                      </Link>
+                    </div>
+                  )}
+                </div>
+              );
+            }
+
             return (
               <Link
                 key={item.name}
@@ -235,8 +440,4 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
       </div>
     </aside>
   );
-}
-
-function ChevronDown(props: any) {
-  return <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="m6 9 6 6 6-6"/></svg>
 }

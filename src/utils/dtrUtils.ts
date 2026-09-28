@@ -79,15 +79,195 @@ export function createEmptyDtrRows(): DtrRow[] {
   }));
 }
 
-// Auto-fill Weekends & Holidays for a given Month and Year
+export interface DtrSchedulePolicy {
+  workDays?: string[]; // e.g. ["Monday", "Tuesday", "Wednesday", "Thursday"]
+  hoursPerDay?: number; // e.g. 8 or 10
+  standardAmArrival?: string; // e.g. "08:00"
+  standardAmDeparture?: string; // e.g. "12:00"
+  standardPmArrival?: string; // e.g. "13:00"
+  standardPmDeparture?: string; // e.g. "17:00" or "19:00"
+  noWorkDayLabel?: string; // e.g. "NO WORK: 4-DAY WORKWEEK"
+  gracePeriodMinutes?: number;
+}
+
+export const DAY_NAMES_OF_WEEK = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+// Helper to convert time strings ("08:15", "8:15 am", "01:00 pm", "13:00") into minutes from midnight
+export function timeStringToMinutes(timeStr: string): number | null {
+  if (!timeStr || !timeStr.trim()) return null;
+  const cleaned = timeStr.trim().replace(/\s+/g, " ");
+  const match = cleaned.match(/^(\d{1,2}):(\d{2})(?:\s*(am|pm|AM|PM))?$/i);
+  if (!match) return null;
+
+  let hours = parseInt(match[1], 10);
+  const minutes = parseInt(match[2], 10);
+  const ampm = match[3]?.toLowerCase();
+
+  if (ampm === "pm" && hours < 12) hours += 12;
+  if (ampm === "am" && hours === 12) hours = 0;
+
+  return hours * 60 + minutes;
+}
+
+// Calculate Late arrival in minutes for a specific DTR row
+export function calculateRowLateMinutes(row: DtrRow, schedule?: DtrSchedulePolicy): number {
+  if (row.isCustomLabel) return 0;
+  let lateMins = 0;
+
+  const targetAmIn = timeStringToMinutes(schedule?.standardAmArrival || "08:00") || 480;
+  const targetPmIn = timeStringToMinutes(schedule?.standardPmArrival || "13:00") || 780;
+  const grace = schedule?.gracePeriodMinutes || 0;
+
+  // Morning arrival late
+  if (row.amArrival) {
+    const amIn = timeStringToMinutes(row.amArrival);
+    if (amIn !== null && amIn > targetAmIn + grace) {
+      lateMins += amIn - targetAmIn;
+    }
+  }
+
+  // Afternoon arrival late
+  if (row.pmArrival) {
+    const pmIn = timeStringToMinutes(row.pmArrival);
+    if (pmIn !== null && pmIn > targetPmIn + grace) {
+      lateMins += pmIn - targetPmIn;
+    }
+  }
+
+  return lateMins;
+}
+
+// Calculate Undertime (missing working time or early departure) in hours and minutes for a DTR row
+export function calculateRowUndertime(
+  row: DtrRow,
+  schedule?: DtrSchedulePolicy
+): { hours: number; minutes: number } {
+  if (row.isCustomLabel) return { hours: 0, minutes: 0 };
+
+  // If user already typed manual undertime into the cell
+  const manualH = parseInt(row.undertimeHours, 10) || 0;
+  const manualM = parseInt(row.undertimeMinutes, 10) || 0;
+  if (manualH > 0 || manualM > 0) {
+    return { hours: manualH, minutes: manualM };
+  }
+
+  // Calculate based on punches vs required daily hours
+  const targetDailyHours = schedule?.hoursPerDay || 8;
+  const targetDailyMins = targetDailyHours * 60;
+
+  let renderedMins = 0;
+  if (row.amArrival && row.amDeparture) {
+    const amIn = timeStringToMinutes(row.amArrival);
+    const amOut = timeStringToMinutes(row.amDeparture);
+    if (amIn !== null && amOut !== null && amOut > amIn) {
+      renderedMins += amOut - amIn;
+    }
+  }
+
+  if (row.pmArrival && row.pmDeparture) {
+    const pmIn = timeStringToMinutes(row.pmArrival);
+    const pmOut = timeStringToMinutes(row.pmDeparture);
+    if (pmIn !== null && pmOut !== null && pmOut > pmIn) {
+      renderedMins += pmOut - pmIn;
+    }
+  }
+
+  if (renderedMins > 0 && renderedMins < targetDailyMins) {
+    const diff = targetDailyMins - renderedMins;
+    return {
+      hours: Math.floor(diff / 60),
+      minutes: diff % 60,
+    };
+  }
+
+  return { hours: 0, minutes: 0 };
+}
+
+// Aggregate full DTR metrics for a set of rows
+export function calculateDtrMetrics(rows: DtrRow[], schedule?: DtrSchedulePolicy) {
+  let totalDaysRendered = 0;
+  let totalRenderedMinutes = 0;
+  let totalLateMinutes = 0;
+  let lateDaysCount = 0;
+  let totalUndertimeMinutes = 0;
+  let undertimeDaysCount = 0;
+
+  const targetDailyHours = schedule?.hoursPerDay || 8;
+
+  for (const row of rows) {
+    if (row.isCustomLabel) continue;
+
+    const hasPunch = Boolean(row.amArrival || row.amDeparture || row.pmArrival || row.pmDeparture);
+    if (!hasPunch) continue;
+
+    totalDaysRendered++;
+
+    // Rendered minutes
+    let dayRendered = 0;
+    if (row.amArrival && row.amDeparture) {
+      const amIn = timeStringToMinutes(row.amArrival);
+      const amOut = timeStringToMinutes(row.amDeparture);
+      if (amIn !== null && amOut !== null && amOut > amIn) dayRendered += (amOut - amIn);
+    }
+    if (row.pmArrival && row.pmDeparture) {
+      const pmIn = timeStringToMinutes(row.pmArrival);
+      const pmOut = timeStringToMinutes(row.pmDeparture);
+      if (pmIn !== null && pmOut !== null && pmOut > pmIn) dayRendered += (pmOut - pmIn);
+    }
+    if (dayRendered === 0 && row.amArrival) {
+      dayRendered = targetDailyHours * 60;
+    }
+    totalRenderedMinutes += dayRendered;
+
+    // Late
+    const late = calculateRowLateMinutes(row, schedule);
+    if (late > 0) {
+      totalLateMinutes += late;
+      lateDaysCount++;
+    }
+
+    // Undertime
+    const ut = calculateRowUndertime(row, schedule);
+    const utMins = ut.hours * 60 + ut.minutes;
+    if (utMins > 0) {
+      totalUndertimeMinutes += utMins;
+      undertimeDaysCount++;
+    }
+  }
+
+  const totalHoursRendered = Math.round(totalRenderedMinutes / 60);
+  const undertimeHours = Math.floor(totalUndertimeMinutes / 60);
+  const undertimeMinutes = totalUndertimeMinutes % 60;
+  const lateHours = Math.floor(totalLateMinutes / 60);
+  const lateMinutesRem = totalLateMinutes % 60;
+
+  return {
+    totalDaysRendered,
+    totalHoursRendered,
+    lateMinutes: totalLateMinutes,
+    lateHours,
+    lateMinutesRem,
+    lateDaysCount,
+    undertimeHours,
+    undertimeMinutes,
+    totalUndertimeMinutes,
+    undertimeDaysCount,
+  };
+}
+
+// Auto-fill Weekends, Holidays, and Configured Non-Working Days for a given Month and Year
 export function autoFillWeekendsAndHolidays(
   currentRows: DtrRow[],
   monthIndex: number,
   year: number,
-  scope: "full" | "first-half" | "second-half"
+  scope: "full" | "first-half" | "second-half",
+  schedule?: DtrSchedulePolicy
 ): DtrRow[] {
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
   const holidays = PHILIPPINE_HOLIDAYS_BY_MONTH[monthIndex] || {};
+
+  const allowedWorkDays = schedule?.workDays || ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+  const noWorkLabel = schedule?.noWorkDayLabel || "NO WORK: 4-DAY WORKWEEK";
 
   return currentRows.map((row) => {
     const day = row.day;
@@ -112,6 +292,7 @@ export function autoFillWeekendsAndHolidays(
 
     const date = new Date(year, monthIndex, day);
     const dayOfWeek = date.getDay(); // 0 = Sun, 6 = Sat
+    const dayName = DAY_NAMES_OF_WEEK[dayOfWeek];
 
     // Check if holiday
     if (holidays[day]) {
@@ -158,8 +339,30 @@ export function autoFillWeekendsAndHolidays(
       };
     }
 
-    // Regular weekday: if previously tagged as weekend/holiday, clear label
-    if (row.isCustomLabel && (row.customLabel === "SATURDAY" || row.customLabel === "SUNDAY" || row.customLabel?.startsWith("HOLIDAY"))) {
+    // Check if day of week is a scheduled non-working day (e.g. Friday in 4-day workweek)
+    if (!allowedWorkDays.includes(dayName)) {
+      return {
+        ...row,
+        isCustomLabel: true,
+        customLabel: noWorkLabel,
+        amArrival: "",
+        amDeparture: "",
+        pmArrival: "",
+        pmDeparture: "",
+        undertimeHours: "",
+        undertimeMinutes: ""
+      };
+    }
+
+    // Regular weekday: if previously tagged as weekend/holiday/no-work, clear label
+    if (
+      row.isCustomLabel &&
+      (row.customLabel === "SATURDAY" ||
+        row.customLabel === "SUNDAY" ||
+        row.customLabel?.startsWith("HOLIDAY") ||
+        row.customLabel?.includes("4-DAY") ||
+        row.customLabel?.includes("NO WORK"))
+    ) {
       return {
         ...row,
         isCustomLabel: false,
