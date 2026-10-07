@@ -154,6 +154,16 @@ export const DEFAULT_MODULES = [
     route_path: "/calendar",
     is_active: 1,
   },
+  {
+    id: "mod-signing",
+    code: "MOD_SIGNING",
+    name: "Signing Workspace & Digital Approval",
+    shortName: "Signing Workspace",
+    category: "Core Tool",
+    description: "Multi-document signing pipeline, counter-signatures, AR/DTR batch validation, and PNPKI .p12 approval.",
+    route_path: "/signing-workspace",
+    is_active: 1,
+  },
   // Management Modules
   {
     id: "mod-project-data",
@@ -502,14 +512,11 @@ export async function initDatabase() {
     );
   `);
 
-  // Seed default modules if module table is empty
-  const existingModules = await db.execute("SELECT COUNT(*) as count FROM module");
-  const modulesCount = Number(existingModules.rows[0]?.count ?? 0);
-  if (modulesCount === 0) {
-    console.log("Seeding default system modules into Turso module table...");
-    for (const m of DEFAULT_MODULES) {
+  // Ensure all default system modules are registered in the Turso module table
+  for (const m of DEFAULT_MODULES) {
+    try {
       await db.execute({
-        sql: `INSERT OR REPLACE INTO module (id, code, name, shortName, category, description, route_path, is_active)
+        sql: `INSERT OR IGNORE INTO module (id, code, name, shortName, category, description, route_path, is_active)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           m.id,
@@ -522,7 +529,7 @@ export async function initDatabase() {
           m.is_active,
         ],
       });
-    }
+    } catch {}
   }
 
   // Cleanup deprecated modules

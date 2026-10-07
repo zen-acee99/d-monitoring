@@ -31,7 +31,8 @@ import {
   Layers,
   Sparkles,
   ToggleLeft,
-  ToggleRight
+  ToggleRight,
+  FileSignature
 } from "lucide-react";
 import { PROJECTS } from "@/config/projects";
 import { UserRecord, UserRole } from "@/data/userStore";
@@ -303,6 +304,7 @@ const getModuleIcon = (code: string, id?: string) => {
   if (c.includes("IIDB")) return <BarChart3 className="w-4 h-4 text-yellow-400" />;
   if (c.includes("DTR")) return <FileText className="w-4 h-4 text-emerald-400" />;
   if (c.includes("CALENDAR")) return <Calendar className="w-4 h-4 text-indigo-400" />;
+  if (c.includes("SIGNING")) return <FileSignature className="w-4 h-4 text-violet-400" />;
   if (c.includes("ADMIN")) return <Settings className="w-4 h-4 text-purple-400" />;
   if (c.includes("PROJECT_DATA") || c.includes("DATA")) return <FolderKanban className="w-4 h-4 text-amber-400" />;
   return <Layers className="w-4 h-4 text-slate-400" />;
@@ -483,6 +485,15 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
             category: "Core Tool",
             is_active: true,
             route_path: "/calendar",
+          },
+          {
+            id: "signing-workspace",
+            code: "MOD_SIGNING",
+            name: "Signing Workspace & Digital Approval",
+            shortName: "Signing Workspace",
+            category: "Core Tool",
+            is_active: true,
+            route_path: "/signing-workspace",
           },
           {
             id: "admin",

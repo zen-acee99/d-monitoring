@@ -73,6 +73,7 @@ export const ALL_SYSTEM_MODULES = [
   { code: "MOD_OVERVIEW", id: "overview" },
   { code: "MOD_DTR", id: "dtr" },
   { code: "MOD_CALENDAR", id: "calendar" },
+  { code: "MOD_SIGNING", id: "signing-workspace" },
   { code: "MOD_GECS", id: "gecs" },
   { code: "MOD_FREEWIFI", id: "freewifi" },
   { code: "MOD_EGOVPH", id: "egovph" },
