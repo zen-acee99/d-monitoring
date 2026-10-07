@@ -1161,41 +1161,14 @@ export function DtrStorageView({
                       </div>
                     </td>
 
-                    {/* Attendance & Compliance (Late / Undertime / Hours) */}
-                    <td className="px-5 py-4 space-y-1.5">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {/* Late Badge */}
-                        {item.hasLate ? (
-                          <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-amber-500/15 border border-amber-500/30 text-amber-300 flex items-center gap-1">
-                            <AlertTriangle className="w-3 h-3 text-amber-400" />
-                            {item.lateMinutes} min late
-                          </span>
-                        ) : (
-                          <span className="px-2 py-0.5 rounded-lg text-[10px] font-semibold bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center gap-1">
-                            <Check className="w-3 h-3 text-emerald-400" />
-                            On-time
-                          </span>
-                        )}
-
-                        {/* Undertime Badge */}
-                        {item.hasUndertime ? (
-                          <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-rose-500/15 border border-rose-500/30 text-rose-300 flex items-center gap-1">
-                            <Clock3 className="w-3 h-3 text-rose-400" />
-                            {item.undertimeHours}h {item.undertimeMinutes}m undertime
-                          </span>
-                        ) : (
-                          <span className="px-2 py-0.5 rounded-lg text-[10px] font-semibold bg-blue-500/10 border border-blue-500/20 text-blue-300">
-                            Complete
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-2 text-[10px] text-slate-400">
-                        <span className="font-mono font-bold text-slate-300">
+                    {/* Attendance & Compliance (Rendered Hours & Days) */}
+                    <td className="px-5 py-4">
+                      <div className="flex items-center gap-2 text-[11px] text-slate-300">
+                        <span className="font-mono font-bold text-slate-200">
                           {item.totalHoursRendered} hrs rendered
                         </span>
-                        <span>•</span>
-                        <span>{item.totalDaysRendered || 0} days active</span>
+                        <span className="text-slate-500">•</span>
+                        <span className="text-slate-400">{item.totalDaysRendered || 0} days active</span>
                       </div>
                     </td>
 

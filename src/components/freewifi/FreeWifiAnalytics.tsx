@@ -59,7 +59,7 @@ import {
   getLinkTypeConfig,
 } from "@/data/freewifiData";
 import { projectApi } from "@/services/api";
-import { omadaApi, OmadaOverview, OmadaSyncResult } from "@/services/omadaApi";
+import { omadaApi, OmadaOverview, OmadaSyncResult, OmadaConfig } from "@/services/omadaApi";
 import { Modal } from "@/components/ui/modal";
 import { FreeWifiReportModal } from "./FreeWifiReportModal";
 
@@ -68,6 +68,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [omadaOverview, setOmadaOverview] = useState<OmadaOverview | null>(null);
+  const [omadaConfig, setOmadaConfig] = useState<OmadaConfig | null>(null);
   const [selectedSupplier, setSelectedSupplier] = useState<string>("ALL");
   const [selectedOnlineStatus, setSelectedOnlineStatus] = useState<string>("ALL");
   const [highlightApiData, setHighlightApiData] = useState<boolean>(true);
@@ -81,6 +82,9 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
     });
     omadaApi.getOverview().then((ov) => {
       if (ov) setOmadaOverview(ov);
+    });
+    omadaApi.getConfig().then((cfg) => {
+      if (cfg) setOmadaConfig(cfg);
     });
   };
 
@@ -149,6 +153,9 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
   const [selectedMunicipality, setSelectedMunicipality] = useState<string>("ALL");
   const [selectedSite, setSelectedSite] = useState<FreeWifiSite | null>(null);
 
+  const supplier1Name = omadaConfig?.supplier1?.name || "Supplier 1";
+  const supplier2Name = omadaConfig?.supplier2?.name || "Supplier 2";
+
   // Compute analytics
   const summary = useMemo(() => getFreeWifiSummary(sites), [sites]);
   const siteTypeData = useMemo(() => getSiteTypeDistribution(sites), [sites]);
@@ -157,7 +164,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
   // Compute live Supplier 1 vs Supplier 2 Online/Offline metrics
   const supplierMetrics = useMemo(() => {
     const s1 = {
-      name: "Supplier 1 (PHS / HEI / Public Schools)",
+      name: `${supplier1Name} (PHS / HEI / Public Schools)`,
       totalSites: 0,
       onlineSites: 0,
       degradedSites: 0,
@@ -167,7 +174,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
       totalDevices: 0,
     };
     const s2 = {
-      name: "Supplier 2 (LGU Halls / PICS-MUN)",
+      name: `${supplier2Name} (LGU Halls / PICS-MUN)`,
       totalSites: 0,
       onlineSites: 0,
       degradedSites: 0,
@@ -237,21 +244,21 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
   const supplierComparisonChartData = useMemo(() => {
     return [
       {
-        name: "Supplier 1 (Schools / FOC)",
+        name: `${supplier1Name} (Schools / FOC)`,
         Online: supplierMetrics.s1.onlineSites,
         Degraded: supplierMetrics.s1.degradedSites,
         Offline: supplierMetrics.s1.offlineSites,
         totalSites: supplierMetrics.s1.totalSites,
       },
       {
-        name: "Supplier 2 (LGUs / LEO)",
+        name: `${supplier2Name} (LGUs / LEO)`,
         Online: supplierMetrics.s2.onlineSites,
         Degraded: supplierMetrics.s2.degradedSites,
         Offline: supplierMetrics.s2.offlineSites,
         totalSites: supplierMetrics.s2.totalSites,
       },
     ];
-  }, [supplierMetrics]);
+  }, [supplierMetrics, supplier1Name, supplier2Name]);
 
   const sectorCapacityChartData = useMemo(() => {
     const elem = sites.filter((s) => s.siteType === "PES");
@@ -643,7 +650,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                       <Server className="w-4 h-4" />
                     </span>
                     <div>
-                      <h5 className="font-bold text-white text-xs">Supplier 1</h5>
+                      <h5 className="font-bold text-white text-xs">{supplier1Name}</h5>
                       <p className="text-[10px] text-blue-400 font-mono">PHS / HEI / Schools</p>
                     </div>
                   </div>
@@ -701,7 +708,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                   }}
                   className="w-full py-1.5 rounded bg-blue-600/10 hover:bg-blue-600 text-blue-300 hover:text-white transition-colors text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer"
                 >
-                  Filter Supplier 1 Sites ({supplierMetrics.s1.totalSites})
+                  Filter {supplier1Name} Sites ({supplierMetrics.s1.totalSites})
                 </button>
               </div>
 
@@ -713,7 +720,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                       <Server className="w-4 h-4" />
                     </span>
                     <div>
-                      <h5 className="font-bold text-white text-xs">Supplier 2</h5>
+                      <h5 className="font-bold text-white text-xs">{supplier2Name}</h5>
                       <p className="text-[10px] text-emerald-400 font-mono">LGU Halls & PICS-MUN</p>
                     </div>
                   </div>
@@ -771,7 +778,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                   }}
                   className="w-full py-1.5 rounded bg-emerald-600/10 hover:bg-emerald-600 text-emerald-300 hover:text-white transition-colors text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer"
                 >
-                  Filter Supplier 2 Sites ({supplierMetrics.s2.totalSites})
+                  Filter {supplier2Name} Sites ({supplierMetrics.s2.totalSites})
                 </button>
               </div>
 
@@ -1279,7 +1286,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                     }`}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
-                    Supplier 1 ({supplierMetrics.s1.totalSites})
+                    {supplier1Name} ({supplierMetrics.s1.totalSites})
                   </button>
                   <button
                     onClick={() => setSelectedSupplier(selectedSupplier === "supplier2" ? "ALL" : "supplier2")}
@@ -1290,7 +1297,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                     }`}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                    Supplier 2 ({supplierMetrics.s2.totalSites})
+                    {supplier2Name} ({supplierMetrics.s2.totalSites})
                   </button>
                 </div>
 
@@ -1941,6 +1948,8 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
         isOpen={isReportModalOpen}
         onClose={() => setIsReportModalOpen(false)}
         sites={sites}
+        supplier1Name={supplier1Name}
+        supplier2Name={supplier2Name}
       />
     </div>
   );

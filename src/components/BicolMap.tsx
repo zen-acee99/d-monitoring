@@ -308,10 +308,54 @@ const PROJECT_CONFIGS: Record<string, { label: string; color: string; bg: string
   pnpki: { label: "PNPKI RA", color: "#8b5cf6", bg: "bg-purple-500/10", border: "border-purple-500/30" },
 };
 
+// Helper to determine if a Free Wi-Fi site is Online vs Down
+// Per requirement: Degraded sites are live, so combined into online sites!
+export function isFreeWifiSiteOnline(site: any): boolean {
+  if (site.isOnline !== undefined) return Boolean(site.isOnline);
+  
+  const statusStr = String(site.siteOnlineStatus || site.status || site.rawStatus || "").toLowerCase();
+  
+  // Degraded sites are treated as live / online
+  if (statusStr.includes("degrad")) {
+    return true;
+  }
+  
+  // Down or Offline
+  if (statusStr.includes("down") || statusStr.includes("off") || statusStr.includes("inactive")) {
+    return false;
+  }
+  
+  // Device count checks if available
+  if (site.onlineDevicesCount !== undefined && site.totalDevicesCount !== undefined) {
+    if (site.onlineDevicesCount > 0) return true;
+    if (site.totalDevicesCount > 0 && site.onlineDevicesCount === 0) return false;
+  }
+  
+  return true;
+}
+
 // Create custom leaflet marker icon for specific project site
 function createProjectMarkerIcon(site: MapSite, isSelected: boolean) {
-  const cfg = PROJECT_CONFIGS[site.projectId] || { color: "#3b82f6" };
-  const color = cfg.color;
+  const isFreeWifi = site.projectId === "freewifi";
+  let color = PROJECT_CONFIGS[site.projectId]?.color || "#3b82f6";
+  let innerDotColor = "bg-white";
+  let glowColor = `${color}cc`;
+
+  if (isFreeWifi) {
+    const online = isFreeWifiSiteOnline(site);
+    if (online) {
+      // Green for Online & Degraded (Live)
+      color = "#10b981";
+      innerDotColor = "bg-emerald-300";
+      glowColor = "rgba(16, 185, 129, 0.9)";
+    } else {
+      // Red for Down / Offline
+      color = "#ef4444";
+      innerDotColor = "bg-red-300";
+      glowColor = "rgba(239, 68, 68, 0.9)";
+    }
+  }
+
   const size = isSelected ? 38 : 28;
   return L.divIcon({
     className: "custom-project-pin",
@@ -319,9 +363,9 @@ function createProjectMarkerIcon(site: MapSite, isSelected: boolean) {
       <div class="relative flex flex-col items-center justify-center cursor-pointer group" style="width: ${size}px; height: ${size}px;">
         <div class="w-full h-full rounded-full flex items-center justify-center transition-all duration-200 ${
           isSelected ? 'ring-4 ring-white scale-125 z-50' : 'group-hover:scale-115'
-        }" style="background-color: ${color}; box-shadow: 0 0 ${isSelected ? '22px' : '12px'} ${color}cc;">
+        }" style="background-color: ${color}; box-shadow: 0 0 ${isSelected ? '24px' : '14px'} ${glowColor};">
           <div class="w-2.5 h-2.5 rounded-full bg-slate-950/85 flex items-center justify-center">
-            <div class="w-1 h-1 rounded-full bg-white"></div>
+            <div class="w-1 h-1 rounded-full ${innerDotColor}"></div>
           </div>
         </div>
       </div>
@@ -406,9 +450,10 @@ export function BicolMap() {
   const [activeSiteId, setActiveSiteId] = useState<string | null>(null);
 
   // Overview map scatter & zoom state
-  const [overviewMode, setOverviewMode] = useState<"clusters" | "scattered">("clusters");
+  const [overviewMode, setOverviewMode] = useState<"clusters" | "scattered" | "freewifi">("clusters");
   const [activeCluster, setActiveCluster] = useState<any | null>(null);
   const [scatterFilterProject, setScatterFilterProject] = useState<string>("all");
+  const [fwStatusFilter, setFwStatusFilter] = useState<"all" | "online" | "down">("all");
 
   const allPins = useMemo(() => getAllMunicipalityPins(), []);
 
@@ -461,6 +506,8 @@ export function BicolMap() {
       count: number;
       sites: typeof geocoded;
       breakdown: Record<string, number>;
+      freewifiOnline?: number;
+      freewifiDown?: number;
     }[] = [];
 
     const radius = 0.22;
@@ -484,12 +531,19 @@ export function BicolMap() {
         }
       }
 
+      const isFw = site.projectId === "freewifi";
+      const isOnline = isFw ? isFreeWifiSiteOnline(site) : true;
+
       if (best) {
         best.sites.push(site);
         best.count++;
         best.lat = (best.lat * (best.count - 1) + site.lat) / best.count;
         best.lng = (best.lng * (best.count - 1) + site.lng) / best.count;
         best.breakdown[site.projectId] = (best.breakdown[site.projectId] || 0) + 1;
+        if (isFw) {
+          if (isOnline) best.freewifiOnline = (best.freewifiOnline || 0) + 1;
+          else best.freewifiDown = (best.freewifiDown || 0) + 1;
+        }
       } else {
         const breakdown: Record<string, number> = { [site.projectId]: 1 };
         clusters.push({
@@ -501,12 +555,47 @@ export function BicolMap() {
           count: 1,
           sites: [site],
           breakdown,
+          freewifiOnline: isFw && isOnline ? 1 : 0,
+          freewifiDown: isFw && !isOnline ? 1 : 0,
         });
       }
     });
 
     return clusters.sort((a, b) => b.count - a.count);
   }, [allMapSites]);
+
+  // All Free Wi-Fi sites across all 6 Bicol provinces
+  const allFreeWifiSites = useMemo(() => {
+    return allMapSites
+      .filter((s) => s.projectId === "freewifi")
+      .map((s) => {
+        let lat = s.latitude;
+        let lng = s.longitude;
+        if (!lat || !lng || isNaN(lat) || isNaN(lng) || (lat === 0 && lng === 0)) {
+          const coords = getSiteCoordinates(s);
+          lat = coords[0];
+          lng = coords[1];
+        }
+        return {
+          ...s,
+          coords: [lat, lng] as [number, number],
+          isOnline: isFreeWifiSiteOnline(s),
+        };
+      });
+  }, [allMapSites]);
+
+  const fwMetrics = useMemo(() => {
+    const total = allFreeWifiSites.length;
+    const online = allFreeWifiSites.filter((s) => s.isOnline).length;
+    const down = total - online;
+    return { total, online, down };
+  }, [allFreeWifiSites]);
+
+  const filteredFreeWifiSites = useMemo(() => {
+    if (fwStatusFilter === "all") return allFreeWifiSites;
+    if (fwStatusFilter === "online") return allFreeWifiSites.filter((s) => s.isOnline);
+    return allFreeWifiSites.filter((s) => !s.isOnline);
+  }, [allFreeWifiSites, fwStatusFilter]);
 
   // Selected Municipality for full-screen deep dive
   const activeMunicipality = useMemo(() => {
@@ -588,6 +677,9 @@ export function BicolMap() {
 
   // Center & zoom calculation for overview map
   const overviewCenterCoords = useMemo<[number, number]>(() => {
+    if (overviewMode === "freewifi") {
+      return [13.45, 123.35];
+    }
     if (overviewMode === "scattered" && activeCluster) {
       if (activeCluster.province?.toLowerCase() === "catanduanes" || activeCluster.name?.toLowerCase().includes("catanduanes")) {
         return [13.80, 124.23];
@@ -598,6 +690,9 @@ export function BicolMap() {
   }, [overviewMode, activeCluster]);
 
   const overviewZoomLevel = useMemo(() => {
+    if (overviewMode === "freewifi") {
+      return 8;
+    }
     if (overviewMode === "scattered") {
       if (activeCluster?.province?.toLowerCase() === "catanduanes" || activeCluster?.name?.toLowerCase().includes("catanduanes")) {
         return 10;
@@ -701,9 +796,23 @@ export function BicolMap() {
                         {/* Breakdown pills */}
                         <div className="space-y-1 text-[11px] pt-2 border-t border-slate-800">
                           {cluster.breakdown.freewifi && (
-                            <div className="flex justify-between items-center text-cyan-400 font-medium">
-                              <span>📡 Free Wi-Fi</span>
-                              <span className="font-mono font-bold">{cluster.breakdown.freewifi} sites</span>
+                            <div className="space-y-0.5">
+                              <div className="flex justify-between items-center text-cyan-400 font-medium">
+                                <span>📡 Free Wi-Fi</span>
+                                <span className="font-mono font-bold">{cluster.breakdown.freewifi} sites</span>
+                              </div>
+                              <div className="flex justify-between items-center text-[10px] pl-2 font-mono">
+                                <span className="text-emerald-400 flex items-center gap-1">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                                  {cluster.freewifiOnline || 0} Online (Live)
+                                </span>
+                                {(cluster.freewifiDown ?? 0) > 0 && (
+                                  <span className="text-red-400 flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-red-400"></span>
+                                    {cluster.freewifiDown} Down
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           )}
                           {cluster.breakdown.elgu && (
@@ -755,6 +864,8 @@ export function BicolMap() {
             {overviewMode === "scattered" &&
               filteredScatteredOverviewSites.map((site: any) => {
                 const cfg = PROJECT_CONFIGS[site.projectId] || { color: "#3b82f6" };
+                const isFreeWifi = site.projectId === "freewifi";
+                const isOnline = isFreeWifiSiteOnline(site);
                 return (
                   <Marker
                     key={site.id}
@@ -770,8 +881,19 @@ export function BicolMap() {
                           >
                             {site.projectName}
                           </span>
-                          <span className="text-[10px] font-bold text-emerald-400">
-                            {site.status}
+                          <span className={`text-[10px] font-bold font-mono flex items-center gap-1 ${
+                            isFreeWifi
+                              ? isOnline ? "text-emerald-400" : "text-red-400"
+                              : "text-emerald-400"
+                          }`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${
+                              isFreeWifi
+                                ? isOnline ? "bg-emerald-400" : "bg-red-400"
+                                : "bg-emerald-400"
+                            }`}></span>
+                            {isFreeWifi
+                              ? (isOnline ? "Online (Live)" : "Down (Offline)")
+                              : site.status}
                           </span>
                         </div>
                         <h4 className="font-bold text-xs text-white leading-snug">{site.siteName}</h4>
@@ -803,7 +925,147 @@ export function BicolMap() {
                   </Marker>
                 );
               })}
+
+            {/* C. FREE WI-FI LIVE MODE: Regional site view with green (online/live/degraded) and red (down) markers */}
+            {overviewMode === "freewifi" &&
+              filteredFreeWifiSites.map((site: any) => {
+                const isOnline = isFreeWifiSiteOnline(site);
+                const isSelected = site.id === activeSiteId;
+                return (
+                  <Marker
+                    key={site.id}
+                    position={site.coords}
+                    icon={createProjectMarkerIcon(site, isSelected)}
+                  >
+                    <Popup className="custom-project-popup">
+                      <div className="p-2.5 min-w-[220px] bg-[#0C1220] text-slate-200 rounded-lg">
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <span
+                            className="text-[9px] font-mono font-bold uppercase px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/30"
+                          >
+                            Free Wi-Fi
+                          </span>
+                          <span className={`text-[10px] font-bold font-mono flex items-center gap-1 ${
+                            isOnline ? "text-emerald-400" : "text-red-400"
+                          }`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? "bg-emerald-400" : "bg-red-400"}`}></span>
+                            {isOnline ? "Online (Live)" : "Down (Offline)"}
+                          </span>
+                        </div>
+                        <h4 className="font-bold text-xs text-white leading-snug">{site.siteName}</h4>
+                        {site.barangay && (
+                          <p className="text-[10px] text-slate-400 mt-0.5">
+                            {site.barangay}, {site.municipality}, {site.province}
+                          </p>
+                        )}
+                        <div className="mt-1.5 pt-1.5 border-t border-slate-800 text-[10px] font-mono text-slate-300">
+                          {site.details}
+                        </div>
+                        <div className="mt-2 pt-1 border-t border-slate-800/60 flex justify-between items-center">
+                          <Link
+                            to="/projects/freewifi"
+                            className="text-[10px] text-blue-400 hover:text-blue-300 font-bold flex items-center gap-1"
+                          >
+                            <span>Open Module</span>
+                            <ExternalLink className="w-2.5 h-2.5" />
+                          </Link>
+                          <button
+                            onClick={() => handleOpenDeepDive(site.municipality, site.province)}
+                            className="text-[10px] text-emerald-400 hover:text-emerald-300 font-semibold"
+                          >
+                            Table View →
+                          </button>
+                        </div>
+                      </div>
+                    </Popup>
+                  </Marker>
+                );
+              })}
           </MapContainer>
+
+          {/* Top Mode Selector Widget (Clusters vs Free Wi-Fi Live Map) */}
+          <div className="absolute top-3 left-3 right-3 z-[400] flex flex-wrap items-center justify-between gap-2 pointer-events-none">
+            <div className="bg-slate-950/90 backdrop-blur-md border border-slate-800 p-1 rounded-xl shadow-xl flex items-center gap-1 pointer-events-auto">
+              <button
+                type="button"
+                onClick={() => setOverviewMode("clusters")}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  overviewMode === "clusters"
+                    ? "bg-blue-600 text-white shadow-md"
+                    : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Clusters</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOverviewMode("freewifi");
+                  setFwStatusFilter("all");
+                }}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  overviewMode === "freewifi"
+                    ? "bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-950/40"
+                    : "text-slate-300 hover:text-white hover:bg-slate-800/60"
+                }`}
+              >
+                <span>📡 Free Wi-Fi Live</span>
+                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-black/40 text-emerald-300 font-bold border border-emerald-500/30">
+                  {fwMetrics.online} 🟢 / {fwMetrics.down} 🔴
+                </span>
+              </button>
+            </div>
+
+            {/* Status Filter when in Free Wi-Fi Live Mode */}
+            {overviewMode === "freewifi" && (
+              <div className="bg-slate-950/90 backdrop-blur-md border border-slate-800 p-1 rounded-xl shadow-xl flex items-center gap-1 pointer-events-auto overflow-x-auto custom-scrollbar">
+                <button
+                  onClick={() => setFwStatusFilter("all")}
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold transition-colors cursor-pointer ${
+                    fwStatusFilter === "all" ? "bg-slate-700 text-white" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  All ({fwMetrics.total})
+                </button>
+                <button
+                  onClick={() => setFwStatusFilter("online")}
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold transition-colors cursor-pointer flex items-center gap-1 ${
+                    fwStatusFilter === "online"
+                      ? "bg-emerald-600 text-white shadow-sm"
+                      : "text-emerald-400 hover:bg-emerald-950/40"
+                  }`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                  Online / Live ({fwMetrics.online})
+                </button>
+                <button
+                  onClick={() => setFwStatusFilter("down")}
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold transition-colors cursor-pointer flex items-center gap-1 ${
+                    fwStatusFilter === "down"
+                      ? "bg-red-600 text-white shadow-sm"
+                      : "text-red-400 hover:bg-red-950/40"
+                  }`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-400"></span>
+                  Down ({fwMetrics.down})
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Bottom-left Legend for Free Wi-Fi Online vs Down */}
+          <div className="absolute bottom-3 left-3 z-[400] bg-slate-950/90 backdrop-blur-md border border-slate-800/80 px-2.5 py-1.5 rounded-xl shadow-2xl flex items-center gap-2.5 pointer-events-auto select-none">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Free Wi-Fi:</span>
+            <span className="flex items-center gap-1 font-bold text-emerald-400 font-mono text-[10px]">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.8)]"></span>
+              Online / Live
+            </span>
+            <span className="flex items-center gap-1 font-bold text-red-400 font-mono text-[10px]">
+              <span className="w-2 h-2 rounded-full bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.8)]"></span>
+              Down / Offline
+            </span>
+          </div>
 
           {/* Floating HUD Controller for Scattered View */}
           {overviewMode === "scattered" && activeCluster && (
@@ -949,9 +1211,19 @@ export function BicolMap() {
                           >
                             {site.projectName}
                           </span>
-                          <span className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                            {site.status}
+                          <span className={`text-[10px] font-bold font-mono flex items-center gap-1 ${
+                            site.projectId === 'freewifi'
+                              ? isFreeWifiSiteOnline(site) ? 'text-emerald-400' : 'text-red-400'
+                              : 'text-emerald-400'
+                          }`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${
+                              site.projectId === 'freewifi'
+                                ? isFreeWifiSiteOnline(site) ? 'bg-emerald-400' : 'bg-red-400'
+                                : 'bg-emerald-400'
+                            }`}></span>
+                            {site.projectId === 'freewifi'
+                              ? (isFreeWifiSiteOnline(site) ? 'Online (Live)' : 'Down (Offline)')
+                              : site.status}
                           </span>
                         </div>
                         <h4 className="font-bold text-xs text-white leading-snug">{site.siteName}</h4>
@@ -1092,9 +1364,19 @@ export function BicolMap() {
                             {site.type}
                           </span>
                         </div>
-                        <span className="text-[10px] font-bold font-mono text-emerald-400 flex items-center gap-1 shrink-0">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                          {site.status}
+                        <span className={`text-[10px] font-bold font-mono flex items-center gap-1 shrink-0 ${
+                          site.projectId === 'freewifi'
+                            ? isFreeWifiSiteOnline(site) ? 'text-emerald-400' : 'text-red-400'
+                            : 'text-emerald-400'
+                        }`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${
+                            site.projectId === 'freewifi'
+                              ? isFreeWifiSiteOnline(site) ? 'bg-emerald-400' : 'bg-red-400'
+                              : 'bg-emerald-400'
+                          }`}></span>
+                          {site.projectId === 'freewifi'
+                            ? (isFreeWifiSiteOnline(site) ? 'Online (Live)' : 'Down (Offline)')
+                            : site.status}
                         </span>
                       </div>
 

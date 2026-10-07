@@ -59,8 +59,11 @@ import {
   autoFillWeekendsAndHolidays,
   parseOtcLogStream,
   exportDtrToExcel,
-  calculateDtrMetrics
+  calculateDtrMetrics,
+  formatPnpkiDate,
+  formatTo12Hour
 } from "@/utils/dtrUtils";
+
 import { downloadDtrVectorPdf, generateDtrVectorPdf, getSignedDtrVectorPdfBytes, preloadFonts, matchNames } from "@/utils/dtrVectorPdf";
 import { DtrStorageView } from "@/components/dtr/DtrStorageView";
 import {
@@ -189,22 +192,33 @@ export function DtrGenerator() {
   // ==========================================
   // GENERATOR SUB-MODULE STATE & HANDLERS
   // ==========================================
+  // Strictly 2-week quincena period (same as in AR: 1st Half 01-15, 2nd Half 16-30/31)
+  const initialDate = new Date();
+  const initialScope: "first-half" | "second-half" = initialDate.getDate() <= 15 ? "first-half" : "second-half";
+  const initialMonth = initialDate.getMonth();
+  const initialYear = initialDate.getFullYear();
+  const initialDaysInMonth = new Date(initialYear, initialMonth + 1, 0).getDate();
+  const initialPeriodText = initialScope === "first-half"
+    ? `${MONTH_NAMES[initialMonth].toUpperCase()} 01-15, ${initialYear}`
+    : `${MONTH_NAMES[initialMonth].toUpperCase()} 16-${initialDaysInMonth}, ${initialYear}`;
+
   const [config, setConfig] = useState<DtrConfig>({
     employeeName: "PERSONNEL",
     province: "Regional Office (RO)",
     supervisorName: "NORLY A. TABO",
     supervisorTitle: "OIC Chief - Technical Operations Division",
-    periodText: "AUGUST 01-31, 2026",
+    periodText: initialPeriodText,
     regularHours: "",
     saturdayHours: "",
-    month: 7, // August (0-indexed)
-    year: 2026,
-    scope: "full",
+    month: initialMonth,
+    year: initialYear,
+    scope: initialScope,
   });
 
   const [otcRawText, setOtcRawText] = useState("");
   const [rows, setRows] = useState<DtrRow[]>(() => {
-    return createEmptyDtrRows();
+    const empty = createEmptyDtrRows();
+    return autoFillWeekendsAndHolidays(empty, initialMonth, initialYear, initialScope);
   });
 
   const [notification, setNotification] = useState<string | null>(null);
@@ -222,7 +236,23 @@ export function DtrGenerator() {
   const [signatureImage, setSignatureImage] = useState<string | null>(null);
   const [isSavingSig, setIsSavingSig] = useState(false);
 
+  // Include Date and Time on PNPKI Digital Signature (radio button toggle)
+  const [includeDateTime, setIncludeDateTime] = useState<boolean>(() => {
+    const saved = localStorage.getItem("dict_dtr_include_datetime");
+    return saved !== null ? saved === "true" : true;
+  });
+
+  useEffect(() => {
+    localStorage.setItem("dict_dtr_include_datetime", String(includeDateTime));
+    setConfig((prev) => ({
+      ...prev,
+      includeDateTime,
+      signingDateTime: formatPnpkiDate(new Date()),
+    }));
+  }, [includeDateTime]);
+
   // Digital Signer Identity strictly derived from P12 certificate
+
   const [p12SignerIdentity, setP12SignerIdentity] = useState<{
     commonName: string;
     subjectDN: string;
@@ -1075,25 +1105,31 @@ export function DtrGenerator() {
     setTimeout(() => setNotification(null), 8000);
   };
 
-  // Update Period text when month or year changes
+  // Update Period text when month, year, or scope changes (Full 1-30 day, 1st Half, or 2nd Half)
   const handleMonthYearChange = (newMonth: number, newYear: number, newScope: "full" | "first-half" | "second-half") => {
+    const resolvedScope: "full" | "first-half" | "second-half" = newScope;
     const mName = MONTH_NAMES[newMonth].toUpperCase();
     const daysInMonth = new Date(newYear, newMonth + 1, 0).getDate();
-    let pText = `${mName} 01-${daysInMonth}, ${newYear}`;
-    if (newScope === "first-half") pText = `${mName} 01-15, ${newYear}`;
-    if (newScope === "second-half") pText = `${mName} 16-${daysInMonth}, ${newYear}`;
+    const pText = resolvedScope === "full"
+      ? `${mName} 01-${daysInMonth}, ${newYear}`
+      : resolvedScope === "first-half"
+      ? `${mName} 01-15, ${newYear}`
+      : `${mName} 16-${daysInMonth}, ${newYear}`;
 
     setConfig((prev) => ({
       ...prev,
       month: newMonth,
       year: newYear,
-      scope: newScope,
+      scope: resolvedScope,
       periodText: pText,
     }));
 
+    // Auto-update smart tags and cleanly blank out-of-scope days
+    setRows((prev) => autoFillWeekendsAndHolidays(prev, newMonth, newYear, resolvedScope, scheduleSetting || undefined));
+
     // Automatically fetch and place time in/out in Form 48 whenever scope, month, or year changes
     if (otcUsername.trim() || isOtcConnected) {
-      handleOtcLoginAndFetch(newScope, newMonth, newYear, true);
+      handleOtcLoginAndFetch(resolvedScope, newMonth, newYear, true);
     }
   };
 
@@ -1288,10 +1324,10 @@ export function DtrGenerator() {
   // Fill Standard Official Hours (8:00 AM - 12:00 PM, 1:00 PM - 5:00 PM / 10-hr) for active work days
   const handleFillStandardTimes = () => {
     const daysInMonth = new Date(config.year, config.month + 1, 0).getDate();
-    const amIn = scheduleSetting?.standardAmArrival || "07:55";
-    const amOut = scheduleSetting?.standardAmDeparture || "12:00";
-    const pmIn = scheduleSetting?.standardPmArrival || "12:58";
-    const pmOut = scheduleSetting?.standardPmDeparture || (scheduleSetting?.hoursPerDay === 10 ? "19:00" : "17:00");
+    const amIn = formatTo12Hour(scheduleSetting?.standardAmArrival || "7:55");
+    const amOut = formatTo12Hour(scheduleSetting?.standardAmDeparture || "12:00");
+    const pmIn = formatTo12Hour(scheduleSetting?.standardPmArrival || "12:58");
+    const pmOut = formatTo12Hour(scheduleSetting?.standardPmDeparture || (scheduleSetting?.hoursPerDay === 10 ? "7:00" : "6:00"));
 
     const updated = rows.map((row) => {
       if (row.day > daysInMonth) return row;
@@ -1358,8 +1394,10 @@ export function DtrGenerator() {
   // Move current generated DTR to Provincial Office (PO) Archive
   const handleMoveToPo = async () => {
     const safeName = (config.employeeName || "PERSONNEL").trim().toUpperCase();
-    const metrics = calculateDtrMetrics(rows, scheduleSetting || undefined);
-    const fileName = `DTR_${safeName.replace(/[^a-zA-Z0-9]/g, "_")}_${MONTH_NAMES[config.month]}_${config.year}.pdf`;
+    const metrics = calculateDtrMetrics(rows, scheduleSetting || undefined, config.scope);
+    const daysInMonth = new Date(config.year, config.month + 1, 0).getDate();
+    const cutoffTag = config.scope === "full" ? `01-${daysInMonth}` : config.scope === "first-half" ? "01-15" : `16-${daysInMonth}`;
+    const fileName = `DTR_${safeName.replace(/[^a-zA-Z0-9]/g, "_")}_${MONTH_NAMES[config.month]}_${cutoffTag}_${config.year}.pdf`;
 
     const selectedProv = config.province || "Regional Office (RO)";
     let targetProvinceTab: ProvincialTab = "Regional Off";
@@ -1495,8 +1533,10 @@ export function DtrGenerator() {
   // Save current generated DTR to Storage Repository
   const handleSaveToStorage = async () => {
     const safeName = (config.employeeName || "PERSONNEL").trim().toUpperCase();
-    const metrics = calculateDtrMetrics(rows, scheduleSetting || undefined);
-    const fileName = `DTR_${safeName.replace(/[^a-zA-Z0-9]/g, "_")}_${MONTH_NAMES[config.month]}_${config.year}.pdf`;
+    const metrics = calculateDtrMetrics(rows, scheduleSetting || undefined, config.scope);
+    const daysInMonth = new Date(config.year, config.month + 1, 0).getDate();
+    const cutoffTag = config.scope === "full" ? `01-${daysInMonth}` : config.scope === "first-half" ? "01-15" : `16-${daysInMonth}`;
+    const fileName = `DTR_${safeName.replace(/[^a-zA-Z0-9]/g, "_")}_${MONTH_NAMES[config.month]}_${cutoffTag}_${config.year}.pdf`;
 
     const selectedProv = config.province || "Regional Office (RO)";
     let targetProvinceTab: ProvincialTab = "Regional Off";
@@ -1681,9 +1721,11 @@ export function DtrGenerator() {
     showNotification(`DTR for ${safeName} saved to ${selectedProv} Archive & Turso! (Rendered: ${metrics.totalHoursRendered}h • Late: ${metrics.lateMinutes}m)`);
   };
 
-  // Calculate totals
+  // Calculate totals strictly for the active 2-week quincena (same as in AR)
   const totalUndertime = rows.reduce(
     (acc, r) => {
+      if (config.scope === "first-half" && r.day > 15) return acc;
+      if (config.scope === "second-half" && r.day <= 15) return acc;
       const h = parseInt(r.undertimeHours, 10) || 0;
       const m = parseInt(r.undertimeMinutes, 10) || 0;
       return { hours: acc.hours + h, minutes: acc.minutes + m };
@@ -2270,8 +2312,9 @@ export function DtrGenerator() {
               </div>
 
               <div>
-                <label className="block text-[10px] font-medium text-slate-400 mb-1">
-                  Action Scope
+                <label className="block text-[10px] font-medium text-slate-400 mb-1 flex items-center justify-between">
+                  <span>Action Scope</span>
+                  <span className="text-[9px] text-blue-400 font-mono">1-30 Day / Quincena</span>
                 </label>
                 <select
                   value={config.scope}
@@ -2279,11 +2322,11 @@ export function DtrGenerator() {
                     const sc = e.target.value as "full" | "first-half" | "second-half";
                     handleMonthYearChange(config.month, config.year, sc);
                   }}
-                  className="w-full bg-[#151D2F] border border-[#232F4D] rounded-lg px-2.5 py-2 text-xs font-semibold text-white focus:outline-none focus:border-blue-500 transition-colors"
+                  className="w-full bg-[#151D2F] border border-[#232F4D] rounded-lg px-2.5 py-2 text-xs font-semibold text-white focus:outline-none focus:border-blue-500 transition-colors cursor-pointer"
                 >
-                  <option value="full">Full Month (1-31)</option>
-                  <option value="first-half">1st Half (1-15)</option>
-                  <option value="second-half">2nd Half (16-31)</option>
+                  <option value="full">Full (1-30 Day)</option>
+                  <option value="first-half">1st Half (01-15) • 2 Weeks</option>
+                  <option value="second-half">2nd Half (16-End) • 2 Weeks</option>
                 </select>
               </div>
 
@@ -2516,7 +2559,76 @@ export function DtrGenerator() {
                 )}
               </div>
 
+              {/* Radio Button: Add Date and Time in PNPKI Signature */}
+              <div className="bg-[#111728] p-3 rounded-xl border border-[#1C2844] space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-slate-300 flex items-center gap-1.5 uppercase tracking-wider font-mono">
+                    <Clock className="w-3.5 h-3.5 text-blue-400" />
+                    PNPKI Signature Timestamp
+                  </span>
+                  {includeDateTime ? (
+                    <span className="text-[9px] font-mono text-emerald-400 bg-emerald-950/60 px-1.5 py-0.2 rounded border border-emerald-700/50">
+                      Date & Time Active
+                    </span>
+                  ) : (
+                    <span className="text-[9px] font-mono text-slate-400 bg-slate-900/60 px-1.5 py-0.2 rounded border border-slate-700">
+                      Timestamp Off
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <label
+                    className={`flex items-center gap-2 p-2 rounded-lg border text-xs font-semibold cursor-pointer transition-all select-none ${
+                      includeDateTime
+                        ? "bg-emerald-500/15 border-emerald-500/50 text-emerald-300 shadow-sm"
+                        : "bg-[#151D2F] border-[#222E4A] text-slate-400 hover:border-slate-600 hover:text-slate-300"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="p12IncludeDateTime"
+                      value="yes"
+                      checked={includeDateTime === true}
+                      onChange={() => setIncludeDateTime(true)}
+                      className="w-3.5 h-3.5 text-emerald-500 focus:ring-emerald-500 cursor-pointer"
+                    />
+                    <span>Add Date and Time</span>
+                  </label>
+
+                  <label
+                    className={`flex items-center gap-2 p-2 rounded-lg border text-xs font-semibold cursor-pointer transition-all select-none ${
+                      !includeDateTime
+                        ? "bg-blue-500/15 border-blue-500/50 text-blue-300 shadow-sm"
+                        : "bg-[#151D2F] border-[#222E4A] text-slate-400 hover:border-slate-600 hover:text-slate-300"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="p12IncludeDateTime"
+                      value="no"
+                      checked={includeDateTime === false}
+                      onChange={() => setIncludeDateTime(false)}
+                      className="w-3.5 h-3.5 text-blue-500 focus:ring-blue-500 cursor-pointer"
+                    />
+                    <span>No Date and Time</span>
+                  </label>
+                </div>
+
+                {includeDateTime ? (
+                  <div className="text-[9px] font-mono text-slate-400 bg-[#0A0E1A] px-2 py-1.5 rounded-lg border border-[#182236] flex items-center gap-1.5">
+                    <span className="text-emerald-400 font-bold">Preview:</span>
+                    <span className="text-slate-300 truncate">Date: {formatPnpkiDate(new Date())}</span>
+                  </div>
+                ) : (
+                  <p className="text-[9.5px] text-slate-500 italic pl-0.5">
+                    Signature renders "Digitally signed by [Name]" without timestamp.
+                  </p>
+                )}
+              </div>
+
               {/* Save Signature to Turso button */}
+
               <button
                 type="button"
                 onClick={handleSaveSignatureProfile}
@@ -3076,7 +3188,7 @@ function DtrFormCopy({
                     className="border-r border-black font-bold text-center px-0.5 py-0 bg-slate-50/30"
                   >
                     <div className="flex items-center justify-between px-0.5 min-h-[14px]">
-                      <span className="text-[9px]">{row.day}</span>
+                      <span className="text-[9px] font-bold text-black">{row.day}</span>
                       <button
                         type="button"
                         onClick={() => onToggleRowType(idx)}
@@ -3092,6 +3204,7 @@ function DtrFormCopy({
                       type="text"
                       value={row.amArrival}
                       onChange={(e) => onCellChange(idx, "amArrival", e.target.value)}
+                      onBlur={(e) => onCellChange(idx, "amArrival", formatTo12Hour(e.target.value))}
                       className="w-full text-center bg-transparent focus:bg-white focus:outline-none font-medium"
                     />
                   </td>
@@ -3100,6 +3213,7 @@ function DtrFormCopy({
                       type="text"
                       value={row.amDeparture}
                       onChange={(e) => onCellChange(idx, "amDeparture", e.target.value)}
+                      onBlur={(e) => onCellChange(idx, "amDeparture", formatTo12Hour(e.target.value))}
                       className="w-full text-center bg-transparent focus:bg-white focus:outline-none font-medium"
                     />
                   </td>
@@ -3108,6 +3222,7 @@ function DtrFormCopy({
                       type="text"
                       value={row.pmArrival}
                       onChange={(e) => onCellChange(idx, "pmArrival", e.target.value)}
+                      onBlur={(e) => onCellChange(idx, "pmArrival", formatTo12Hour(e.target.value))}
                       className="w-full text-center bg-transparent focus:bg-white focus:outline-none font-medium"
                     />
                   </td>
@@ -3116,6 +3231,7 @@ function DtrFormCopy({
                       type="text"
                       value={row.pmDeparture}
                       onChange={(e) => onCellChange(idx, "pmDeparture", e.target.value)}
+                      onBlur={(e) => onCellChange(idx, "pmDeparture", formatTo12Hour(e.target.value))}
                       className="w-full text-center bg-transparent focus:bg-white focus:outline-none font-medium"
                     />
                   </td>
@@ -3191,7 +3307,13 @@ function DtrFormCopy({
               <div className="text-[7.5px] font-sans text-left leading-tight text-black">
                 <div className="font-bold text-[8px]">Digitally signed</div>
                 <div>by {(p12SignerName || config.employeeName || "PERSONNEL").trim()}</div>
+                {config.includeDateTime !== false && (
+                  <div className="text-[6.5px] font-mono text-slate-800">
+                    Date: {config.signingDateTime || formatPnpkiDate(new Date())}
+                  </div>
+                )}
               </div>
+
             </div>
           ) : signatureImage ? (
             <div className="flex flex-col items-center mb-1">

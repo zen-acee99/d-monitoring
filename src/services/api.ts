@@ -88,6 +88,13 @@ export interface MapSite {
   province: string;
   barangay?: string;
   status: string;
+  rawStatus?: string;
+  siteOnlineStatus?: "Online" | "Degraded" | "Offline" | string;
+  isOnline?: boolean;
+  onlineDevicesCount?: number;
+  offlineDevicesCount?: number;
+  totalDevicesCount?: number;
+  supplier?: string;
   contact?: string;
   details?: string;
   bandwidth?: string | number;
@@ -1018,10 +1025,10 @@ export const dtrScheduleSettingsApi = {
       workDaysPerWeek: 5,
       workDays: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
       hoursPerDay: 8,
-      standardAmArrival: "08:00",
+      standardAmArrival: "8:00",
       standardAmDeparture: "12:00",
-      standardPmArrival: "13:00",
-      standardPmDeparture: "17:00",
+      standardPmArrival: "1:00",
+      standardPmDeparture: "5:00",
       regularHoursLabel: "8:00 AM - 5:00 PM",
       saturdayHoursLabel: "As Required",
       noWorkDayLabel: "NO WORK: 4-DAY WORKWEEK",

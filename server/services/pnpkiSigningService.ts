@@ -210,12 +210,21 @@ export function appendSignatureIncremental(
   const rootObjNum = rootMatches.length > 0 ? parseInt(rootMatches[rootMatches.length - 1][1]) : 1;
   const catalogBody = objMap.get(rootObjNum) || "";
 
-  // 4. Find Page Object number (strictly match /Type /Page with word boundary to avoid matching /Type /Pages)
-  let pageObjNum = 3;
+  // 4. Find Page Object number (collect all /Type /Page to support multi-page targetPageIndex)
+  const pageObjNums: number[] = [];
   for (const [objNum, body] of objMap.entries()) {
     if (/\/Type\s*\/Page\b/.test(body)) {
-      pageObjNum = objNum;
-      break;
+      pageObjNums.push(objNum);
+    }
+  }
+  let pageObjNum = 3;
+  if (pageObjNums.length > 0) {
+    if (targetPageIndex >= 0 && targetPageIndex < pageObjNums.length) {
+      pageObjNum = pageObjNums[targetPageIndex];
+    } else if (targetPageIndex === -1 || targetPageIndex >= pageObjNums.length) {
+      pageObjNum = pageObjNums[pageObjNums.length - 1];
+    } else {
+      pageObjNum = pageObjNums[0];
     }
   }
   const pageBody = objMap.get(pageObjNum) || "";
@@ -272,6 +281,11 @@ export function appendSignatureIncremental(
     `<<\n/Type /Sig\n/Filter /Adobe.PPKLite\n/SubFilter /adbe.pkcs7.detached\n/ByteRange [${byteRangePlaceholder}]\n/Contents <${placeholderContents}>\n/Reason (${reason})\n/M (D:${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)}+08'00')\n/Name (${signerName})\n/ContactInfo (${contactInfo})\n/Location (${location})\n/Prop_Build << /Filter << /Name /Adobe.PPKLite >> >>\n>>`
   );
 
+  // Count existing signatures in the document to generate strictly unique /T field names
+  const existingSigMatches = [...pdfStr.matchAll(/\/Type\s*\/Sig\b/g)];
+  const existingSigCount = existingSigMatches.length;
+  const cleanSignerTag = signerName.replace(/[^a-zA-Z0-9]/g, "_");
+
   // 2. Widget Annotations & Appearance Streams
   const newWidgetRefs: string[] = [];
   sigRects.forEach((rectCoords, idx) => {
@@ -287,18 +301,58 @@ export function appendSignatureIncremental(
     const minY = Math.min(ry, ry + rh);
     const maxX = Math.max(rx, rx + rw);
     const maxY = Math.max(ry, ry + rh);
-    const bboxW = maxX - minX;
-    const bboxH = maxY - minY;
+    const bboxW = Math.max(20, maxX - minX);
+    const bboxH = Math.max(16, maxY - minY);
 
-    const roleName = reason.toLowerCase().includes("verification") ? "Supervisor" : "Personnel";
+    const sigIndex = existingSigCount + 1 + idx;
+    const defaultFieldName = `Signature_${sigIndex}_${cleanSignerTag}`;
     const fieldName = customFieldName
       ? (sigRects.length > 1 ? `${customFieldName}_${idx + 1}` : customFieldName)
-      : `${roleName}_Signature_Copy${idx + 1}`;
+      : defaultFieldName;
+
+    // Appearance XObject stream rendering visual signature in Adobe Acrobat
+    const isSigningWorkspace = reason.toLowerCase().includes("signing workspace");
+    const isSmallSquare = bboxW <= 25 && bboxH <= 25;
+
+    let streamContent = `q\n`;
+    // Only draw bounding border if NOT in Signing Workspace (border-none for Signing Workspace)
+    if (!isSigningWorkspace) {
+      streamContent += `0.35 0.45 0.75 RG 0.75 w 0.5 0.5 ${bboxW - 1} ${bboxH - 1} re s\n`;
+    }
+
+    if (isSmallSquare) {
+      // 15px aspect-square counter-signature mark (border-none)
+      streamContent +=
+        `BT\n` +
+        `/F1 8 Tf\n` +
+        `0.08 0.28 0.65 rg\n` +
+        `3 3 Td\n` +
+        `(\\342\\234\\223) Tj\n` +
+        `ET\n` +
+        `Q`;
+    } else {
+      streamContent +=
+        `BT\n` +
+        `/F1 6.5 Tf\n` +
+        `0.08 0.20 0.50 rg\n` +
+        `4 ${Math.max(4, Math.round(bboxH - 10))} Td\n` +
+        `(${labelText}) Tj\n` +
+        `0 -7.5 Td\n` +
+        `0 0 0 rg\n` +
+        `(by ${escapedSigner}) Tj\n` +
+        `/F2 5.2 Tf\n` +
+        `0.25 0.30 0.40 rg\n` +
+        `0 -6.5 Td\n` +
+        `(Date: ${pnpkiDateStr}) Tj\n` +
+        `ET\n` +
+        `Q`;
+    }
+    const streamLen = Buffer.from(streamContent, "binary").length;
 
     // Appearance XObject
     appendObj(
       apNum,
-      `<<\n/Type /XObject\n/Subtype /Form\n/BBox [0 0 ${bboxW} ${bboxH}]\n/Resources << >>\n/Length 0\n>>\nstream\n\nendstream`
+      `<<\n/Type /XObject\n/Subtype /Form\n/BBox [0 0 ${bboxW} ${bboxH}]\n/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >> /F2 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>\n/Length ${streamLen}\n>>\nstream\n${streamContent}\nendstream`
     );
 
     // Widget Annotation

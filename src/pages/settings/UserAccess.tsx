@@ -71,6 +71,9 @@ export function UserAccess() {
     currentUser?.role === "Super Admin" ||
     currentUser?.role === "Regional Director" ||
     currentUser?.role === "Assistant Regional Director";
+  // Exclusively accessible to ace.malto@dict.gov.ph - all other users (even Super Admin, Admin) cannot access
+  const canSimulateSwitchUser =
+    currentUser?.email?.toLowerCase().trim() === "ace.malto@dict.gov.ph";
   const canGlobalEditUsers = isSuperAdminOrDirector || (currentUser?.canEdit && hasModuleAccess(currentUser, "MOD_ADMIN"));
 
   const handleSaveUser = async (userData: UserRecord) => {
@@ -452,11 +455,15 @@ export function UserAccess() {
                     {/* Actions */}
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
-                        {/* Switch Active Session button (Available for Super Admin or Testing) */}
-                        {isSuperAdminOrDirector && (
+                        {/* Simulate / Switch user to this user - Strictly exclusive to ace.malto@dict.gov.ph */}
+                        {canSimulateSwitchUser && (
                           <button
                             type="button"
                             onClick={() => {
+                              if (!canSimulateSwitchUser) {
+                                showToast("Access Denied: 'Simulate/ Switch user to this user' is exclusively restricted to ace.malto@dict.gov.ph.", "error");
+                                return;
+                              }
                               if (user.status === "inactive") {
                                 showToast(`Cannot switch to ${user.name}: Account is deactivated.`, "error");
                                 return;
@@ -474,7 +481,7 @@ export function UserAccess() {
                             title={
                               user.status === "inactive"
                                 ? `Cannot switch: ${user.name} is deactivated`
-                                : `Switch Active Session to ${user.name}`
+                                : `Simulate/ Switch user to this user (${user.name})`
                             }
                           >
                             <LogIn className="w-3.5 h-3.5" />

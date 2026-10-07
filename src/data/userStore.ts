@@ -137,6 +137,66 @@ const DEFAULT_USERS: UserRecord[] = [
     lastLogin: "5 days ago",
     createdAt: "2024-03-01",
   },
+  {
+    id: 7,
+    name: "Annabel C. Odoño-Calimpong",
+    email: "annabel.calimpong@dict.gov.ph",
+    role: "Regional Director",
+    region: "Region V (Bicol)",
+    status: "active",
+    isFocal: false,
+    access: PROJECTS.reduce((acc, p) => ({ ...acc, [p.id]: true }), {}),
+    lastLogin: "1 hr ago",
+    createdAt: "2024-01-15",
+  },
+  {
+    id: 8,
+    name: "Rene Jane R. Buena",
+    email: "renejane.buena@dict.gov.ph",
+    role: "Provincial Officer",
+    region: "Region V (Bicol)",
+    status: "active",
+    isFocal: false,
+    access: PROJECTS.reduce((acc, p) => ({ ...acc, [p.id]: true }), {}),
+    lastLogin: "30 mins ago",
+    createdAt: "2024-01-15",
+  },
+  {
+    id: 9,
+    name: "Ace M. Malto",
+    email: "ace.malto@dict.gov.ph",
+    role: "PDO II",
+    region: "Region V (Bicol)",
+    status: "active",
+    isFocal: false,
+    access: PROJECTS.reduce((acc, p) => ({ ...acc, [p.id]: true }), {}),
+    lastLogin: "Just now",
+    createdAt: "2024-01-15",
+  },
+  {
+    id: 10,
+    name: "Norly A. Tabo",
+    email: "norly.tabo@dict.gov.ph",
+    role: "OIC Chief - Technical Operations Division",
+    region: "Region V (Bicol)",
+    status: "active",
+    isFocal: false,
+    access: PROJECTS.reduce((acc, p) => ({ ...acc, [p.id]: true }), {}),
+    lastLogin: "2 hrs ago",
+    createdAt: "2024-01-15",
+  },
+  {
+    id: 11,
+    name: "Christian Roy N. Melad",
+    email: "christian.melad@dict.gov.ph",
+    role: "OIC- Regional Director",
+    region: "Region V (Bicol)",
+    status: "active",
+    isFocal: false,
+    access: PROJECTS.reduce((acc, p) => ({ ...acc, [p.id]: true }), {}),
+    lastLogin: "1 day ago",
+    createdAt: "2024-01-15",
+  },
 ];
 
 export function getStoredUsers(): UserRecord[] {
@@ -148,6 +208,16 @@ export function getStoredUsers(): UserRecord[] {
     }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
+      let updated = false;
+      for (const def of DEFAULT_USERS) {
+        if (!parsed.some((u: any) => u.name && u.name.toUpperCase() === def.name.toUpperCase())) {
+          parsed.push(def);
+          updated = true;
+        }
+      }
+      if (updated) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+      }
       return parsed;
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_USERS));

@@ -18,7 +18,7 @@ import {
   ExternalLink
 } from "lucide-react";
 import { DtrStorageItem, getCachedPdfDataUrl, setCachedPdfDataUrl } from "@/data/dtrStorage";
-import { exportDtrToExcel } from "@/utils/dtrUtils";
+import { exportDtrToExcel, formatTo12Hour } from "@/utils/dtrUtils";
 import { downloadDtrVectorPdf, matchNames } from "@/utils/dtrVectorPdf";
 import { dtrGeneratorApi, dtrStorageApi } from "@/services/api";
 import { DtrSignatureValidationModal } from "./DtrSignatureValidationModal";
@@ -592,10 +592,10 @@ function Form48Strip({
                   <td className="border-r border-black font-bold text-center px-0.5 py-0 bg-slate-50/50">
                     {row.day}
                   </td>
-                  <td className="border-r border-black py-0 px-0.5 font-medium">{row.amArrival || ""}</td>
-                  <td className="border-r border-black py-0 px-0.5 font-medium">{row.amDeparture || ""}</td>
-                  <td className="border-r border-black py-0 px-0.5 font-medium">{row.pmArrival || ""}</td>
-                  <td className="border-r border-black py-0 px-0.5 font-medium">{row.pmDeparture || ""}</td>
+                  <td className="border-r border-black py-0 px-0.5 font-medium">{row.amArrival ? formatTo12Hour(row.amArrival) : ""}</td>
+                  <td className="border-r border-black py-0 px-0.5 font-medium">{row.amDeparture ? formatTo12Hour(row.amDeparture) : ""}</td>
+                  <td className="border-r border-black py-0 px-0.5 font-medium">{row.pmArrival ? formatTo12Hour(row.pmArrival) : ""}</td>
+                  <td className="border-r border-black py-0 px-0.5 font-medium">{row.pmDeparture ? formatTo12Hour(row.pmDeparture) : ""}</td>
                   <td className="border-r border-black py-0 px-0.5 text-slate-700">{row.undertimeHours || ""}</td>
                   <td className="py-0 px-0.5 text-slate-700">{row.undertimeMinutes || ""}</td>
                 </tr>

@@ -8,6 +8,7 @@ import { DataExplorer } from "./pages/DataExplorer";
 import { Login } from "./pages/Login";
 import { RegionalCalendar } from "./pages/RegionalCalendar";
 import { DtrGenerator } from "./pages/DtrGenerator";
+import { SigningWorkspace } from "./pages/SigningWorkspace";
 
 import { ProjectConfig } from "./pages/settings/ProjectConfig";
 import { UserAccess } from "./pages/settings/UserAccess";
@@ -47,6 +48,16 @@ function App() {
             <Shell>
               <ModuleGuard moduleCode="MOD_CALENDAR" moduleName="Regional Calendar">
                 <RegionalCalendar />
+              </ModuleGuard>
+            </Shell>
+          }
+        />
+        <Route
+          path="/signing-workspace"
+          element={
+            <Shell>
+              <ModuleGuard moduleCode="MOD_SIGNING" moduleName="Signing Workspace">
+                <SigningWorkspace />
               </ModuleGuard>
             </Shell>
           }

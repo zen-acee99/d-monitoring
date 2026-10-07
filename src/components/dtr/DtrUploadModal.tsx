@@ -600,9 +600,9 @@ export function DtrUploadModal({
                     onChange={(e) => setScope(e.target.value as any)}
                     className="w-full bg-[#111728] border border-[#1C2844] rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-blue-500 cursor-pointer"
                   >
-                    <option value="first-half">1st Half (01-15)</option>
-                    <option value="second-half">2nd Half (16-31)</option>
-                    <option value="full">Full Month (01-31)</option>
+                    <option value="full">Full (1-30 Day)</option>
+                    <option value="first-half">1st Half (01-15) • 2 Weeks</option>
+                    <option value="second-half">2nd Half (16-End) • 2 Weeks</option>
                   </select>
                 </div>
               </div>

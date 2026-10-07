@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   Home, Users, Activity, Download, Calendar, CreditCard, Settings, X, MapPin, Box, Database,
   ShieldAlert, Radio, Server, CheckSquare, FileText, Clock, Link as LinkIcon, Lock, LogOut,
-  Sparkles, Users2, Building2, ChevronDown, ChevronRight
+  Sparkles, Users2, Building2, ChevronDown, ChevronRight, PenLine
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getCurrentUser, setCurrentUser, hasModuleAccess, AUTH_EVENT, refreshCurrentUser, refreshSystemModules, getCachedSystemModules } from "@/services/authStore";
@@ -23,6 +23,7 @@ const mainNav: NavItem[] = [
   { name: "Overview", path: "/", icon: Home, code: "MOD_OVERVIEW" },
   { name: "DTR Generator", path: "/dtr", icon: FileText, code: "MOD_DTR" },
   { name: "Regional Calendar", path: "/calendar", icon: Calendar, code: "MOD_CALENDAR" },
+  { name: "Signing Workspace", path: "/signing-workspace", icon: PenLine, code: "MOD_SIGNING" },
 ];
 
 const projectsNav: NavItem[] = [

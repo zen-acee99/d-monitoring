@@ -444,6 +444,7 @@ export function ProjectConfig() {
       if (res.success && res.config) {
         setOmadaConfig(res.config);
         showNotification("Omada Northbound API credentials and settings saved successfully!");
+        window.dispatchEvent(new CustomEvent("dict_freewifi_updated", { detail: { projectId: "freewifi" } }));
       } else {
         showNotification(res.message || "Failed to save Omada config", "error");
       }
@@ -1441,14 +1442,14 @@ export function ProjectConfig() {
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {/* Supplier 1 Card */}
                   <div className="bg-[#0C101D] border border-[#18233C] rounded-xl p-4 space-y-3.5">
-                    <div className="flex items-center justify-between pb-2 border-b border-[#18233C]">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full bg-blue-500" />
-                        <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                          Supplier 1 (Omada Controller)
+                    <div className="flex items-center justify-between pb-2 border-b border-[#18233C] gap-2">
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0" />
+                        <h4 className="text-xs font-bold text-white uppercase tracking-wider truncate">
+                          {omadaConfig.supplier1.name || "Supplier 1"} (OMADA CONTROLLER)
                         </h4>
                       </div>
-                      <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                      <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer shrink-0">
                         <input
                           type="checkbox"
                           checked={omadaConfig.supplier1.enabled}
@@ -1458,13 +1459,32 @@ export function ProjectConfig() {
                               supplier1: { ...omadaConfig.supplier1, enabled: e.target.checked },
                             })
                           }
-                          className="rounded border-[#1C2844] bg-[#080B14] text-blue-600 focus:ring-blue-500"
+                          className="rounded border-[#1C2844] bg-[#080B14] text-blue-600 focus:ring-blue-500 cursor-pointer"
                         />
                         <span className="text-[11px] font-semibold">Active</span>
                       </label>
                     </div>
 
                     <div className="space-y-2.5 text-xs">
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                          Supplier Name
+                        </label>
+                        <input
+                          type="text"
+                          value={omadaConfig.supplier1.name || ""}
+                          onChange={(e) =>
+                            setOmadaConfig({
+                              ...omadaConfig,
+                              supplier1: { ...omadaConfig.supplier1, name: e.target.value },
+                            })
+                          }
+                          placeholder="e.g. Supplier 1 / PLDT"
+                          className="w-full bg-[#080B14] border border-[#1C2844] rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 font-semibold"
+                          required
+                        />
+                      </div>
+
                       <div>
                         <label className="block text-[11px] font-medium text-slate-400 mb-1">
                           Interface Access Address (Base URL)
@@ -1583,14 +1603,14 @@ export function ProjectConfig() {
 
                   {/* Supplier 2 Card */}
                   <div className="bg-[#0C101D] border border-[#18233C] rounded-xl p-4 space-y-3.5">
-                    <div className="flex items-center justify-between pb-2 border-b border-[#18233C]">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                        <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                          Supplier 2 (Omada Controller)
+                    <div className="flex items-center justify-between pb-2 border-b border-[#18233C] gap-2">
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" />
+                        <h4 className="text-xs font-bold text-white uppercase tracking-wider truncate">
+                          {omadaConfig.supplier2.name || "Supplier 2"} (OMADA CONTROLLER)
                         </h4>
                       </div>
-                      <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                      <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer shrink-0">
                         <input
                           type="checkbox"
                           checked={omadaConfig.supplier2.enabled}
@@ -1600,13 +1620,32 @@ export function ProjectConfig() {
                               supplier2: { ...omadaConfig.supplier2, enabled: e.target.checked },
                             })
                           }
-                          className="rounded border-[#1C2844] bg-[#080B14] text-blue-600 focus:ring-blue-500"
+                          className="rounded border-[#1C2844] bg-[#080B14] text-blue-600 focus:ring-blue-500 cursor-pointer"
                         />
                         <span className="text-[11px] font-semibold">Active</span>
                       </label>
                     </div>
 
                     <div className="space-y-2.5 text-xs">
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                          Supplier Name
+                        </label>
+                        <input
+                          type="text"
+                          value={omadaConfig.supplier2.name || ""}
+                          onChange={(e) =>
+                            setOmadaConfig({
+                              ...omadaConfig,
+                              supplier2: { ...omadaConfig.supplier2, name: e.target.value },
+                            })
+                          }
+                          placeholder="e.g. Supplier 2 / Starlink"
+                          className="w-full bg-[#080B14] border border-[#1C2844] rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 font-semibold"
+                          required
+                        />
+                      </div>
+
                       <div>
                         <label className="block text-[11px] font-medium text-slate-400 mb-1">
                           Interface Access Address (Base URL)

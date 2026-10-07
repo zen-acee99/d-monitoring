@@ -31,9 +31,23 @@ export interface DtrConfig {
   supervisorHasP12?: boolean;
   signerName?: string;
   hasP12?: boolean;
+  includeDateTime?: boolean;
+  signingDateTime?: string;
+}
+
+export function formatPnpkiDate(d: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const y = d.getFullYear();
+  const m = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const h = pad(d.getHours());
+  const min = pad(d.getMinutes());
+  const s = pad(d.getSeconds());
+  return `${y}.${m}.${day} ${h}:${min}:${s} +08'00'`;
 }
 
 export const DTR_PROVINCE_OPTIONS = [
+
   { value: "Regional Office (RO)", label: "Regional Office (RO)", code: "RO" },
   { value: "Albay", label: "Albay", code: "ALB" },
   { value: "Camarines Norte", label: "Camarines Norte", code: "CN" },
@@ -82,18 +96,37 @@ export function createEmptyDtrRows(): DtrRow[] {
 export interface DtrSchedulePolicy {
   workDays?: string[]; // e.g. ["Monday", "Tuesday", "Wednesday", "Thursday"]
   hoursPerDay?: number; // e.g. 8 or 10
-  standardAmArrival?: string; // e.g. "08:00"
+  standardAmArrival?: string; // e.g. "8:00"
   standardAmDeparture?: string; // e.g. "12:00"
-  standardPmArrival?: string; // e.g. "13:00"
-  standardPmDeparture?: string; // e.g. "17:00" or "19:00"
+  standardPmArrival?: string; // e.g. "1:00"
+  standardPmDeparture?: string; // e.g. "5:00" or "6:00"
   noWorkDayLabel?: string; // e.g. "NO WORK: 4-DAY WORKWEEK"
   gracePeriodMinutes?: number;
 }
 
 export const DAY_NAMES_OF_WEEK = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
-// Helper to convert time strings ("08:15", "8:15 am", "01:00 pm", "13:00") into minutes from midnight
-export function timeStringToMinutes(timeStr: string): number | null {
+// Helper to convert time strings (e.g. "18:00" -> "6:00", "13:00" -> "1:00", "08:15" -> "8:15") into 12-hour format (no 24-hr time)
+export function formatTo12Hour(timeStr?: string): string {
+  if (!timeStr || !timeStr.trim()) return "";
+  const cleaned = timeStr.trim().replace(/\s+/g, " ");
+  const match = cleaned.match(/^(\d{1,2}):(\d{2})(?:\s*(am|pm|AM|PM))?$/i);
+  if (!match) return cleaned.replace(/\s*(am|pm|AM|PM)/gi, "").trim();
+
+  let h = parseInt(match[1], 10);
+  const min = match[2];
+
+  if (h > 12) {
+    h -= 12;
+  } else if (h === 0) {
+    h = 12;
+  }
+
+  return `${h}:${min}`;
+}
+
+// Helper to convert time strings ("8:15", "08:15", "6:00", "01:00 pm", "13:00", "18:00") into minutes from midnight
+export function timeStringToMinutes(timeStr: string, isPmColumn: boolean = false): number | null {
   if (!timeStr || !timeStr.trim()) return null;
   const cleaned = timeStr.trim().replace(/\s+/g, " ");
   const match = cleaned.match(/^(\d{1,2}):(\d{2})(?:\s*(am|pm|AM|PM))?$/i);
@@ -103,8 +136,16 @@ export function timeStringToMinutes(timeStr: string): number | null {
   const minutes = parseInt(match[2], 10);
   const ampm = match[3]?.toLowerCase();
 
-  if (ampm === "pm" && hours < 12) hours += 12;
-  if (ampm === "am" && hours === 12) hours = 0;
+  if (ampm === "pm" && hours < 12) {
+    hours += 12;
+  } else if (ampm === "am" && hours === 12) {
+    hours = 0;
+  } else if (!ampm) {
+    // If no am/pm was specified and it is under a PM column (e.g. 1:00, 5:00, 6:00)
+    if (isPmColumn && hours < 12) {
+      hours += 12;
+    }
+  }
 
   return hours * 60 + minutes;
 }
@@ -114,13 +155,13 @@ export function calculateRowLateMinutes(row: DtrRow, schedule?: DtrSchedulePolic
   if (row.isCustomLabel) return 0;
   let lateMins = 0;
 
-  const targetAmIn = timeStringToMinutes(schedule?.standardAmArrival || "08:00") || 480;
-  const targetPmIn = timeStringToMinutes(schedule?.standardPmArrival || "13:00") || 780;
+  const targetAmIn = timeStringToMinutes(schedule?.standardAmArrival || "8:00", false) || 480;
+  const targetPmIn = timeStringToMinutes(schedule?.standardPmArrival || "1:00", true) || 780;
   const grace = schedule?.gracePeriodMinutes || 0;
 
   // Morning arrival late
   if (row.amArrival) {
-    const amIn = timeStringToMinutes(row.amArrival);
+    const amIn = timeStringToMinutes(row.amArrival, false);
     if (amIn !== null && amIn > targetAmIn + grace) {
       lateMins += amIn - targetAmIn;
     }
@@ -128,7 +169,7 @@ export function calculateRowLateMinutes(row: DtrRow, schedule?: DtrSchedulePolic
 
   // Afternoon arrival late
   if (row.pmArrival) {
-    const pmIn = timeStringToMinutes(row.pmArrival);
+    const pmIn = timeStringToMinutes(row.pmArrival, true);
     if (pmIn !== null && pmIn > targetPmIn + grace) {
       lateMins += pmIn - targetPmIn;
     }
@@ -157,16 +198,16 @@ export function calculateRowUndertime(
 
   let renderedMins = 0;
   if (row.amArrival && row.amDeparture) {
-    const amIn = timeStringToMinutes(row.amArrival);
-    const amOut = timeStringToMinutes(row.amDeparture);
+    const amIn = timeStringToMinutes(row.amArrival, false);
+    const amOut = timeStringToMinutes(row.amDeparture, false);
     if (amIn !== null && amOut !== null && amOut > amIn) {
       renderedMins += amOut - amIn;
     }
   }
 
   if (row.pmArrival && row.pmDeparture) {
-    const pmIn = timeStringToMinutes(row.pmArrival);
-    const pmOut = timeStringToMinutes(row.pmDeparture);
+    const pmIn = timeStringToMinutes(row.pmArrival, true);
+    const pmOut = timeStringToMinutes(row.pmDeparture, true);
     if (pmIn !== null && pmOut !== null && pmOut > pmIn) {
       renderedMins += pmOut - pmIn;
     }
@@ -184,7 +225,11 @@ export function calculateRowUndertime(
 }
 
 // Aggregate full DTR metrics for a set of rows
-export function calculateDtrMetrics(rows: DtrRow[], schedule?: DtrSchedulePolicy) {
+export function calculateDtrMetrics(
+  rows: DtrRow[],
+  schedule?: DtrSchedulePolicy,
+  scope?: "full" | "first-half" | "second-half"
+) {
   let totalDaysRendered = 0;
   let totalRenderedMinutes = 0;
   let totalLateMinutes = 0;
@@ -195,6 +240,9 @@ export function calculateDtrMetrics(rows: DtrRow[], schedule?: DtrSchedulePolicy
   const targetDailyHours = schedule?.hoursPerDay || 8;
 
   for (const row of rows) {
+    // Restrict calculation exclusively to the 2-week quincena scope
+    if (scope === "first-half" && row.day > 15) continue;
+    if (scope === "second-half" && row.day <= 15) continue;
     if (row.isCustomLabel) continue;
 
     const hasPunch = Boolean(row.amArrival || row.amDeparture || row.pmArrival || row.pmDeparture);
@@ -205,13 +253,13 @@ export function calculateDtrMetrics(rows: DtrRow[], schedule?: DtrSchedulePolicy
     // Rendered minutes
     let dayRendered = 0;
     if (row.amArrival && row.amDeparture) {
-      const amIn = timeStringToMinutes(row.amArrival);
-      const amOut = timeStringToMinutes(row.amDeparture);
+      const amIn = timeStringToMinutes(row.amArrival, false);
+      const amOut = timeStringToMinutes(row.amDeparture, false);
       if (amIn !== null && amOut !== null && amOut > amIn) dayRendered += (amOut - amIn);
     }
     if (row.pmArrival && row.pmDeparture) {
-      const pmIn = timeStringToMinutes(row.pmArrival);
-      const pmOut = timeStringToMinutes(row.pmDeparture);
+      const pmIn = timeStringToMinutes(row.pmArrival, true);
+      const pmOut = timeStringToMinutes(row.pmDeparture, true);
       if (pmIn !== null && pmOut !== null && pmOut > pmIn) dayRendered += (pmOut - pmIn);
     }
     if (dayRendered === 0 && row.amArrival) {
@@ -272,9 +320,20 @@ export function autoFillWeekendsAndHolidays(
   return currentRows.map((row) => {
     const day = row.day;
 
-    // Check scope
-    if (scope === "first-half" && day > 15) return row;
-    if (scope === "second-half" && day <= 15) return row;
+    // For days outside the active cutoff, clear punches so only the active cutoff has times,
+    // while keeping normal columns intact and tagging weekends/holidays naturally
+    const isOutsideCutoff = (scope === "first-half" && day > 15) || (scope === "second-half" && day <= 15);
+    const baseRow = isOutsideCutoff
+      ? {
+          ...row,
+          amArrival: "",
+          amDeparture: "",
+          pmArrival: "",
+          pmDeparture: "",
+          undertimeHours: "",
+          undertimeMinutes: "",
+        }
+      : row;
 
     if (day > daysInMonth) {
       return {
@@ -354,23 +413,24 @@ export function autoFillWeekendsAndHolidays(
       };
     }
 
-    // Regular weekday: if previously tagged as weekend/holiday/no-work, clear label
+    // Regular weekday: if previously tagged as weekend/holiday/no-work/dash, clear label
     if (
-      row.isCustomLabel &&
-      (row.customLabel === "SATURDAY" ||
-        row.customLabel === "SUNDAY" ||
-        row.customLabel?.startsWith("HOLIDAY") ||
-        row.customLabel?.includes("4-DAY") ||
-        row.customLabel?.includes("NO WORK"))
+      baseRow.isCustomLabel &&
+      (baseRow.customLabel === "SATURDAY" ||
+        baseRow.customLabel === "SUNDAY" ||
+        baseRow.customLabel === "—" ||
+        baseRow.customLabel?.startsWith("HOLIDAY") ||
+        baseRow.customLabel?.includes("4-DAY") ||
+        baseRow.customLabel?.includes("NO WORK"))
     ) {
       return {
-        ...row,
+        ...baseRow,
         isCustomLabel: false,
         customLabel: ""
       };
     }
 
-    return row;
+    return baseRow;
   });
 }
 
@@ -595,12 +655,7 @@ export function parseOtcLogStream(
   }
 
   function fmt(t: string): string {
-    if (!t) return "";
-    const m = t.match(/(\d{1,2}):(\d{2})/i);
-    if (!m) return t.replace(/\s*(am|pm|AM|PM)/gi, "").trim();
-    const h = m[1].padStart(2, "0");
-    const min = m[2];
-    return `${h}:${min}`;
+    return formatTo12Hour(t);
   }
 
   // ------------------------------------------------------------------
@@ -624,6 +679,10 @@ export function parseOtcLogStream(
   for (const [dayStr, punches] of Object.entries(dayPunches)) {
     const day = parseInt(dayStr, 10);
     if (day < 1 || day > 31) continue;
+
+    // Filter by 2-week quincena scope
+    if (targetScope === "first-half" && day > 15) continue;
+    if (targetScope === "second-half" && day <= 15) continue;
 
     const row = { ...updated[day - 1] };
     row.isCustomLabel = false;
@@ -656,6 +715,37 @@ export function parseOtcLogStream(
 
     updated[day - 1] = row;
     detectedCount++;
+  }
+
+  // Ensure punches outside the active scope are cleared while keeping columns intact
+  if (targetScope === "first-half") {
+    for (let d = 16; d <= 31; d++) {
+      if (updated[d - 1]) {
+        updated[d - 1] = {
+          ...updated[d - 1],
+          amArrival: "",
+          amDeparture: "",
+          pmArrival: "",
+          pmDeparture: "",
+          undertimeHours: "",
+          undertimeMinutes: "",
+        };
+      }
+    }
+  } else if (targetScope === "second-half") {
+    for (let d = 1; d <= 15; d++) {
+      if (updated[d - 1]) {
+        updated[d - 1] = {
+          ...updated[d - 1],
+          amArrival: "",
+          amDeparture: "",
+          pmArrival: "",
+          pmDeparture: "",
+          undertimeHours: "",
+          undertimeMinutes: "",
+        };
+      }
+    }
   }
 
   return { rows: updated, detectedEmployeeName, detectedMonth, detectedCount };
@@ -734,11 +824,11 @@ export function exportDtrToExcel(config: DtrConfig, rows: DtrRow[]) {
 
     const rowTextLeft = r.isCustomLabel
       ? [r.day, r.customLabel || "", "", "", "", "", ""]
-      : [r.day, r.amArrival, r.amDeparture, r.pmArrival, r.pmDeparture, r.undertimeHours, r.undertimeMinutes];
+      : [r.day, formatTo12Hour(r.amArrival), formatTo12Hour(r.amDeparture), formatTo12Hour(r.pmArrival), formatTo12Hour(r.pmDeparture), r.undertimeHours, r.undertimeMinutes];
 
     const rowTextRight = r.isCustomLabel
       ? [r.day, r.customLabel || "", "", "", "", "", ""]
-      : [r.day, r.amArrival, r.amDeparture, r.pmArrival, r.pmDeparture, r.undertimeHours, r.undertimeMinutes];
+      : [r.day, formatTo12Hour(r.amArrival), formatTo12Hour(r.amDeparture), formatTo12Hour(r.pmArrival), formatTo12Hour(r.pmDeparture), r.undertimeHours, r.undertimeMinutes];
 
     sheetData.push([
       ...rowTextLeft,

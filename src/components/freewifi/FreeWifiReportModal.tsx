@@ -43,9 +43,17 @@ interface FreeWifiReportModalProps {
   isOpen: boolean;
   onClose: () => void;
   sites: FreeWifiSite[];
+  supplier1Name?: string;
+  supplier2Name?: string;
 }
 
-export function FreeWifiReportModal({ isOpen, onClose, sites }: FreeWifiReportModalProps) {
+export function FreeWifiReportModal({
+  isOpen,
+  onClose,
+  sites,
+  supplier1Name = "Supplier 1",
+  supplier2Name = "Supplier 2",
+}: FreeWifiReportModalProps) {
   const [reportTitle, setReportTitle] = useState("FREE WIFI 4 ALL  OPERATIONAL REPORT");
   const [reportSubtitle, setReportSubtitle] = useState("DICT Region V (Bicol) - Provincial Monitoring, Fleet Health & Omada Northbound Telemetry");
   const [preparedBy, setPreparedBy] = useState("Engr. Juan Dela Cruz");
@@ -380,9 +388,9 @@ export function FreeWifiReportModal({ isOpen, onClose, sites }: FreeWifiReportMo
                   onChange={(e) => setSelectedSupplier(e.target.value)}
                   className="w-full bg-[#0C101D] border border-[#1C2844] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
                 >
-                  <option value="ALL">All Fleets (Supplier 1 & Supplier 2)</option>
-                  <option value="supplier1">Supplier 1 (Schools / HEIs / FOC)</option>
-                  <option value="supplier2">Supplier 2 (Plazas / LGUs / LEO)</option>
+                  <option value="ALL">All Fleets ({supplier1Name} & {supplier2Name})</option>
+                  <option value="supplier1">{supplier1Name} (Schools / HEIs / FOC)</option>
+                  <option value="supplier2">{supplier2Name} (Plazas / LGUs / LEO)</option>
                 </select>
               </div>
 
@@ -480,7 +488,7 @@ export function FreeWifiReportModal({ isOpen, onClose, sites }: FreeWifiReportMo
                   onChange={(e) => setIncludeSupplierComparison(e.target.checked)}
                   className="rounded border-[#1C2844] bg-[#0C101D] text-blue-600 focus:ring-blue-500"
                 />
-                <span>Supplier 1 vs 2 Fleet Matrix</span>
+                <span>{supplier1Name} vs {supplier2Name} Fleet Matrix</span>
               </label>
 
               <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
@@ -890,7 +898,7 @@ export function FreeWifiReportModal({ isOpen, onClose, sites }: FreeWifiReportMo
                     {includeSupplierComparison && (
                       <div className="space-y-2.5">
                         <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center justify-between border-b border-slate-300 pb-1">
-                          <span>{supplierSecNum}. Supplier Fleet Comparison (Supplier 1 vs Supplier 2)</span>
+                          <span>{supplierSecNum}. Supplier Fleet Comparison ({supplier1Name} vs {supplier2Name})</span>
                           <span className="text-[10px] text-slate-600 font-mono">
                             Omada Northbound API Telemetry
                           </span>
@@ -901,7 +909,7 @@ export function FreeWifiReportModal({ isOpen, onClose, sites }: FreeWifiReportMo
                           <div className="p-3 bg-blue-50/50 border border-blue-200 rounded-lg space-y-2">
                             <div className="flex items-center justify-between pb-1 border-b border-blue-200">
                               <span className="font-bold text-blue-950 text-xs">
-                                📡 Supplier 1 Fleet (Schools & FOC Hubs)
+                                📡 {supplier1Name} Fleet (Schools & FOC Hubs)
                               </span>
                               <span className="font-mono font-bold px-1.5 py-0.5 bg-blue-100 text-blue-900 rounded text-[9px]">
                                 {reportSummary.s1.total} Sites ({reportSummary.s1.pct}%)
@@ -932,7 +940,7 @@ export function FreeWifiReportModal({ isOpen, onClose, sites }: FreeWifiReportMo
                           <div className="p-3 bg-emerald-50/50 border border-emerald-200 rounded-lg space-y-2">
                             <div className="flex items-center justify-between pb-1 border-b border-emerald-200">
                               <span className="font-bold text-emerald-950 text-xs">
-                                🌐 Supplier 2 Fleet (Plazas & LEO Hubs)
+                                🌐 {supplier2Name} Fleet (Plazas & LEO Hubs)
                               </span>
                               <span className="font-mono font-bold px-1.5 py-0.5 bg-emerald-100 text-emerald-900 rounded text-[9px]">
                                 {reportSummary.s2.total} Sites ({reportSummary.s2.pct}%)
@@ -1211,7 +1219,7 @@ export function FreeWifiReportModal({ isOpen, onClose, sites }: FreeWifiReportMo
                                         isSupp1 ? "bg-blue-100 text-blue-900" : "bg-emerald-100 text-emerald-900"
                                       }`}
                                     >
-                                      {sAny.omadaSupplier || (isSupp1 ? "Supplier 1" : "Supplier 2")}
+                                      {sAny.omadaSupplier || (isSupp1 ? supplier1Name : supplier2Name)}
                                     </span>
                                   </td>
                                 </tr>

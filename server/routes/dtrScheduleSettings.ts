@@ -37,10 +37,10 @@ function formatScheduleSettingRow(row: any): DtrWorkScheduleSetting {
     workDaysPerWeek: Number(row.work_days_per_week) || 5,
     workDays,
     hoursPerDay: Number(row.hours_per_day) || 8,
-    standardAmArrival: row.standard_am_arrival || "08:00",
+    standardAmArrival: row.standard_am_arrival || "8:00",
     standardAmDeparture: row.standard_am_departure || "12:00",
-    standardPmArrival: row.standard_pm_arrival || "13:00",
-    standardPmDeparture: row.standard_pm_departure || "17:00",
+    standardPmArrival: row.standard_pm_arrival || "1:00",
+    standardPmDeparture: row.standard_pm_departure || "5:00",
     regularHoursLabel: row.regular_hours_label || "8:00 AM - 5:00 PM",
     saturdayHoursLabel: row.saturday_hours_label || "As Required",
     noWorkDayLabel: row.no_work_day_label || "NO WORK: 4-DAY WORKWEEK",
@@ -69,10 +69,10 @@ dtrScheduleSettingsRouter.get("/", async (_req: Request, res: Response) => {
         workDaysPerWeek: 5,
         workDays: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
         hoursPerDay: 8,
-        standardAmArrival: "08:00",
+        standardAmArrival: "8:00",
         standardAmDeparture: "12:00",
-        standardPmArrival: "13:00",
-        standardPmDeparture: "17:00",
+        standardPmArrival: "1:00",
+        standardPmDeparture: "5:00",
         regularHoursLabel: "8:00 AM - 5:00 PM",
         saturdayHoursLabel: "As Required",
         noWorkDayLabel: "NO WORK: 4-DAY WORKWEEK",
@@ -104,10 +104,10 @@ dtrScheduleSettingsRouter.post("/", async (req: Request, res: Response) => {
       : ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
     const workDaysJson = JSON.stringify(workDays);
     const hoursPerDay = Number(body.hoursPerDay ?? body.hours_per_day ?? 8);
-    const standardAmArrival = body.standardAmArrival || body.standard_am_arrival || "08:00";
+    const standardAmArrival = body.standardAmArrival || body.standard_am_arrival || "8:00";
     const standardAmDeparture = body.standardAmDeparture || body.standard_am_departure || "12:00";
-    const standardPmArrival = body.standardPmArrival || body.standard_pm_arrival || "13:00";
-    const standardPmDeparture = body.standardPmDeparture || body.standard_pm_departure || "17:00";
+    const standardPmArrival = body.standardPmArrival || body.standard_pm_arrival || "1:00";
+    const standardPmDeparture = body.standardPmDeparture || body.standard_pm_departure || "5:00";
     const regularHoursLabel = body.regularHoursLabel || body.regular_hours_label || "8:00 AM - 5:00 PM";
     const saturdayHoursLabel = body.saturdayHoursLabel || body.saturday_hours_label || "As Required";
     const noWorkDayLabel = body.noWorkDayLabel || body.no_work_day_label || "NO WORK: 4-DAY WORKWEEK";

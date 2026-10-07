@@ -64,13 +64,31 @@ projectsRouter.get("/projects/map-sites", async (req: Request, res: Response) =>
     const sites: any[] = [];
 
     // 1. freewifi
-    const fwRes = await db.execute('SELECT data, status, province FROM "freewifi"');
+    const fwRes = await db.execute('SELECT id, data, status, province FROM "freewifi"');
     for (const row of fwRes.rows) {
       const item = formatRecord(row);
       const mun = item.municipality || "Other";
       if (!filterMun || mun.toLowerCase().includes(filterMun)) {
+        // Resolve online vs down status: degraded sites are live and combined into online
+        const rawStatus = (item.siteOnlineStatus || item.status || "").toLowerCase();
+        let isOnline = true;
+        if (item.siteOnlineStatus) {
+          isOnline = item.siteOnlineStatus === "Online" || item.siteOnlineStatus === "Degraded";
+        } else if (rawStatus.includes("down") || rawStatus.includes("off") || rawStatus.includes("inactive")) {
+          isOnline = false;
+        } else if (item.onlineDevicesCount !== undefined && item.totalDevicesCount !== undefined) {
+          isOnline = item.onlineDevicesCount > 0;
+        } else if (item.status === "Offline" || item.status === "Down") {
+          isOnline = false;
+        }
+
+        const resolvedStatus = isOnline ? "Online (Live)" : "Down (Offline)";
+        const apDetails = item.totalDevicesCount !== undefined
+          ? `${item.onlineDevicesCount || 0}/${item.totalDevicesCount} APs Online • ${item.linkType || "Broadband"}`
+          : `${item.apCount || 1} APs • ${item.linkType || "Broadband"}`;
+
         sites.push({
-          id: item.id,
+          id: item.id || row.id,
           projectId: "freewifi",
           projectName: "Free Wi-Fi 4 All",
           siteName: item.locationName || item.siteName || "Free Wi-Fi Hotspot",
@@ -78,9 +96,16 @@ projectsRouter.get("/projects/map-sites", async (req: Request, res: Response) =>
           municipality: item.municipality || "Legazpi City",
           province: item.province || "Albay",
           barangay: item.barangay || "",
-          status: item.status || "Active",
+          status: resolvedStatus,
+          rawStatus: item.status || (isOnline ? "Operational" : "Offline"),
+          siteOnlineStatus: item.siteOnlineStatus || (isOnline ? "Online" : "Offline"),
+          isOnline: isOnline,
+          onlineDevicesCount: item.onlineDevicesCount,
+          offlineDevicesCount: item.offlineDevicesCount,
+          totalDevicesCount: item.totalDevicesCount,
+          supplier: item.omadaSupplier || item.contact,
           contact: item.contact,
-          details: `${item.apCount || 1} APs • ${item.linkType || "Broadband"}`,
+          details: apDetails,
           bandwidth: item.bandwidth || item.averageBandwidthMbps || "30 Mbps",
           latitude: item.latitude ? Number(item.latitude) : null,
           longitude: item.longitude ? Number(item.longitude) : null,
@@ -345,7 +370,9 @@ projectsRouter.get("/overview/stats", async (_req: Request, res: Response) => {
             lower === "completed" ||
             lower === "deployed" ||
             lower === "monitoring" ||
-            lower === "ongoing"
+            lower === "ongoing" ||
+            lower === "degraded" ||
+            lower.includes("online")
           ) {
             op++;
           }

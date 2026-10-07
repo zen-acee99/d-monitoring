@@ -378,8 +378,18 @@ openTimeClockRouter.post("/fetch", async (req: Request, res: Response) => {
     const daysInMonth = new Date(yearNum, monthNum + 1, 0).getDate();
     const pad = (n: number) => String(n).padStart(2, "0");
 
-    const fromDateTime = `${yearNum}-${pad(monthNum + 1)}-01 00:00:00`;
-    const toDateTime = `${yearNum}-${pad(monthNum + 1)}-${pad(daysInMonth)} 23:59:59`;
+    let fromDay = "01";
+    let toDay = pad(daysInMonth);
+    if (scope === "first-half") {
+      fromDay = "01";
+      toDay = "15";
+    } else if (scope === "second-half") {
+      fromDay = "16";
+      toDay = pad(daysInMonth);
+    }
+
+    const fromDateTime = `${yearNum}-${pad(monthNum + 1)}-${fromDay} 00:00:00`;
+    const toDateTime = `${yearNum}-${pad(monthNum + 1)}-${toDay} 23:59:59`;
 
     // First attempt: Direct query with exact user full name for best speed
     let records = await queryOtcTimeCards(fromDateTime, toDateTime, targetFullName);
@@ -431,7 +441,7 @@ openTimeClockRouter.post("/fetch", async (req: Request, res: Response) => {
         continue;
       }
 
-      // Check if excluded by Action Scope
+      // Check if excluded by 2-Week Action Scope (keep columns intact, punches empty)
       if (scope === "first-half" && d > 15) {
         dtrRows.push({
           day: d,
@@ -485,7 +495,7 @@ openTimeClockRouter.post("/fetch", async (req: Request, res: Response) => {
               amOut = outTime;
             } else {
               amOut = "12:00";
-              pmIn = "13:00";
+              pmIn = "1:00";
               pmOut = outTime;
             }
           }
@@ -495,12 +505,23 @@ openTimeClockRouter.post("/fetch", async (req: Request, res: Response) => {
         }
       });
 
+      const to12Hour = (val: string) => {
+        if (!val || !val.trim()) return "";
+        const match = val.trim().match(/^(\d{1,2}):(\d{2})/);
+        if (!match) return val.trim();
+        let h = parseInt(match[1], 10);
+        const m = match[2];
+        if (h > 12) h -= 12;
+        else if (h === 0) h = 12;
+        return `${h}:${m}`;
+      };
+
       dtrRows.push({
         day: d,
-        amArrival: amIn,
-        amDeparture: amOut,
-        pmArrival: pmIn,
-        pmDeparture: pmOut,
+        amArrival: to12Hour(amIn),
+        amDeparture: to12Hour(amOut),
+        pmArrival: to12Hour(pmIn),
+        pmDeparture: to12Hour(pmOut),
         undertimeHours: "",
         undertimeMinutes: "",
         isCustomLabel: false,

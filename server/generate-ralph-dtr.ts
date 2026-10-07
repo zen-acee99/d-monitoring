@@ -77,6 +77,31 @@ function parseTimeToMinutes(timeStr: string): number | null {
   return h * 60 + m;
 }
 
+function formatPnpkiDate(d: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const year = d.getFullYear();
+  const month = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const hours = pad(d.getHours());
+  const minutes = pad(d.getMinutes());
+  const seconds = pad(d.getSeconds());
+  return `${year}.${month}.${day} ${hours}:${minutes}:${seconds} +08'00'`;
+}
+
+async function executeWithRetry<T>(fn: () => Promise<T>, retries = 3, delay = 1500): Promise<T> {
+  let lastError: any;
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      console.warn(`Query attempt ${i + 1} failed: ${err.message || err}. Retrying in ${delay}ms...`);
+      await new Promise((res) => setTimeout(res, delay));
+    }
+  }
+  throw lastError;
+}
+
 function calculateDtrMetrics(rows: DtrRow[]) {
   let totalMinutes = 0;
   let undertimeHours = 0;
@@ -139,13 +164,16 @@ async function buildRalphDtrVectorPdf(
   supervisorTitle: string,
   rows: DtrRow[],
   p12SignerName: string,
-  signatureImage?: string
+  signatureImage?: string,
+  signingDateTime?: string
 ) {
   const doc = new jsPDF({
     orientation: "portrait",
     unit: "pt",
     format: "letter", // 612 x 792 pt
+    compress: true,
   });
+
 
   const formWidth = 278;
   const colWidths = [24, 45, 45, 45, 45, 37, 37]; // Sum = 278 pt
@@ -346,7 +374,7 @@ async function buildRalphDtrVectorPdf(
     // Employee Signature Box
     const empSigY = certY + 48;
     const boxW = 120;
-    const boxH = 22;
+    const boxH = signingDateTime ? 25 : 22;
     const boxX = formX + (formWidth - boxW) / 2;
     const boxY = empSigY - boxH - 4;
 
@@ -371,12 +399,20 @@ async function buildRalphDtrVectorPdf(
     doc.setFont("helvetica", "bold");
     doc.setFontSize(6.8);
     doc.setTextColor(0, 0, 0);
-    doc.text("Digitally signed", boxX + (signatureImage ? 48 : boxW / 2), boxY + 9, {
-      align: signatureImage ? "left" : "center",
-    });
-    doc.text(`by ${p12SignerName}`, boxX + (signatureImage ? 48 : boxW / 2), boxY + 16.5, {
-      align: signatureImage ? "left" : "center",
-    });
+    const textX = signatureImage ? boxX + 48 : boxX + boxW / 2;
+    const textAlign = signatureImage ? "left" : "center";
+
+    if (signingDateTime) {
+      doc.text("Digitally signed", textX, boxY + 7.5, { align: textAlign });
+      doc.text(`by ${p12SignerName}`, textX, boxY + 14.5, { align: textAlign });
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(5.5);
+      doc.setTextColor(40, 40, 40);
+      doc.text(`Date: ${signingDateTime}`, textX, boxY + 21.5, { align: textAlign });
+    } else {
+      doc.text("Digitally signed", textX, boxY + 9, { align: textAlign });
+      doc.text(`by ${p12SignerName}`, textX, boxY + 16.5, { align: textAlign });
+    }
 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(8);
@@ -556,6 +592,7 @@ async function main() {
   const periodText = "SEPTEMBER 01-30, 2026";
   const supervisorName = "NORLY A. TABO";
   const supervisorTitle = "OIC Chief - Technical Operations Division";
+  const signingDateTime = formatPnpkiDate(new Date());
 
   const { rawPdfBytes, employeeSigRects } = await buildRalphDtrVectorPdf(
     employeeName,
@@ -564,10 +601,11 @@ async function main() {
     supervisorTitle,
     dtrRows,
     signerIdentity.commonName,
-    signatureImage
+    signatureImage,
+    signingDateTime
   );
 
-  console.log(`✓ Vector CS Form 48 generated with signature image (${rawPdfBytes.length} bytes).`);
+  console.log(`✓ Vector CS Form 48 generated with signature image and Date & Time timestamp (${rawPdfBytes.length} bytes).`);
 
   // 5. Cryptographically sign the PDF using Ralph's .p12 certificate (Sequential Pass 1 & Pass 2 for Copy 1 and Copy 2)
   console.log(`\nExecuting Pass 1: Personnel Copy 1...`);
@@ -597,116 +635,149 @@ async function main() {
   const signedBuffer = pass2.signedBuffer;
   console.log(`✓ Cryptographically signed PDF with PNPKI keystore (2 passes completed, ${signedBuffer.length} bytes).`);
 
-  // Convert to Base64 Data URI
-  const signedPdfBase64 = signedBuffer.toString("base64");
-  const signedPdfDataUrl = `data:application/pdf;base64,${signedPdfBase64}`;
   const fileName = `DTR_RALPH_DELA_TORRE_September_2026.pdf`;
   const storageId = `DTR-PROVINCIAL-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 900)}`;
 
+  // Write directly to Desktop
+  const desktopPath = "C:\\Users\\Ace\\Desktop\\DTR_RALPH_DELA_TORRE_September_2026.pdf";
+  try {
+    fs.writeFileSync(desktopPath, signedBuffer);
+    console.log(`✓ Successfully saved signed PDF to Desktop: ${desktopPath}`);
+  } catch (err) {
+    console.error("Failed to write PDF to Desktop:", err);
+  }
+
+  // Write to dict-monitoring public directory
+  try {
+    const publicPathMonitoring = path.resolve(process.cwd(), "public", fileName);
+    fs.writeFileSync(publicPathMonitoring, signedBuffer);
+    console.log(`✓ Successfully saved copy to dict-monitoring/public: ${publicPathMonitoring}`);
+  } catch (err) {
+    console.warn("Could not save to dict-monitoring/public:", err);
+  }
+
+  // Write to dict-dtr-generator public directory
+  try {
+    const standalonePublicPath = "C:\\Users\\Ace\\Desktop\\Project\\DICT Sys\\dict-dtr-generator\\public\\" + fileName;
+    fs.writeFileSync(standalonePublicPath, signedBuffer);
+    console.log(`✓ Successfully saved copy to dict-dtr-generator/public: ${standalonePublicPath}`);
+  } catch (err) {
+    console.warn("Could not save to dict-dtr-generator/public:", err);
+  }
+
+  // Convert to Base64 Data URI for DB Storage
+  const signedPdfBase64 = signedBuffer.toString("base64");
+  const signedPdfDataUrl = `data:application/pdf;base64,${signedPdfBase64}`;
+
   // 6. Delete old record if any and save new digitally signed record to PO Archive in dtr_storage
-  await db.execute({
-    sql: "DELETE FROM dtr_storage WHERE employee_name LIKE '%Ralph%' OR user_id = 'usr-mudrq46b'",
-    args: [],
-  });
+  try {
+    await executeWithRetry(() => db.execute({
+      sql: "DELETE FROM dtr_storage WHERE employee_name LIKE '%Ralph%' OR user_id = 'usr-mudrq46b'",
+      args: [],
+    }));
 
-  const rowsJson = JSON.stringify(dtrRows);
-  const nowStr = new Date().toLocaleString("en-US", {
-    month: "short",
-    day: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: true,
-  });
+    const rowsJson = JSON.stringify(dtrRows);
+    const nowStr = new Date().toLocaleString("en-US", {
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    });
 
-  await db.execute({
-    sql: `INSERT INTO dtr_storage (
-      id, user_id, employee_name, employee_id, position, employment_status,
-      module, province, section_division, period_text, month, year, scope,
-      regular_hours, saturday_hours, supervisor_name, supervisor_title,
-      total_days_rendered, total_hours_rendered, undertime_hours, undertime_minutes, late_minutes,
-      status, submitted_date, pdf_filename, pdf_filesize, pdf_data,
-      has_p12, signature_image, signer_name,
-      employee_signature_image, employee_has_p12, employee_signer_name,
-      supervisor_signature_image, supervisor_has_p12,
-      rows_json, doc_type, remarks, created_at, updated_at
-    ) VALUES (
-      ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, ?,
-      ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?,
-      ?, ?, ?,
-      ?, ?, ?,
-      ?, ?,
-      ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-    )`,
-    args: [
-      storageId,
-      "usr-mudrq46b",
-      employeeName,
-      "DICT-R5-2026-100",
-      "Technical Specialist / Engineer",
-      "Regular",
-      "PROVINCIAL",
-      "Regional Off",
-      "Regional Operations (RO)",
-      periodText,
-      8, // September (0-indexed)
-      2026,
-      "full",
-      "",
-      "",
-      supervisorName,
-      supervisorTitle,
-      metrics.totalDaysRendered,
-      metrics.totalHoursRendered,
-      metrics.undertimeHours,
-      metrics.undertimeMinutes,
-      metrics.lateMinutes,
-      "Submitted",
-      nowStr,
-      fileName,
-      `${Math.round(signedBuffer.length / 1024)} KB`,
-      signedPdfDataUrl,
-      1, // has_p12
-      signatureImage,
-      signerIdentity.commonName,
-      signatureImage,
-      1, // employee_has_p12
-      signerIdentity.commonName,
-      null,
-      0, // supervisor_has_p12
-      rowsJson,
-      "DTR",
-      `Moved to PO Archive with PNPKI Digital Signature & DigiSigned Image (${signerIdentity.commonName}) from Open Time Clock`,
-    ],
-  });
+    await executeWithRetry(() => db.execute({
+      sql: `INSERT INTO dtr_storage (
+        id, user_id, employee_name, employee_id, position, employment_status,
+        module, province, section_division, period_text, month, year, scope,
+        regular_hours, saturday_hours, supervisor_name, supervisor_title,
+        total_days_rendered, total_hours_rendered, undertime_hours, undertime_minutes, late_minutes,
+        status, submitted_date, pdf_filename, pdf_filesize, pdf_data,
+        has_p12, signature_image, signer_name,
+        employee_signature_image, employee_has_p12, employee_signer_name,
+        supervisor_signature_image, supervisor_has_p12,
+        rows_json, doc_type, remarks, created_at, updated_at
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, ?, ?,
+        ?, ?, ?,
+        ?, ?,
+        ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      )`,
+      args: [
+        storageId,
+        "usr-mudrq46b",
+        employeeName,
+        "DICT-R5-2026-100",
+        "Technical Specialist / Engineer",
+        "Regular",
+        "PROVINCIAL",
+        "Regional Off",
+        "Regional Operations (RO)",
+        periodText,
+        8, // September (0-indexed)
+        2026,
+        "full",
+        "",
+        "",
+        supervisorName,
+        supervisorTitle,
+        metrics.totalDaysRendered,
+        metrics.totalHoursRendered,
+        metrics.undertimeHours,
+        metrics.undertimeMinutes,
+        metrics.lateMinutes,
+        "Submitted",
+        nowStr,
+        fileName,
+        `${Math.round(signedBuffer.length / 1024)} KB`,
+        signedPdfDataUrl,
+        1, // has_p12
+        signatureImage,
+        signerIdentity.commonName,
+        signatureImage,
+        1, // employee_has_p12
+        signerIdentity.commonName,
+        null,
+        0, // supervisor_has_p12
+        rowsJson,
+        "DTR",
+        `Moved to PO Archive with PNPKI Digital Signature & DigiSigned Image (${signerIdentity.commonName}) from Open Time Clock`,
+      ],
+    }));
 
-  // 7. Update dtr_user_setup for Ralph
-  await db.execute({
-    sql: `UPDATE dtr_user_setup 
-          SET otc_username = 'ralphdt',
-              supervisor_name = 'NORLY A. TABO',
-              supervisor_title = 'OIC Chief - Technical Operations Division',
-              updated_at = CURRENT_TIMESTAMP
-          WHERE user_id = 'usr-mudrq46b' OR employee_name LIKE '%Ralph%'`,
-    args: [],
-  });
+    // 7. Update dtr_user_setup for Ralph
+    await executeWithRetry(() => db.execute({
+      sql: `UPDATE dtr_user_setup 
+            SET otc_username = 'ralphdt',
+                supervisor_name = 'NORLY A. TABO',
+                supervisor_title = 'OIC Chief - Technical Operations Division',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = 'usr-mudrq46b' OR employee_name LIKE '%Ralph%'`,
+      args: [],
+    }));
 
-  // 8. Broadcast realtime event
-  broadcastDtrRealtimeEvent({
-    type: "INSERT",
-    id: storageId,
-    record: {
+    // 8. Broadcast realtime event
+    broadcastDtrRealtimeEvent({
+      type: "INSERT",
       id: storageId,
-      employeeName,
-      province: "Regional Off",
-      pdfFileName: fileName,
-      totalHoursRendered: metrics.totalHoursRendered,
-      status: "Submitted",
-    },
-  });
+      record: {
+        id: storageId,
+        employeeName,
+        province: "Regional Off",
+        pdfFileName: fileName,
+        totalHoursRendered: metrics.totalHoursRendered,
+        status: "Submitted",
+      },
+    });
+    console.log(`✓ Successfully synced record ${storageId} to Turso dtr_storage.`);
+  } catch (dbErr) {
+    console.warn("Notice on database sync (signed PDF is safely written to disk):", dbErr);
+  }
 
   console.log(`\n=================================================`);
   console.log(`✓ SUCCESS! Generated and moved Ralph Dela Torre DTR with DigiSigned image to PO Archive!`);
