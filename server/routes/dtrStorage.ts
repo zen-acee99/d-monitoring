@@ -106,12 +106,14 @@ function formatDtrStorageRow(row: any) {
 dtrStorageRouter.get("/", async (req: Request, res: Response) => {
   try {
     const { module, province, user_id, status, search } = req.query;
+    const includePdf = req.query.include_pdf === "true" || String(module || "").toUpperCase() === "SIGNING_WORKSPACE";
+    const pdfField = includePdf ? "pdf_data," : "";
     let sql = `SELECT 
       id, user_id, employee_name, employee_id, position, employment_status,
       module, province, section_division, period_text, month, year, scope,
       regular_hours, saturday_hours, supervisor_name, supervisor_title,
       total_days_rendered, total_hours_rendered, undertime_hours, undertime_minutes, late_minutes,
-      status, submitted_date, pdf_filename, pdf_filesize,
+      status, submitted_date, pdf_filename, pdf_filesize, ${pdfField}
       has_p12, signature_image, signer_name,
       employee_signature_image, employee_has_p12, employee_signer_name,
       supervisor_signature_image, supervisor_has_p12,

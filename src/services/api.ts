@@ -808,9 +808,16 @@ export const dtrStorageApi = {
       if (filters?.user_id) params.set("user_id", filters.user_id);
       if (filters?.status && filters.status !== "All") params.set("status", filters.status);
       if (filters?.search) params.set("search", filters.search);
+      params.set("_t", Date.now().toString());
 
-      const query = params.toString() ? `?${params.toString()}` : "";
-      const res = await fetch(`${API_BASE}/dtr-storage${query}`);
+      const query = `?${params.toString()}`;
+      const res = await fetch(`${API_BASE}/dtr-storage${query}`, {
+        cache: "no-store",
+        headers: {
+          "Cache-Control": "no-cache",
+          Pragma: "no-cache",
+        },
+      });
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       const data = await res.json();
       return data.records || [];

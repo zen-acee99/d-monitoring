@@ -2042,8 +2042,34 @@ export async function scanPdfForSigners(
  * Searches the pages of an uploaded PDF to locate the exact page and coordinates
  * of a specific personnel's name (or signature section):
  * - Placed directly ABOVE the personnel's name for normal signers (isCounterSign = false)
+/**
+ * Accurate width estimator for standard PDF fonts (Times, Helvetica, Arial, Calibri)
+ */
+export function measurePdfTextWidth(text: string, fontSize = 10.5): number {
+  if (!text) return 0;
+  let width = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === " " || ch === "." || ch === "," || ch === ":" || ch === "-") {
+      width += fontSize * 0.28;
+    } else if ("MWmw".includes(ch)) {
+      width += fontSize * 0.85;
+    } else if ("ijltr1I!|'\"[]()".includes(ch)) {
+      width += fontSize * 0.32;
+    } else if ("ABCDEFGHJKLNOPQRSTUVXYZ".includes(ch)) {
+      width += fontSize * 0.64;
+    } else {
+      width += fontSize * 0.52;
+    }
+  }
+  return width;
+}
+
+/**
+ * Accurately finds signature coordinates for a specific personnel in an uploaded document:
+ * - Placed directly ABOVE the personnel's name for normal signers (isCounterSign = false)
  * - Placed directly BESIDE the personnel's name for counter-signers (isCounterSign = true),
- *   in a compact 15px aspect-square (15x15) box.
+ *   in a compact aspect-square (20x20) box.
  */
 export function findPersonnelSignatureCoordinates(
   pdfDoc: PDFDocument,
@@ -2066,9 +2092,9 @@ export function findPersonnelSignatureCoordinates(
   const requestedPos = options?.counterSignPosition || "auto";
 
   if (pageCount === 0) {
-    const boxW = isCounter ? 15 : 125;
-    const boxH = isCounter ? 15 : 28;
-    const boxX = isCounter ? 220 + (csIndex * 18) : 70;
+    const boxW = isCounter ? 38 : 125;
+    const boxH = isCounter ? 14 : 28;
+    const boxX = isCounter ? 220 + (csIndex * 42) : 70;
     const boxY = 80;
     return {
       pageIndex: 0,
@@ -2076,7 +2102,7 @@ export function findPersonnelSignatureCoordinates(
       boxY,
       boxW,
       boxH,
-      detectedReason: isCounter ? "default 15px counter-sign beside" : "default sign above",
+      detectedReason: isCounter ? "default counter-sign beside" : "default sign above",
       appliedPosition: isCounter ? "right" : "above",
     };
   }
@@ -2111,37 +2137,49 @@ export function findPersonnelSignatureCoordinates(
         const item = matches[0];
 
         if (isCounter) {
-          // Counter-sign: compact 15px aspect-square (15x15) box placed directly BESIDE the name
-          const boxW = 15;
-          const boxH = 15;
-          const estTextWidth = Math.max(60, Math.min(220, (item.text.length || normTarget.length) * 7.2));
-          let effectivePos: "right" | "left" | "bottom" = "right";
+          // Counter-sign: compact horizontal stamp (sign on left, DigiSigned on right) placed directly beside or below
+          const boxW = 38;
+          const boxH = 14;
 
-          if (requestedPos === "auto") {
-            if (item.x + estTextWidth + boxW + 15 > width) {
-              effectivePos = "left";
-            } else {
-              effectivePos = "right";
+          // Locate true right edge of personnel name without hopping across table columns
+          const sameLineItems = textItems
+            .filter((it) => Math.abs(it.y - item.y) < 4 && it.x >= item.x - 5 && it.x <= item.x + 250)
+            .sort((a, b) => a.x - b.x);
+
+          let rightmostX = item.x + measurePdfTextWidth(item.text.trim(), 10.5);
+          for (const it of sameLineItems) {
+            // Only extend if it's an immediate word continuation of the name (gap <= 22 points)
+            if (it.x <= rightmostX + 22) {
+              const itEnd = it.x + measurePdfTextWidth(it.text.trim(), 10.5);
+              if (itEnd > rightmostX) {
+                rightmostX = itEnd;
+              }
             }
-          } else {
-            effectivePos = requestedPos;
+          }
+
+          let effectivePos: "right" | "left" | "bottom" =
+            requestedPos === "auto" ? "right" : requestedPos;
+
+          if (requestedPos === "auto" && rightmostX + boxW + 10 > width) {
+            effectivePos = "left";
           }
 
           let boxX = Math.round(item.x);
           let boxY = Math.round(item.y);
 
           if (effectivePos === "right") {
-            // Placed to the RIGHT beside the personnel name
-            boxX = Math.min(width - boxW - 10, Math.round(item.x + estTextWidth + 6 + (csIndex * 18)));
-            boxY = Math.max(10, Math.min(height - boxH - 10, Math.round(item.y - 2)));
+            // Placed snugly to the RIGHT beside the personnel name (vertically centered with name text)
+            boxX = Math.min(width - boxW - 4, Math.round(rightmostX + 4 + (csIndex * (boxW + 4))));
+            boxY = Math.max(4, Math.min(height - boxH - 4, Math.round(item.y - 2)));
           } else if (effectivePos === "left") {
             // Placed to the LEFT beside the personnel name
-            boxX = Math.max(10, Math.round(item.x - boxW - 6 - (csIndex * 18)));
-            boxY = Math.max(10, Math.min(height - boxH - 10, Math.round(item.y - 2)));
+            boxX = Math.max(4, Math.round(item.x - boxW - 4 - (csIndex * (boxW + 4))));
+            boxY = Math.max(4, Math.min(height - boxH - 4, Math.round(item.y - 2)));
           } else {
-            // Placed below/adjacent
-            boxX = Math.max(10, Math.min(width - boxW - 10, Math.round(item.x)));
-            boxY = Math.max(10, Math.round(item.y - boxH - 6 - (csIndex * 18)));
+            // Placed BELOW underneath the personnel name
+            const nameWidth = measurePdfTextWidth(item.text.trim(), 10.5);
+            boxX = Math.max(4, Math.min(width - boxW - 4, Math.round(item.x + (nameWidth - boxW) / 2)));
+            boxY = Math.max(4, Math.round(item.y - boxH - 4 - (csIndex * (boxH + 4))));
           }
 
           return {
@@ -2150,7 +2188,7 @@ export function findPersonnelSignatureCoordinates(
             boxY,
             boxW,
             boxH,
-            detectedReason: `Counter-sign 15px box BESIDE (${effectivePos}) "${item.text}" on page ${pIdx + 1} at (${boxX}, ${boxY})`,
+            detectedReason: `Counter-sign stamp (${boxW}x${boxH} pt) placed ${effectivePos} "${item.text}" on page ${pIdx + 1} at (${boxX}, ${boxY})`,
             appliedPosition: effectivePos,
           };
         } else {
@@ -2180,8 +2218,8 @@ export function findPersonnelSignatureCoordinates(
   const { width, height } = lastPage.getSize();
 
   if (isCounter) {
-    const boxW = 15;
-    const boxH = 15;
+    const boxW = 20;
+    const boxH = 20;
     const effectivePos: "right" | "left" | "bottom" = requestedPos === "auto" ? "right" : requestedPos;
     let boxX = Math.round(width * 0.55);
     let boxY = Math.round(height * 0.18);
@@ -2199,7 +2237,7 @@ export function findPersonnelSignatureCoordinates(
       boxY,
       boxW,
       boxH,
-      detectedReason: `Default counter-sign 15px box BESIDE (${effectivePos}) on last page ${lastPageIdx + 1} at (${boxX}, ${boxY})`,
+      detectedReason: `Default counter-sign compact 20px box placed ${effectivePos} on last page ${lastPageIdx + 1} at (${boxX}, ${boxY})`,
       appliedPosition: effectivePos,
     };
   } else {
@@ -2275,29 +2313,17 @@ export async function signUploadedPersonnelPdfBytes(
   let resolvedSignerName = (p12Options?.signerName || targetName).trim();
   let finalUint8 = incomingBytes;
 
-  // If the document is NOT yet signed, embed the visual signature stamp
-  if (!isAlreadySigned) {
-    const pages = pdfDoc.getPages();
-    const targetPage = pages[loc.pageIndex];
+  // Embed the visual signature stamp on the page
+  const pages = pdfDoc.getPages();
+  const targetPage = pages[loc.pageIndex];
 
-    if (isCounter) {
-      // 1. Draw compact 15px aspect-square (15x15) checkmark beside personnel name (border-none)
-      try {
-        const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-        targetPage.drawText("✓", {
-          x: boxX + 3.2,
-          y: boxY + 3.5,
-          size: 9,
-          font: helveticaBold,
-          color: rgb(0.08, 0.28, 0.65),
-        });
-      } catch (e) {
-        console.warn("Could not draw 15px counter-sign mark:", e);
-      }
-    } else {
-      // 2. Standard signature stamp directly ABOVE the personnel name (border-none per user requirement)
+  if (isCounter) {
+    // Compact horizontal counter-signature stamp: border-none, bg-transparent, sign on left, DigiSigned on right, text-black
+    try {
+      const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-      let hasDrawnImage = false;
+      // 1. Left side: Signature image or vector checkmark (width ~14 pt, height ~12 pt)
+      let hasDrawnCsImg = false;
       if (signatureImage) {
         try {
           const cleanBase64 = signatureImage.replace(/^data:image\/\w+;base64,/, "");
@@ -2306,57 +2332,138 @@ export async function signUploadedPersonnelPdfBytes(
           for (let i = 0; i < imgBinary.length; i++) {
             imgBytes[i] = imgBinary.charCodeAt(i);
           }
-          let embeddedImg;
+          let embeddedCsImg;
           if (signatureImage.includes("image/jpeg") || signatureImage.includes("image/jpg")) {
-            embeddedImg = await pdfDoc.embedJpg(imgBytes);
+            embeddedCsImg = await pdfDoc.embedJpg(imgBytes);
           } else {
-            embeddedImg = await pdfDoc.embedPng(imgBytes);
+            embeddedCsImg = await pdfDoc.embedPng(imgBytes);
           }
-          targetPage.drawImage(embeddedImg, {
-            x: boxX + 3,
-            y: boxY + 3,
-            width: 38,
-            height: boxH - 6,
+          targetPage.drawImage(embeddedCsImg, {
+            x: boxX + 1,
+            y: boxY + 1,
+            width: 14,
+            height: 12,
           });
-          hasDrawnImage = true;
+          hasDrawnCsImg = true;
         } catch (e) {
-          console.warn("Could not embed signature image in PDF page:", e);
+          console.warn("Could not draw counter-sign image:", e);
         }
       }
 
+      if (!hasDrawnCsImg) {
+        // Crisp vector checkmark lines in black on the left side
+        targetPage.drawLine({
+          start: { x: boxX + 2, y: boxY + 6.5 },
+          end: { x: boxX + 6, y: boxY + 2.5 },
+          thickness: 1.1,
+          color: rgb(0, 0, 0),
+        });
+        targetPage.drawLine({
+          start: { x: boxX + 6, y: boxY + 2.5 },
+          end: { x: boxX + 13, y: boxY + 11.5 },
+          thickness: 1.1,
+          color: rgb(0, 0, 0),
+        });
+      }
+
+      // 2. Right side: DigiSigned and name aligned vertically beside the signature (text-black)
+      const rawName = (resolvedSignerName || "Signer").trim();
+      const nameParts = rawName.split(/\s+/).filter(Boolean);
+      const compactName =
+        rawName.length <= 10
+          ? rawName
+          : nameParts.length > 1
+          ? `${nameParts[0][0]}. ${nameParts[nameParts.length - 1]}`
+          : rawName.slice(0, 10);
+
+      const textX = boxX + 16;
+
+      targetPage.drawText("DigiSigned", {
+        x: textX,
+        y: boxY + 7.8,
+        size: 3.3,
+        font: helveticaBold,
+        color: rgb(0, 0, 0),
+      });
+
+      targetPage.drawText(`by ${compactName}`, {
+        x: textX,
+        y: boxY + 3.2,
+        size: 3.0,
+        font: helveticaBold,
+        color: rgb(0, 0, 0),
+      });
+    } catch (e) {
+      console.warn("Could not draw compact counter-sign mark:", e);
+    }
+  } else {
+    // 2. Standard signature stamp directly ABOVE the personnel name (border-none per user requirement)
+
+    let hasDrawnImage = false;
+    if (signatureImage) {
       try {
-        const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-        const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
-        const textX = hasDrawnImage ? boxX + 44 : boxX + 5;
-
-        targetPage.drawText("Digitally signed", {
-          x: textX,
-          y: boxY + 18,
-          size: 6.5,
-          font: helveticaBold,
-          color: rgb(0.08, 0.20, 0.50),
+        const cleanBase64 = signatureImage.replace(/^data:image\/\w+;base64,/, "");
+        const imgBinary = atob(cleanBase64);
+        const imgBytes = new Uint8Array(imgBinary.length);
+        for (let i = 0; i < imgBinary.length; i++) {
+          imgBytes[i] = imgBinary.charCodeAt(i);
+        }
+        let embeddedImg;
+        if (signatureImage.includes("image/jpeg") || signatureImage.includes("image/jpg")) {
+          embeddedImg = await pdfDoc.embedJpg(imgBytes);
+        } else {
+          embeddedImg = await pdfDoc.embedPng(imgBytes);
+        }
+        targetPage.drawImage(embeddedImg, {
+          x: boxX + 3,
+          y: boxY + 3,
+          width: 38,
+          height: boxH - 6,
         });
-
-        targetPage.drawText(`by ${resolvedSignerName}`, {
-          x: textX,
-          y: boxY + 10.5,
-          size: 6.5,
-          font: helveticaBold,
-          color: rgb(0.0, 0.0, 0.0),
-        });
-
-        targetPage.drawText(`Date: ${formatPnpkiDate()}`, {
-          x: textX,
-          y: boxY + 3.5,
-          size: 5.2,
-          font: helvetica,
-          color: rgb(0.25, 0.30, 0.40),
-        });
-      } catch (err) {
-        console.warn("Could not draw digital signature typography:", err);
+        hasDrawnImage = true;
+      } catch (e) {
+        console.warn("Could not embed signature image in PDF page:", e);
       }
     }
 
+    try {
+      const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const textX = hasDrawnImage ? boxX + 44 : boxX + 5;
+
+      targetPage.drawText("Digitally signed", {
+        x: textX,
+        y: boxY + 18,
+        size: 6.5,
+        font: helveticaBold,
+        color: rgb(0.08, 0.20, 0.50),
+      });
+
+      targetPage.drawText(`by ${resolvedSignerName}`, {
+        x: textX,
+        y: boxY + 10.5,
+        size: 6.5,
+        font: helveticaBold,
+        color: rgb(0.0, 0.0, 0.0),
+      });
+
+      targetPage.drawText(`Date: ${formatPnpkiDate()}`, {
+        x: textX,
+        y: boxY + 3.5,
+        size: 5.2,
+        font: helvetica,
+        color: rgb(0.25, 0.30, 0.40),
+      });
+    } catch (err) {
+      console.warn("Could not draw digital signature typography:", err);
+    }
+  }
+
+  // CRITICAL: Save the modified PDF with the embedded visual stamp so it's permanently visible!
+  try {
+    finalUint8 = await pdfDoc.save({ useObjectStreams: false });
+  } catch (saveErr) {
+    console.warn("Could not save visual signature stamp into PDF bytes:", saveErr);
   }
 
   // Cryptographic PNPKI .p12 signing (via backend incremental update to preserve earlier signatures)

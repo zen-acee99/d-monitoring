@@ -302,7 +302,7 @@ export function appendSignatureIncremental(
     const maxX = Math.max(rx, rx + rw);
     const maxY = Math.max(ry, ry + rh);
     const bboxW = Math.max(20, maxX - minX);
-    const bboxH = Math.max(16, maxY - minY);
+    const bboxH = Math.max(14, maxY - minY);
 
     const sigIndex = existingSigCount + 1 + idx;
     const defaultFieldName = `Signature_${sigIndex}_${cleanSignerTag}`;
@@ -312,22 +312,38 @@ export function appendSignatureIncremental(
 
     // Appearance XObject stream rendering visual signature in Adobe Acrobat
     const isSigningWorkspace = reason.toLowerCase().includes("signing workspace");
-    const isSmallSquare = bboxW <= 25 && bboxH <= 25;
+    const isSmallCounterSign =
+      (bboxW <= 85 && bboxH <= 85) ||
+      fieldName.toLowerCase().includes("counter");
 
     let streamContent = `q\n`;
     // Only draw bounding border if NOT in Signing Workspace (border-none for Signing Workspace)
-    if (!isSigningWorkspace) {
+    if (!isSigningWorkspace && !isSmallCounterSign) {
       streamContent += `0.35 0.45 0.75 RG 0.75 w 0.5 0.5 ${bboxW - 1} ${bboxH - 1} re s\n`;
     }
 
-    if (isSmallSquare) {
-      // 15px aspect-square counter-signature mark (border-none)
+    if (isSmallCounterSign) {
+      // Compact horizontal counter-signature stamp: border-none, bg-transparent, sign on left, DigiSigned on right in text-black
+      const nameParts = escapedSigner.split(" ").filter(Boolean);
+      const compactName =
+        escapedSigner.length <= 10
+          ? escapedSigner
+          : nameParts.length > 1
+          ? `${nameParts[0][0]}. ${nameParts[nameParts.length - 1]}`
+          : escapedSigner.slice(0, 10);
+
       streamContent +=
+        `0 0 0 RG 1.1 w\n` +
+        `2 6.5 m 6 2.5 l 13 11.5 l S\n` +
         `BT\n` +
-        `/F1 8 Tf\n` +
-        `0.08 0.28 0.65 rg\n` +
-        `3 3 Td\n` +
-        `(\\342\\234\\223) Tj\n` +
+        `/F1 3.3 Tf\n` +
+        `0 0 0 rg\n` +
+        `16 7.8 Td\n` +
+        `(DigiSigned) Tj\n` +
+        `/F1 3 Tf\n` +
+        `0 0 0 rg\n` +
+        `0 -4.6 Td\n` +
+        `(by ${compactName}) Tj\n` +
         `ET\n` +
         `Q`;
     } else {

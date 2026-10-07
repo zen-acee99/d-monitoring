@@ -78,6 +78,7 @@ export interface WorkspaceDocument {
   pdfDataUrl?: string; // base64 or blob URL
   fileObj?: File;
   scannedInfo?: ScanPdfResult;
+  isPendingSync?: boolean;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -391,27 +392,26 @@ function DocumentPreviewModal({
         <p className="text-[11px] font-black uppercase text-slate-900 tracking-wider">
           {headerLabel}
         </p>
-        <div className={`min-h-[44px] flex items-center gap-2 pt-1 pb-1 ${align === "center" ? "justify-center" : ""}`}>
-          {/* Counter-signatures placed to the left (border-none) */}
+        <div className={`min-h-[48px] flex items-center gap-2 pt-1 pb-1 ${align === "center" ? "justify-center" : ""}`}>
+          {/* Counter-signatures placed to the left (compact 20px, border-none, bg-transparent) */}
           {allCounterSigners
             .filter((c) => c.position === "left")
             .map((cs, i) => (
               <div
                 key={i}
                 onClick={() => onShowValidationStatus?.(cs.name, cs.signedAt)}
-                className="border-none bg-cyan-500/10 px-2 py-1 rounded text-[8.5px] text-cyan-900 font-bold cursor-pointer hover:bg-cyan-100/60 transition-all"
-                title="Click to view official PNPKI Digital Signature Validation Status"
+                className="w-5 h-5 bg-transparent flex flex-col justify-between p-0.5 text-left shrink-0 cursor-pointer hover:scale-110 transition-all inline-flex"
+                title={`Counter-Signed beside name by ${cs.name} - Click to view official PNPKI Digital Signature Validation Status`}
               >
-                <div className="flex items-center gap-1">
-                  <ShieldCheck className="w-2.5 h-2.5 text-cyan-600" />
-                  <span>Counter-signed (Left)</span>
+                <div className="flex items-center justify-center">
+                  <ShieldCheck className="w-2.5 h-2.5 text-slate-900" />
                 </div>
-                <div>by {cs.name}</div>
-                {cs.signedAt && (
-                  <div className="text-[7.5px] font-mono text-cyan-800">
-                    Date: {formatPnpkiDate(new Date(cs.signedAt))}
+                <div className="leading-tight text-[5px] text-black font-bold">
+                  <div className="leading-none">DigiSigned</div>
+                  <div className="leading-none truncate max-w-full">
+                    by {cs.name.split(" ").pop() || cs.name}
                   </div>
-                )}
+                </div>
               </div>
             ))}
 
@@ -437,26 +437,25 @@ function DocumentPreviewModal({
             <div className="text-[10px] text-slate-400 italic">[Signature Area Above Name]</div>
           )}
 
-          {/* Counter-signatures placed to the right (border-none) */}
+          {/* Counter-signatures placed to the right (compact horizontal: sign on left, DigiSigned on right) */}
           {allCounterSigners
             .filter((c) => c.position === "right" || c.position === "auto")
             .map((cs, i) => (
               <div
                 key={i}
                 onClick={() => onShowValidationStatus?.(cs.name, cs.signedAt)}
-                className="border-none bg-cyan-500/10 px-2 py-1 rounded text-[8.5px] text-cyan-900 font-bold cursor-pointer hover:bg-cyan-100/60 transition-all"
-                title="Click to view official PNPKI Digital Signature Validation Status"
+                className="bg-transparent inline-flex items-center gap-1 px-1 py-0.5 text-left shrink-0 cursor-pointer hover:scale-105 transition-all"
+                title={`Counter-Signed beside name by ${cs.name} - Click to view official PNPKI Digital Signature Validation Status`}
               >
-                <div className="flex items-center gap-1">
-                  <ShieldCheck className="w-2.5 h-2.5 text-cyan-600" />
-                  <span>Counter-signed (Beside)</span>
+                <div className="w-3.5 h-3.5 flex items-center justify-center shrink-0">
+                  <ShieldCheck className="w-3 h-3 text-slate-900" />
                 </div>
-                <div>by {cs.name}</div>
-                {cs.signedAt && (
-                  <div className="text-[7.5px] font-mono text-cyan-800">
-                    Date: {formatPnpkiDate(new Date(cs.signedAt))}
+                <div className="leading-tight text-[6px] text-black font-bold shrink-0">
+                  <div className="leading-none">DigiSigned</div>
+                  <div className="leading-none truncate max-w-[50px]">
+                    by {cs.name.split(" ").pop() || cs.name}
                   </div>
-                )}
+                </div>
               </div>
             ))}
         </div>
@@ -467,25 +466,25 @@ function DocumentPreviewModal({
           {designation || "Authorized Signatory"}
         </p>
 
-        {/* Counter-signatures placed to the bottom (border-none) */}
+        {/* Counter-signatures placed to the bottom (compact horizontal: sign on left, DigiSigned on right) */}
         {allCounterSigners
           .filter((c) => c.position === "bottom")
           .map((cs, i) => (
             <div
               key={i}
               onClick={() => onShowValidationStatus?.(cs.name, cs.signedAt)}
-              className="mt-2 border-none bg-cyan-500/10 px-2 py-1 rounded text-[8.5px] text-cyan-900 font-bold inline-block cursor-pointer hover:bg-cyan-100/60 transition-all"
-              title="Click to view official PNPKI Digital Signature Validation Status"
+              className="mt-0.5 bg-transparent inline-flex items-center gap-1 px-1 py-0.5 text-left shrink-0 cursor-pointer hover:scale-105 transition-all"
+              title={`Counter-Signed below name by ${cs.name} - Click to view official PNPKI Digital Signature Validation Status`}
             >
-              <div className="flex items-center gap-1">
-                <ShieldCheck className="w-2.5 h-2.5 text-cyan-600" />
-                <span>Counter-signed (Bottom beside name) by {cs.name}</span>
+              <div className="w-3.5 h-3.5 flex items-center justify-center shrink-0">
+                <ShieldCheck className="w-3 h-3 text-slate-900" />
               </div>
-              {cs.signedAt && (
-                <div className="text-[7.5px] font-mono text-cyan-800">
-                  Date: {formatPnpkiDate(new Date(cs.signedAt))}
+              <div className="leading-tight text-[6px] text-black font-bold shrink-0">
+                <div className="leading-none">DigiSigned</div>
+                <div className="leading-none truncate max-w-[50px]">
+                  by {cs.name.split(" ").pop() || cs.name}
                 </div>
-              )}
+              </div>
             </div>
           ))}
       </div>
@@ -1269,12 +1268,266 @@ function markDocAsDeleted(id: string) {
   } catch {}
 }
 
+// ─── Single-Document Counter-Sign Personnel Picker Modal ─────────────────────
+
+interface SingleCounterSignModalProps {
+  isOpen: boolean;
+  doc: WorkspaceDocument | null;
+  initialPosition?: CounterSignPosition;
+  onClose: () => void;
+  onConfirm: (docId: string, targetPersonnel: string, position: CounterSignPosition) => void;
+  isProcessing: boolean;
+}
+
+function SingleCounterSignModal({
+  isOpen,
+  doc,
+  initialPosition = "right",
+  onClose,
+  onConfirm,
+  isProcessing,
+}: SingleCounterSignModalProps) {
+  const [selectedPersonnel, setSelectedPersonnel] = useState<string>("");
+  const [selectedPosition, setSelectedPosition] = useState<CounterSignPosition>(
+    initialPosition === "auto" ? "right" : initialPosition
+  );
+
+  // Gather all unique personnel from this document's signer chain
+  const personnelChoices = useMemo(() => {
+    if (!doc) return [];
+    const names = new Set<string>();
+    if (doc.targetPersonnel) names.add(doc.targetPersonnel);
+    doc.requiredSigners.forEach((r) => r && names.add(r));
+    doc.signers.forEach((s) => s?.name && names.add(s.name));
+    return Array.from(names).filter((n) => n && n.trim().length > 2);
+  }, [doc]);
+
+  // Auto-select first choice when modal opens or doc changes
+  useEffect(() => {
+    if (personnelChoices.length > 0) {
+      setSelectedPersonnel((prev) =>
+        personnelChoices.includes(prev) ? prev : personnelChoices[0]
+      );
+    } else {
+      setSelectedPersonnel("");
+    }
+  }, [personnelChoices, isOpen]);
+
+  useEffect(() => {
+    if (isOpen) {
+      setSelectedPosition(initialPosition === "auto" ? "right" : initialPosition);
+    }
+  }, [isOpen, initialPosition]);
+
+  if (!isOpen || !doc) return null;
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-sm animate-in fade-in">
+      <div className="bg-[#0C101A] border border-[#1A2235] rounded-xl sm:rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 sm:py-4 border-b border-[#1A2235] bg-[#080B13]">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 shrink-0">
+              <ShieldCheck className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-sm font-bold text-white">Counter-Sign Document</h2>
+              <p className="text-[10px] sm:text-[11px] text-slate-400 truncate max-w-[220px]">
+                {doc.fileName}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isProcessing}
+            className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer shrink-0 disabled:opacity-50"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="p-4 sm:p-6 space-y-4">
+          {/* Signer Chain Preview */}
+          <div className="space-y-1.5">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Required Signers Chain</p>
+            <div className="flex flex-col gap-1.5">
+              {doc.requiredSigners.map((name, idx) => {
+                const signer = doc.signers.find(
+                  (s) => s.name?.trim().toLowerCase() === name?.trim().toLowerCase()
+                );
+                const isSigned = signer?.status === "signed" || signer?.status === "counter-signed";
+                return (
+                  <div
+                    key={idx}
+                    className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs ${
+                      isSigned
+                        ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-300"
+                        : "bg-amber-500/10 border border-amber-500/20 text-amber-300"
+                    }`}
+                  >
+                    {isSigned ? (
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    ) : (
+                      <Clock className="w-3.5 h-3.5 shrink-0" />
+                    )}
+                    <span className="font-semibold">{name}</span>
+                    <span className={`ml-auto text-[10px] font-bold ${isSigned ? "text-emerald-400" : "text-amber-400"}`}>
+                      {isSigned ? "Signed" : "Need to Sign"}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Personnel Selector */}
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-slate-200 flex items-center justify-between">
+              <span>Counter-sign beside which personnel?</span>
+              <span className="text-cyan-400 font-mono text-[10px]">
+                {personnelChoices.length} in chain
+              </span>
+            </label>
+
+            {personnelChoices.length === 0 ? (
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
+                ⚠️ No personnel names detected in this document's signer chain.
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto pr-1">
+                {personnelChoices.map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    disabled={isProcessing}
+                    onClick={() => setSelectedPersonnel(name)}
+                    className={`flex items-center gap-2.5 px-3 py-2 rounded-xl border text-xs font-semibold text-left transition-all cursor-pointer ${
+                      selectedPersonnel === name
+                        ? "bg-cyan-500/15 border-cyan-500/50 text-cyan-300 shadow-sm shadow-cyan-950/40"
+                        : "bg-[#111728] border-[#1C2844] text-slate-300 hover:border-cyan-500/30 hover:text-white"
+                    }`}
+                  >
+                    <span
+                      className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${
+                        selectedPersonnel === name
+                          ? "border-cyan-400 bg-cyan-500"
+                          : "border-slate-600"
+                      }`}
+                    >
+                      {selectedPersonnel === name && <Check className="w-2.5 h-2.5 text-white" />}
+                    </span>
+                    <span className="truncate">{name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Placement Selector */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-bold text-slate-200 flex items-center justify-between">
+              <span>Where to place the counter-signature?</span>
+              <span className="text-cyan-400 font-mono text-[10px] uppercase font-bold">
+                Compact (Sign + DigiSigned)
+              </span>
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => setSelectedPosition("right")}
+                className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
+                  selectedPosition === "right"
+                    ? "bg-cyan-500/15 border-cyan-500 text-cyan-300 font-bold shadow-sm shadow-cyan-950/40"
+                    : "bg-[#111728] border-[#1C2844] text-slate-400 hover:text-white"
+                }`}
+              >
+                <div className="text-xs font-bold">Beside (Right)</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Right of name</div>
+              </button>
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => setSelectedPosition("left")}
+                className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
+                  selectedPosition === "left"
+                    ? "bg-cyan-500/15 border-cyan-500 text-cyan-300 font-bold shadow-sm shadow-cyan-950/40"
+                    : "bg-[#111728] border-[#1C2844] text-slate-400 hover:text-white"
+                }`}
+              >
+                <div className="text-xs font-bold">Beside (Left)</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Left of name</div>
+              </button>
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => setSelectedPosition("bottom")}
+                className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
+                  selectedPosition === "bottom"
+                    ? "bg-cyan-500/15 border-cyan-500 text-cyan-300 font-bold shadow-sm shadow-cyan-950/40"
+                    : "bg-[#111728] border-[#1C2844] text-slate-400 hover:text-white"
+                }`}
+              >
+                <div className="text-xs font-bold">Below (Bottom)</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Underneath name</div>
+              </button>
+            </div>
+          </div>
+
+          {/* Info Box */}
+          <div className="p-3 rounded-xl bg-cyan-500/5 border border-cyan-500/20 text-[11px] text-slate-400 leading-relaxed">
+            A <span className="text-white font-bold">compact horizontal</span> counter-signature with transparent background and no border (signature on the left, &quot;DigiSigned by {selectedPersonnel || "…"}&quot; on the right in black text) will be placed{" "}
+            <span className="text-cyan-300 font-bold">
+              {selectedPosition === "bottom" ? "directly below" : selectedPosition === "left" ? "directly to the left of" : "directly to the right of"} &quot;{selectedPersonnel || "…"}&quot;
+            </span>{" "}
+            using your PNPKI P12 certificate.
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex flex-col-reverse sm:flex-row gap-2.5 sm:gap-3 px-4 sm:px-6 py-3 sm:py-3.5 border-t border-[#1A2235] bg-[#080B13]">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isProcessing}
+            className="w-full sm:flex-1 py-2 rounded-xl border border-[#1C2844] text-slate-400 hover:text-white hover:bg-white/5 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => doc && onConfirm(doc.id, selectedPersonnel, selectedPosition)}
+            disabled={isProcessing || !selectedPersonnel || personnelChoices.length === 0}
+            className="w-full sm:flex-1 py-2 rounded-xl text-white font-bold text-xs flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 shadow-lg shadow-cyan-950/50 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isProcessing ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Applying Compact Counter-Signature…</span>
+              </>
+            ) : (
+              <>
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>
+                  Counter-Sign {selectedPosition === "bottom" ? "Below" : "Beside"} &quot;{selectedPersonnel || "…"}&quot;
+                </span>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Bulk Counter-Sign Selection Modal ───────────────────────────────────────
 
 interface BulkCounterSignModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onConfirm: (targetPersonnel: string) => void;
+  onConfirm: (targetPersonnel: string, position: CounterSignPosition) => void;
   availablePersonnel: string[];
   eligibleDocsCount: number;
   isProcessing: boolean;
@@ -1289,6 +1542,7 @@ function BulkCounterSignModal({
   isProcessing,
 }: BulkCounterSignModalProps) {
   const [selectedPersonnel, setSelectedPersonnel] = useState<string>("");
+  const [selectedPosition, setSelectedPosition] = useState<CounterSignPosition>("right");
 
   useEffect(() => {
     if (availablePersonnel.length > 0) {
@@ -1312,7 +1566,7 @@ function BulkCounterSignModal({
             <div>
               <h2 className="text-sm font-bold text-white">Bulk Counter-Sign Documents</h2>
               <p className="text-[10px] sm:text-[11px] text-slate-400">
-                15px aspect-square counter-signature stamp beside chosen personnel
+                Compact 20×20 px counter-signature stamp with transparent background beside or below chosen personnel
               </p>
             </div>
           </div>
@@ -1359,14 +1613,69 @@ function BulkCounterSignModal({
             )}
           </div>
 
+          {/* Placement Selector */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-bold text-slate-200 flex items-center justify-between">
+              <span>Where to place the counter-signature?</span>
+              <span className="text-cyan-400 font-mono text-[10px] uppercase font-bold">
+                Compact Square (20×20 px)
+              </span>
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => setSelectedPosition("right")}
+                className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
+                  selectedPosition === "right"
+                    ? "bg-cyan-500/15 border-cyan-500 text-cyan-300 font-bold shadow-sm shadow-cyan-950/40"
+                    : "bg-[#111728] border-[#1C2844] text-slate-400 hover:text-white"
+                }`}
+              >
+                <div className="text-xs font-bold">Beside (Right)</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Right of name</div>
+              </button>
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => setSelectedPosition("left")}
+                className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
+                  selectedPosition === "left"
+                    ? "bg-cyan-500/15 border-cyan-500 text-cyan-300 font-bold shadow-sm shadow-cyan-950/40"
+                    : "bg-[#111728] border-[#1C2844] text-slate-400 hover:text-white"
+                }`}
+              >
+                <div className="text-xs font-bold">Beside (Left)</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Left of name</div>
+              </button>
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => setSelectedPosition("bottom")}
+                className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
+                  selectedPosition === "bottom"
+                    ? "bg-cyan-500/15 border-cyan-500 text-cyan-300 font-bold shadow-sm shadow-cyan-950/40"
+                    : "bg-[#111728] border-[#1C2844] text-slate-400 hover:text-white"
+                }`}
+              >
+                <div className="text-xs font-bold">Below (Bottom)</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Underneath name</div>
+              </button>
+            </div>
+          </div>
+
           {/* Explanation Box */}
           <div className="p-3.5 rounded-xl bg-cyan-500/5 border border-cyan-500/20 space-y-2 text-xs">
             <div className="flex items-center gap-2 text-cyan-300 font-bold">
               <ShieldCheck className="w-4 h-4 text-cyan-400 shrink-0" />
-              <span>15px Aspect-Square Counter-Signature Placement</span>
+              <span>Compact Counter-Signature Placement</span>
             </div>
             <p className="text-slate-300 text-[11px] leading-relaxed">
-              When confirmed, a compact <strong className="text-white">15px aspect-square (15x15)</strong> box will be placed directly beside <strong className="text-cyan-300 font-bold">{selectedPersonnel || "the selected personnel"}</strong> across <strong className="text-white">{eligibleDocsCount} document(s)</strong>.
+              When confirmed, a <strong className="text-white">compact horizontal</strong> counter-signature with transparent background and no border (signature on the left, &quot;DigiSigned by {selectedPersonnel || "the selected personnel"}&quot; on the right in black text) will be placed{" "}
+              <strong className="text-cyan-300 font-bold">
+                {selectedPosition === "bottom" ? "directly below" : selectedPosition === "left" ? "directly to the left of" : "directly to the right of"} {selectedPersonnel || "the selected personnel"}
+              </strong>{" "}
+              across <strong className="text-white">{eligibleDocsCount} document(s)</strong>.
             </p>
             <p className="text-slate-400 text-[10px]">
               Applies official PNPKI digital signature cryptography (ISO 32000-1) preserving all earlier signatures.
@@ -1386,14 +1695,14 @@ function BulkCounterSignModal({
           </button>
           <button
             type="button"
-            onClick={() => onConfirm(selectedPersonnel)}
+            onClick={() => onConfirm(selectedPersonnel, selectedPosition)}
             disabled={isProcessing || !selectedPersonnel || availablePersonnel.length === 0}
             className="w-full sm:flex-1 py-2 rounded-xl text-white font-bold text-xs flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 shadow-lg shadow-cyan-950/50 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isProcessing ? (
               <>
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>Applying Counter-Signatures…</span>
+                <span>Applying Compact Counter-Signatures…</span>
               </>
             ) : (
               <>
@@ -1427,6 +1736,11 @@ export function SigningWorkspace() {
     name: string;
     date?: string;
   } | null>(null);
+  // Single counter-sign: track which document's modal is open
+  const [counterSignDocTarget, setCounterSignDocTarget] = useState<WorkspaceDocument | null>(null);
+  const [counterSignPositionChoice, setCounterSignPositionChoice] = useState<CounterSignPosition>("right");
+  const [isSingleCounterSigning, setIsSingleCounterSigning] = useState(false);
+
 
   // Compute list of unique personnel uploaded in the active documents queue
   const availablePersonnel = useMemo(() => {
@@ -1469,9 +1783,15 @@ export function SigningWorkspace() {
             }
           });
 
-          // Keep local docs that are not yet in remote and not marked deleted
+          // ONLY keep local docs that are in active upload/pending sync state
+          // Never resurrect documents that were deleted from remote storage
           prev.forEach((pDoc) => {
-            if (pDoc && !deletedIds.has(pDoc.id) && !nextMap.has(pDoc.id)) {
+            if (
+              pDoc &&
+              !deletedIds.has(pDoc.id) &&
+              !nextMap.has(pDoc.id) &&
+              (pDoc.isPendingSync || pDoc.status === "uploading")
+            ) {
               nextMap.set(pDoc.id, pDoc);
             }
           });
@@ -1488,7 +1808,11 @@ export function SigningWorkspace() {
                 m.id !== p.id ||
                 m.status !== p.status ||
                 (m.pdfDataUrl?.length || 0) !== (p.pdfDataUrl?.length || 0) ||
-                (m.counterSigners?.length || 0) !== (p.counterSigners?.length || 0)
+                (m.counterSigners?.length || 0) !== (p.counterSigners?.length || 0) ||
+                (m.signers?.length || 0) !== (p.signers?.length || 0) ||
+                m.notes !== p.notes ||
+                (m.signers || []).some((s, sIdx) => s.status !== p.signers?.[sIdx]?.status) ||
+                (m.counterSigners || []).some((c, cIdx) => c.status !== p.counterSigners?.[cIdx]?.status)
               );
             });
 
@@ -1502,6 +1826,25 @@ export function SigningWorkspace() {
             return merged;
           }
           return prev;
+        });
+
+        // Also ensure preview modal updates if doc was changed or closes if deleted remotely
+        setPreviewDoc((currPreview) => {
+          if (!currPreview) return null;
+          const remoteMatch = remoteDocs.find((r) => r.id === currPreview.id);
+          if (!remoteMatch) return null;
+          if (
+            remoteMatch.status !== currPreview.status ||
+            (remoteMatch.pdfDataUrl?.length || 0) !== (currPreview.pdfDataUrl?.length || 0) ||
+            (remoteMatch.counterSigners?.length || 0) !== (currPreview.counterSigners?.length || 0)
+          ) {
+            return {
+              ...currPreview,
+              ...remoteMatch,
+              pdfDataUrl: remoteMatch.pdfDataUrl || currPreview.pdfDataUrl,
+            };
+          }
+          return currPreview;
         });
       }
     } catch (err) {
@@ -1591,10 +1934,10 @@ export function SigningWorkspace() {
       }
     });
 
-    // Fallback background polling every 3.5 seconds
+    // Fallback background polling every 2 seconds for reactive cross-window / cross-device sync
     const pollInterval = setInterval(() => {
       syncFromRemoteStorage(true);
-    }, 3500);
+    }, 2000);
 
     // Instant refresh when user returns to this window or tab
     const handleFocusOrVisible = () => {
@@ -1881,7 +2224,7 @@ export function SigningWorkspace() {
         signedCount >= doc.requiredSigners.length ? "signed" : "partially_signed";
 
       const placementDesc = isCounter
-        ? `Counter-signed (15px box) BESIDE personnel "${targetPersonnelName}"`
+        ? `Counter-signed (1-inch square box) placed ${signatureCoords?.appliedPosition || counterPos} personnel "${targetPersonnelName}"`
         : `Signed directly ABOVE personnel "${targetPersonnelName}"`;
 
       const updatedDoc: WorkspaceDocument = {
@@ -1978,7 +2321,41 @@ export function SigningWorkspace() {
     showNotif(`✓ Counter-signed successfully BESIDE personnel name in 15px square box.`);
   };
 
-  // ─── Selection Helpers ───────────────────────────────────────────────────────
+  // ─── Single Counter-Sign with Personnel Picker ───────────────────────────────
+
+  const handleOpenSingleCounterSign = (doc: WorkspaceDocument, initialPos: CounterSignPosition = "right") => {
+    setCounterSignPositionChoice(initialPos === "auto" ? "right" : initialPos);
+    setCounterSignDocTarget(doc);
+  };
+
+  const handleExecuteSingleCounterSign = async (
+    docId: string,
+    targetPersonnel: string,
+    position: CounterSignPosition
+  ) => {
+    const targetDoc = documents.find((d) => d.id === docId);
+    if (!targetDoc || !targetPersonnel) return;
+
+    setIsSingleCounterSigning(true);
+    showNotif(`Applying compact counter-signature ${position === "bottom" ? "below" : "beside"} "${targetPersonnel}"…`);
+
+    const updated = await signDocumentItem(targetDoc, {
+      isCounterSign: true,
+      counterSignPosition: position,
+      counterSignTargetPersonnel: targetPersonnel,
+    });
+
+    setDocuments((prev) => prev.map((d) => (d.id === docId ? updated : d)));
+    if (previewDoc && previewDoc.id === docId) {
+      setPreviewDoc(updated);
+    }
+
+    setIsSingleCounterSigning(false);
+    setCounterSignDocTarget(null);
+    showNotif(`✓ Counter-signed ${position === "bottom" ? "below" : "beside"} "${targetPersonnel}" (sign on left, DigiSigned on right).`);
+  };
+
+
 
   const selectedDocs = documents.filter((d) => d.selected);
 
@@ -2072,6 +2449,7 @@ export function SigningWorkspace() {
         pdfDataUrl,
         scannedInfo: scan || undefined,
         notes: `Scanned from document: ${required.join(", ")}`,
+        isPendingSync: true,
       };
 
       newDocs.push(newDoc);
@@ -2107,6 +2485,11 @@ export function SigningWorkspace() {
 
       dtrStorageApi
         .saveRecord(uploadPayload)
+        .then(() => {
+          setDocuments((prev) =>
+            prev.map((d) => (d.id === newDoc.id ? { ...d, isPendingSync: false } : d))
+          );
+        })
         .catch((err) => console.warn("Could not save to dtr_storage:", err));
 
       // Broadcast to other tabs immediately
@@ -2162,7 +2545,10 @@ export function SigningWorkspace() {
     setIsBulkCounterModalOpen(true);
   };
 
-  const handleExecuteBulkCounterSign = async (targetPersonnel: string) => {
+  const handleExecuteBulkCounterSign = async (
+    targetPersonnel: string,
+    position: CounterSignPosition = "right"
+  ) => {
     const toCounter =
       selectedUserCounterDocs.length > 0 ? selectedUserCounterDocs : userCounterDocs;
 
@@ -2172,13 +2558,13 @@ export function SigningWorkspace() {
     }
 
     setIsBulkCounterSigning(true);
-    showNotif(`Bulk counter-signing ${toCounter.length} document(s) BESIDE "${targetPersonnel}" in 15px box…`);
+    showNotif(`Bulk counter-signing ${toCounter.length} document(s) ${position === "bottom" ? "below" : "beside"} "${targetPersonnel}" (sign on left, DigiSigned on right)…`);
 
     for (const doc of toCounter) {
       const signed = await signDocumentItem(doc, {
         isCounterSign: true,
         counterSignTargetPersonnel: targetPersonnel,
-        counterSignPosition: "auto",
+        counterSignPosition: position,
       });
       setDocuments((prev) => prev.map((d) => (d.id === signed.id ? signed : d)));
     }
@@ -2186,7 +2572,7 @@ export function SigningWorkspace() {
     setIsBulkCounterSigning(false);
     setIsBulkCounterModalOpen(false);
     showNotif(
-      `✓ Bulk counter-signing complete — 15px square counter-signature placed BESIDE "${targetPersonnel}" on ${toCounter.length} document(s).`
+      `✓ Bulk counter-signing complete — counter-signature placed ${position === "bottom" ? "below" : "beside"} "${targetPersonnel}" (sign on left, DigiSigned on right) on ${toCounter.length} document(s).`
     );
   };
 
@@ -2648,8 +3034,9 @@ export function SigningWorkspace() {
                           ) : (
                             <button
                               type="button"
-                              onClick={() => handleCounterSignSingle(doc.id, "auto")}
+                              onClick={() => handleOpenSingleCounterSign(doc)}
                               className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white font-bold text-xs shadow-md transition-all cursor-pointer active:scale-95"
+                              title="Select which personnel in the signer chain to counter-sign beside."
                             >
                               <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
                               <span>Counter Sign</span>
@@ -2881,9 +3268,9 @@ export function SigningWorkspace() {
                           ) : (
                             <button
                               type="button"
-                              onClick={() => handleCounterSignSingle(doc.id, "auto")}
+                              onClick={() => handleOpenSingleCounterSign(doc)}
                               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white font-bold text-xs shadow-md transition-all cursor-pointer active:scale-95"
-                              title="You are not in the required signers list. Places digital signature stamp BESIDE personnel name."
+                              title="Select which personnel in the signer chain to counter-sign beside."
                             >
                               <ShieldCheck className="w-3.5 h-3.5" />
                               <span>Counter Sign</span>
@@ -2940,7 +3327,9 @@ export function SigningWorkspace() {
         doc={previewDoc}
         onClose={() => setPreviewDoc(null)}
         onSign={handleSignSingle}
-        onCounterSign={handleCounterSignSingle}
+        onCounterSign={(id, pos) => {
+          if (previewDoc) handleOpenSingleCounterSign(previewDoc, pos);
+        }}
         onDownload={handleDownload}
         onShowValidationStatus={handleOpenValidationModal}
         currentUser={currentUser}
@@ -2965,6 +3354,16 @@ export function SigningWorkspace() {
             : userCounterDocs.length
         }
         isProcessing={isBulkCounterSigning}
+      />
+
+      {/* ── Single Counter-Sign Personnel Picker Modal ───────────────────── */}
+      <SingleCounterSignModal
+        isOpen={counterSignDocTarget !== null}
+        doc={counterSignDocTarget}
+        initialPosition={counterSignPositionChoice}
+        onClose={() => setCounterSignDocTarget(null)}
+        onConfirm={handleExecuteSingleCounterSign}
+        isProcessing={isSingleCounterSigning}
       />
 
       {/* ── Adobe Acrobat / PNPKI Signature Validation Modal (Identical to DTR) ── */}
