@@ -48,6 +48,7 @@ import { projectApi, BackendHealth, administrationApi, AdminUser, modulesApi, Sy
 import { omadaApi, OmadaConfig, OmadaSupplierConfig, OmadaSyncResult } from "@/services/omadaApi";
 import { getCurrentUser, hasModuleAccess, AUTH_EVENT } from "@/services/authStore";
 import { getStoredUsers } from "@/data/userStore";
+import { isSupplier1Site } from "@/data/freewifiData";
 
 // Icon mapping
 const ICONS: Record<string, React.ElementType> = {
@@ -1931,7 +1932,7 @@ export function ProjectConfig() {
               ) : (
                 filteredRecords.map((record, index) => {
                   const isApiSynced = Boolean(record.omadaSupplier || record.omadaSiteId || record.omadaPublicIp);
-                  const isSupplier1 = String(record.omadaSupplier || "").includes("1");
+                  const isSupplier1 = isSupplier1Site(record, omadaConfig?.supplier2?.name);
 
                   return (
                   <tr

@@ -57,6 +57,8 @@ import {
   getMunicipalityDistribution,
   getSiteTypeConfig,
   getLinkTypeConfig,
+  isSupplier1Site,
+  isSupplier2Site,
 } from "@/data/freewifiData";
 import { projectApi } from "@/services/api";
 import { omadaApi, OmadaOverview, OmadaSyncResult, OmadaConfig } from "@/services/omadaApi";
@@ -164,7 +166,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
   // Compute live Supplier 1 vs Supplier 2 Online/Offline metrics
   const supplierMetrics = useMemo(() => {
     const s1 = {
-      name: `${supplier1Name} (PHS / HEI / Public Schools)`,
+      name: `${supplier1Name} (Fleet 1)`,
       totalSites: 0,
       onlineSites: 0,
       degradedSites: 0,
@@ -174,7 +176,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
       totalDevices: 0,
     };
     const s2 = {
-      name: `${supplier2Name} (LGU Halls / PICS-MUN)`,
+      name: `${supplier2Name} (Fleet 2)`,
       totalSites: 0,
       onlineSites: 0,
       degradedSites: 0,
@@ -185,10 +187,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
     };
 
     sites.forEach((site: any) => {
-      const isS1 =
-        (site.omadaSupplier || site.omadaSupplierId || "").toLowerCase().includes("1") ||
-        (site.fundSource && site.fundSource.includes("PFIAPS")) ||
-        ["PES", "PHS", "HEI-LUC"].includes(site.siteType);
+      const isS1 = isSupplier1Site(site, supplier2Name);
       const target = isS1 ? s1 : s2;
 
       target.totalSites += 1;
@@ -238,20 +237,20 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
         deviceHealthPct: totalDevices > 0 ? Math.round((totalOnlineDevices / totalDevices) * 100) : 100,
       },
     };
-  }, [sites]);
+  }, [sites, supplier1Name, supplier2Name]);
 
   // Chart datasets for visual analytics
   const supplierComparisonChartData = useMemo(() => {
     return [
       {
-        name: `${supplier1Name} (Schools / FOC)`,
+        name: `${supplier1Name} (Fleet 1)`,
         Online: supplierMetrics.s1.onlineSites,
         Degraded: supplierMetrics.s1.degradedSites,
         Offline: supplierMetrics.s1.offlineSites,
         totalSites: supplierMetrics.s1.totalSites,
       },
       {
-        name: `${supplier2Name} (LGUs / LEO)`,
+        name: `${supplier2Name} (Fleet 2)`,
         Online: supplierMetrics.s2.onlineSites,
         Degraded: supplierMetrics.s2.degradedSites,
         Offline: supplierMetrics.s2.offlineSites,
@@ -348,8 +347,8 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
 
       const matchesSupplier =
         selectedSupplier === "ALL" ||
-        (selectedSupplier === "supplier1" && (omadaSupplier.includes("supplier 1") || omadaSupplier === "supplier1")) ||
-        (selectedSupplier === "supplier2" && (omadaSupplier.includes("supplier 2") || omadaSupplier === "supplier2"));
+        (selectedSupplier === "supplier1" && isSupplier1Site(s, supplier2Name)) ||
+        (selectedSupplier === "supplier2" && isSupplier2Site(s, supplier2Name));
 
       const siteSt =
         (s as any).siteOnlineStatus ||
@@ -366,7 +365,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
 
       return matchesSearch && matchesType && matchesLink && matchesFund && matchesProvince && matchesMun && matchesSupplier && matchesOnlineStatus;
     });
-  }, [sites, searchQuery, selectedSiteType, selectedLinkType, selectedFundSource, selectedProvince, selectedMunicipality, selectedSupplier, selectedOnlineStatus]);
+  }, [sites, searchQuery, selectedSiteType, selectedLinkType, selectedFundSource, selectedProvince, selectedMunicipality, selectedSupplier, selectedOnlineStatus, supplier2Name]);
 
   // Municipal list for dropdown
   const municipalitiesList = useMemo(() => {
@@ -651,7 +650,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                     </span>
                     <div>
                       <h5 className="font-bold text-white text-xs">{supplier1Name}</h5>
-                      <p className="text-[10px] text-blue-400 font-mono">PHS / HEI / Schools</p>
+                      <p className="text-[10px] text-blue-400 font-mono">Controller Fleet 1</p>
                     </div>
                   </div>
                   <span className="text-xs font-mono font-bold text-white px-2 py-0.5 rounded bg-blue-500/20 border border-blue-500/40">
@@ -721,7 +720,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                     </span>
                     <div>
                       <h5 className="font-bold text-white text-xs">{supplier2Name}</h5>
-                      <p className="text-[10px] text-emerald-400 font-mono">LGU Halls & PICS-MUN</p>
+                      <p className="text-[10px] text-emerald-400 font-mono">Controller Fleet 2</p>
                     </div>
                   </div>
                   <span className="text-xs font-mono font-bold text-white px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40">
@@ -1537,7 +1536,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                               {omadaSupplier && (
                                 <span
                                   className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-bold uppercase inline-flex items-center gap-1 border ${
-                                    omadaSupplier.includes("1")
+                                    isSupplier1Site(site, supplier2Name)
                                       ? "bg-blue-500/20 text-blue-300 border-blue-500/40 shadow-[0_0_8px_rgba(59,130,246,0.3)]"
                                       : "bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-[0_0_8px_rgba(16,185,129,0.3)]"
                                   }`}
@@ -1645,7 +1644,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                             <div className="flex items-center gap-1">
                               <span
                                 className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
-                                  omadaSupplier.includes("1")
+                                  isSupplier1Site(site, supplier2Name)
                                     ? "bg-blue-500/20 text-blue-300 border-blue-500/40"
                                     : "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
                                 }`}
@@ -1752,7 +1751,7 @@ export function FreeWifiAnalytics({ records }: { records?: FreeWifiSite[] }) {
                         {(selectedSite as any).omadaSupplier && (
                           <span
                             className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
-                              (selectedSite as any).omadaSupplier.includes("1")
+                              isSupplier1Site(selectedSite, supplier2Name)
                                 ? "bg-blue-500/15 text-blue-300 border-blue-500/30"
                                 : "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
                             }`}

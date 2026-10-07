@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { FreeWifiSite, SITE_TYPE_CONFIG, getSiteTypeConfig } from "@/data/freewifiData";
+import { FreeWifiSite, SITE_TYPE_CONFIG, getSiteTypeConfig, isSupplier1Site, isSupplier2Site } from "@/data/freewifiData";
 
 export interface ReportConfig {
   reportTitle: string;
@@ -8,6 +8,8 @@ export interface ReportConfig {
   designation: string;
   approvedBy: string;
   approvedDesignation: string;
+  supplier1Name?: string;
+  supplier2Name?: string;
   provinceFilter: string;
   municipalityFilter: string;
   supplierFilter: string;
@@ -46,7 +48,7 @@ export function exportFreeWifiToExcel(
     const sAny = s as any;
     const typeCfg = getSiteTypeConfig(s.siteType);
     const opStatus = getSiteOperationalStatus(s);
-    const supplier = sAny.omadaSupplier || (sAny.omadaSupplierId ? `Supplier ${sAny.omadaSupplierId}` : "Supplier 1");
+    const supplier = sAny.omadaSupplier || (isSupplier1Site(s, config.supplier2Name) ? (config.supplier1Name || "Supplier 1") : (config.supplier2Name || "Supplier 2"));
     
     return {
       "No.": idx + 1,
@@ -113,8 +115,10 @@ export function exportFreeWifiToExcel(
   const fiberCount = sites.filter((s) => (s.linkType || "").toLowerCase().includes("fiber") || s.linkType === "FOC").length;
   const satelliteCount = sites.filter((s) => (s.linkType || "").toLowerCase().includes("satellite") || s.linkType === "LEO").length;
   
-  const s1Sites = sites.filter((s) => ((s as any).omadaSupplier || "").includes("1") || (s as any).omadaSupplierId === "supplier1");
-  const s2Sites = sites.filter((s) => ((s as any).omadaSupplier || "").includes("2") || (s as any).omadaSupplierId === "supplier2");
+  const s1Name = config.supplier1Name || "Supplier 1";
+  const s2Name = config.supplier2Name || "Supplier 2";
+  const s1Sites = sites.filter((s) => isSupplier1Site(s, s2Name));
+  const s2Sites = sites.filter((s) => isSupplier2Site(s, s2Name));
 
   const elemCount = sites.filter((s) => s.siteType === "PES").length;
   const hsCount = sites.filter((s) => s.siteType === "PHS").length;
@@ -162,8 +166,8 @@ export function exportFreeWifiToExcel(
     { Section: "BACKHAUL INFRASTRUCTURE", Metric: "Fiber Optic (FOC) Sites", Value: `${fiberCount} sites (${totalSites > 0 ? Math.round((fiberCount / totalSites) * 100) : 0}%)` },
     { Section: "BACKHAUL INFRASTRUCTURE", Metric: "Satellite (LEO / VSAT) Sites", Value: `${satelliteCount} sites (${totalSites > 0 ? Math.round((satelliteCount / totalSites) * 100) : 0}%)` },
     
-    { Section: "FLEET CONTROLLERS", Metric: "Supplier 1 (Schools / HEIs / FOC)", Value: `${s1Sites.length} sites (${s1Sites.filter(s => getSiteOperationalStatus(s) === 'Online').length} Online, ${s1Sites.filter(s => getSiteOperationalStatus(s) === 'Offline').length} Offline)` },
-    { Section: "FLEET CONTROLLERS", Metric: "Supplier 2 (Plazas / Governance / LEO)", Value: `${s2Sites.length} sites (${s2Sites.filter(s => getSiteOperationalStatus(s) === 'Online').length} Online, ${s2Sites.filter(s => getSiteOperationalStatus(s) === 'Offline').length} Offline)` },
+    { Section: "FLEET CONTROLLERS", Metric: `${s1Name} Fleet`, Value: `${s1Sites.length} sites (${s1Sites.filter(s => getSiteOperationalStatus(s) === 'Online').length} Online, ${s1Sites.filter(s => getSiteOperationalStatus(s) === 'Offline').length} Offline)` },
+    { Section: "FLEET CONTROLLERS", Metric: `${s2Name} Fleet`, Value: `${s2Sites.length} sites (${s2Sites.filter(s => getSiteOperationalStatus(s) === 'Online').length} Online, ${s2Sites.filter(s => getSiteOperationalStatus(s) === 'Offline').length} Offline)` },
     { Section: "GEOGRAPHIC COVERAGE", Metric: "Total Municipalities Covered", Value: new Set(sites.map((s) => s.municipality).filter(Boolean)).size },
   ];
 
@@ -179,8 +183,8 @@ export function exportFreeWifiToExcel(
     { Category: "Operational Status", Metric: "Degraded", Count: degradedSites, Percentage: `${totalSites > 0 ? Math.round((degradedSites / totalSites) * 100) : 0}%`, TotalAPs: sites.filter(s => getSiteOperationalStatus(s) === "Degraded").reduce((acc, s) => acc + (s.apCount || 0), 0) },
     { Category: "Operational Status", Metric: "Offline", Count: offlineSites, Percentage: `${totalSites > 0 ? Math.round((offlineSites / totalSites) * 100) : 0}%`, TotalAPs: sites.filter(s => getSiteOperationalStatus(s) === "Offline").reduce((acc, s) => acc + (s.apCount || 0), 0) },
     
-    { Category: "Supplier Fleet Comparison", Metric: "Supplier 1", Count: s1Sites.length, Percentage: `${totalSites > 0 ? Math.round((s1Sites.length / totalSites) * 100) : 0}%`, TotalAPs: s1Sites.reduce((acc, s) => acc + (s.apCount || 0), 0) },
-    { Category: "Supplier Fleet Comparison", Metric: "Supplier 2", Count: s2Sites.length, Percentage: `${totalSites > 0 ? Math.round((s2Sites.length / totalSites) * 100) : 0}%`, TotalAPs: s2Sites.reduce((acc, s) => acc + (s.apCount || 0), 0) },
+    { Category: "Supplier Fleet Comparison", Metric: s1Name, Count: s1Sites.length, Percentage: `${totalSites > 0 ? Math.round((s1Sites.length / totalSites) * 100) : 0}%`, TotalAPs: s1Sites.reduce((acc, s) => acc + (s.apCount || 0), 0) },
+    { Category: "Supplier Fleet Comparison", Metric: s2Name, Count: s2Sites.length, Percentage: `${totalSites > 0 ? Math.round((s2Sites.length / totalSites) * 100) : 0}%`, TotalAPs: s2Sites.reduce((acc, s) => acc + (s.apCount || 0), 0) },
     
     { Category: "Sectoral Allocation", Metric: "Public Elementary Schools", Count: elemCount, Percentage: `${totalSites > 0 ? Math.round((elemCount / totalSites) * 100) : 0}%`, TotalAPs: sites.filter(s => s.siteType === "PES").reduce((acc, s) => acc + (s.apCount || 0), 0) },
     { Category: "Sectoral Allocation", Metric: "Public High Schools", Count: hsCount, Percentage: `${totalSites > 0 ? Math.round((hsCount / totalSites) * 100) : 0}%`, TotalAPs: sites.filter(s => s.siteType === "PHS").reduce((acc, s) => acc + (s.apCount || 0), 0) },

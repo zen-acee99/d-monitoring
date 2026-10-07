@@ -264,3 +264,37 @@ export function getMunicipalityDistribution(sites: FreeWifiSite[] = FREE_WIFI_SI
 
   return Object.values(map).sort((a, b) => b.totalSites - a.totalSites);
 }
+
+/**
+ * Accurately determines if a site belongs to Omada Supplier 2 based on its omadaSupplierId,
+ * ID prefix, supplier name or contact, independent of facility site type (PES, PHS, LGU, etc.).
+ */
+export function isSupplier2Site(site: any, supplier2CustomName?: string): boolean {
+  if (!site) return false;
+  const suppId = String(site.omadaSupplierId || "").trim().toLowerCase();
+  if (suppId === "supplier2" || suppId === "2") return true;
+  if (suppId === "supplier1" || suppId === "1") return false;
+
+  const siteId = String(site.id || "").toLowerCase();
+  if (siteId.includes("supplier2") || siteId.includes("-supplier-2") || siteId.includes("-s2-")) return true;
+  if (siteId.includes("supplier1") || siteId.includes("-supplier-1") || siteId.includes("-s1-")) return false;
+
+  const suppName = String(site.omadaSupplier || "").toLowerCase();
+  if (supplier2CustomName && supplier2CustomName.trim() && suppName === supplier2CustomName.trim().toLowerCase()) return true;
+  if (suppName.includes("supplier 2") || suppName.includes("supplier2")) return true;
+  if (suppName.includes("supplier 1") || suppName.includes("supplier1")) return false;
+
+  const contact = String(site.contact || "").toLowerCase();
+  if (contact.includes("supplier 2") || contact.includes("supplier2")) return true;
+  if (contact.includes("supplier 1") || contact.includes("supplier1")) return false;
+
+  return false;
+}
+
+/**
+ * Accurately determines if a site belongs to Omada Supplier 1.
+ */
+export function isSupplier1Site(site: any, supplier2CustomName?: string): boolean {
+  if (!site) return false;
+  return !isSupplier2Site(site, supplier2CustomName);
+}

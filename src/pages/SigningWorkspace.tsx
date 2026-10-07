@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from "react";
+import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import {
   PenLine,
   Upload,
@@ -43,6 +43,7 @@ import {
 } from "@/utils/dtrVectorPdf";
 import { formatPnpkiDate } from "@/utils/dtrUtils";
 import { DtrSignatureValidationModal } from "@/components/dtr/DtrSignatureValidationModal";
+import { subscribeToDtrRealtime, broadcastLocalDtrEvent } from "@/services/dtrRealtime";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -268,7 +269,35 @@ function DocumentPreviewModal({
       return () => URL.revokeObjectURL(url);
     }
 
-    setBlobUrl(null);
+    // If PDF binary data is not loaded yet in memory, fetch it on-demand from database
+    let isCancelled = false;
+    dtrStorageApi
+      .getRecord(doc.id)
+      .then((fullRec) => {
+        if (!isCancelled && fullRec && fullRec.pdfDataUrl) {
+          doc.pdfDataUrl = fullRec.pdfDataUrl;
+          try {
+            const base64 = fullRec.pdfDataUrl.includes(",")
+              ? fullRec.pdfDataUrl.split(",")[1]
+              : fullRec.pdfDataUrl;
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+              bytes[i] = binary.charCodeAt(i);
+            }
+            const blob = new Blob([bytes], { type: "application/pdf" });
+            const created = URL.createObjectURL(blob);
+            setBlobUrl(created);
+          } catch {
+            setBlobUrl(fullRec.pdfDataUrl);
+          }
+        }
+      })
+      .catch((e) => console.warn("Failed to fetch full PDF record for preview:", e));
+
+    return () => {
+      isCancelled = true;
+    };
   }, [doc]);
 
   if (!doc) return null;
@@ -1213,6 +1242,7 @@ function mapDtrRecordToWorkspaceDoc(record: any): WorkspaceDocument {
     fileType: record.pdfFileName?.endsWith(".docx") ? "docx" : "pdf",
     notes: remarksData.notes || record.remarks,
     pdfDataUrl: record.pdfDataUrl,
+    scannedInfo: remarksData.scannedInfo || undefined,
   };
 }
 
@@ -1409,7 +1439,79 @@ export function SigningWorkspace() {
     return Array.from(names).filter((n) => n && n.trim().length > 2);
   }, [documents]);
 
-  // 1. Initial hydration from cache and backend Turso dtr_storage table (module = 'SIGNING_WORKSPACE')
+  // 1. Sync helper that pulls the latest documents from backend Turso dtr_storage
+  const syncFromRemoteStorage = useCallback(async (silent = true) => {
+    try {
+      const deletedIds = getDeletedDocIds();
+      const records = await dtrStorageApi.getRecords({ module: "SIGNING_WORKSPACE" });
+      if (Array.isArray(records)) {
+        const remoteDocs = records
+          .filter((r) => r && !deletedIds.has(r.id))
+          .map(mapDtrRecordToWorkspaceDoc);
+
+        setDocuments((prev) => {
+          const nextMap = new Map<string, WorkspaceDocument>();
+
+          // Remote is source of truth for synced docs (especially status, signatures, counterSigners, notes)
+          remoteDocs.forEach((rDoc) => {
+            const localDoc = prev.find((p) => p.id === rDoc.id);
+            if (localDoc) {
+              nextMap.set(rDoc.id, {
+                ...localDoc,
+                ...rDoc,
+                // Prefer remote pdfDataUrl (e.g. if newly signed on another device)
+                pdfDataUrl: rDoc.pdfDataUrl || localDoc.pdfDataUrl,
+                fileObj: localDoc.fileObj,
+                scannedInfo: rDoc.scannedInfo || localDoc.scannedInfo,
+              });
+            } else {
+              nextMap.set(rDoc.id, rDoc);
+            }
+          });
+
+          // Keep local docs that are not yet in remote and not marked deleted
+          prev.forEach((pDoc) => {
+            if (pDoc && !deletedIds.has(pDoc.id) && !nextMap.has(pDoc.id)) {
+              nextMap.set(pDoc.id, pDoc);
+            }
+          });
+
+          const merged = Array.from(nextMap.values());
+
+          // Check if there are changes before triggering state & storage writes
+          const hasDiff =
+            merged.length !== prev.length ||
+            merged.some((m, i) => {
+              const p = prev[i];
+              return (
+                !p ||
+                m.id !== p.id ||
+                m.status !== p.status ||
+                (m.pdfDataUrl?.length || 0) !== (p.pdfDataUrl?.length || 0) ||
+                (m.counterSigners?.length || 0) !== (p.counterSigners?.length || 0)
+              );
+            });
+
+          if (hasDiff) {
+            try {
+              localStorage.setItem(
+                "dict_r5_signing_workspace_docs_v1",
+                JSON.stringify(merged.map(({ fileObj, ...rest }) => rest))
+              );
+            } catch {}
+            return merged;
+          }
+          return prev;
+        });
+      }
+    } catch (err) {
+      if (!silent) {
+        console.warn("Could not sync signing workspace documents from dtr_storage:", err);
+      }
+    }
+  }, []);
+
+  // 2. Real-time hydration, SSE subscription, polling, and tab visibility listeners
   useEffect(() => {
     const deletedIds = getDeletedDocIds();
 
@@ -1424,49 +1526,95 @@ export function SigningWorkspace() {
       } catch {}
     }
 
-    // Mix and sync from backend Turso dtr_storage table
-    dtrStorageApi
-      .getRecords({ module: "SIGNING_WORKSPACE" })
-      .then((records) => {
-        if (Array.isArray(records)) {
-          const remoteDocs = records
-            .filter((r) => r && !deletedIds.has(r.id))
-            .map(mapDtrRecordToWorkspaceDoc);
+    // Initial sync from backend
+    syncFromRemoteStorage(false);
 
-          setDocuments((prev) => {
-            const map = new Map<string, WorkspaceDocument>();
-            // Remote is source of truth for synced docs
-            remoteDocs.forEach((d) => map.set(d.id, d));
-            // Keep local docs that are not deleted and not in remote
-            prev.forEach((d) => {
-              if (d && !deletedIds.has(d.id)) {
-                if (!map.has(d.id)) {
-                  map.set(d.id, d);
-                } else {
-                  const existingRemote = map.get(d.id)!;
-                  map.set(d.id, {
-                    ...existingRemote,
-                    ...d,
-                    pdfDataUrl: d.pdfDataUrl || existingRemote.pdfDataUrl,
-                  });
-                }
+    // Realtime SSE event listener for instant cross-user / cross-device updates
+    const unsubscribeRealtime = subscribeToDtrRealtime((event) => {
+      if (event.type === "INSERT" || event.type === "UPDATE") {
+        const record = event.record;
+        if (record && (record.module === "SIGNING_WORKSPACE" || String(record.module).toUpperCase() === "SIGNING_WORKSPACE")) {
+          const deleted = getDeletedDocIds();
+          if (!deleted.has(record.id)) {
+            const mapped = mapDtrRecordToWorkspaceDoc(record);
+            setDocuments((prev) => {
+              const existingIdx = prev.findIndex((d) => d.id === mapped.id);
+              let nextList: WorkspaceDocument[];
+              if (existingIdx >= 0) {
+                const existing = prev[existingIdx];
+                const updated = {
+                  ...existing,
+                  ...mapped,
+                  pdfDataUrl: mapped.pdfDataUrl || existing.pdfDataUrl,
+                  fileObj: existing.fileObj,
+                  scannedInfo: mapped.scannedInfo || existing.scannedInfo,
+                };
+                nextList = [...prev];
+                nextList[existingIdx] = updated;
+              } else {
+                nextList = [mapped, ...prev];
               }
+              try {
+                localStorage.setItem(
+                  "dict_r5_signing_workspace_docs_v1",
+                  JSON.stringify(nextList.map(({ fileObj, ...rest }) => rest))
+                );
+              } catch {}
+              return nextList;
             });
-            const merged = Array.from(map.values());
-            try {
-              localStorage.setItem(
-                "dict_r5_signing_workspace_docs_v1",
-                JSON.stringify(merged.map(({ fileObj, ...rest }) => rest))
-              );
-            } catch {}
-            return merged;
-          });
+
+            // If previewing this doc, update the preview with newly signed/modified version
+            setPreviewDoc((currPreview) => {
+              if (currPreview && currPreview.id === mapped.id) {
+                return {
+                  ...currPreview,
+                  ...mapped,
+                  pdfDataUrl: mapped.pdfDataUrl || currPreview.pdfDataUrl,
+                };
+              }
+              return currPreview;
+            });
+          }
         }
-      })
-      .catch((err) => {
-        console.warn("Could not sync signing workspace documents from dtr_storage:", err);
-      });
-  }, []);
+      } else if (event.type === "DELETE" && event.id) {
+        setDocuments((prev) => {
+          const filtered = prev.filter((d) => d.id !== event.id);
+          try {
+            localStorage.setItem(
+              "dict_r5_signing_workspace_docs_v1",
+              JSON.stringify(filtered.map(({ fileObj, ...rest }) => rest))
+            );
+          } catch {}
+          return filtered;
+        });
+        setPreviewDoc((currPreview) => (currPreview?.id === event.id ? null : currPreview));
+      }
+    });
+
+    // Fallback background polling every 3.5 seconds
+    const pollInterval = setInterval(() => {
+      syncFromRemoteStorage(true);
+    }, 3500);
+
+    // Instant refresh when user returns to this window or tab
+    const handleFocusOrVisible = () => {
+      syncFromRemoteStorage(true);
+    };
+
+    window.addEventListener("focus", handleFocusOrVisible);
+    document.addEventListener("visibilitychange", handleFocusOrVisible);
+    window.addEventListener("dict_dtr_storage_updated", handleFocusOrVisible);
+    window.addEventListener("storage", handleFocusOrVisible);
+
+    return () => {
+      unsubscribeRealtime();
+      clearInterval(pollInterval);
+      window.removeEventListener("focus", handleFocusOrVisible);
+      document.removeEventListener("visibilitychange", handleFocusOrVisible);
+      window.removeEventListener("dict_dtr_storage_updated", handleFocusOrVisible);
+      window.removeEventListener("storage", handleFocusOrVisible);
+    };
+  }, [syncFromRemoteStorage]);
 
   // Sync to local storage on change (persists empty array when all documents deleted)
   useEffect(() => {
@@ -1486,13 +1634,26 @@ export function SigningWorkspace() {
     setTimeout(() => setNotification(null), 4000);
   };
 
-  const handleDownload = (doc: WorkspaceDocument) => {
-    // 1. Download cryptographically signed PDF if available
-    if (doc.pdfDataUrl) {
+  const handleDownload = async (doc: WorkspaceDocument) => {
+    let pdfUrl = doc.pdfDataUrl;
+    if (!pdfUrl && !doc.fileObj) {
       try {
-        const base64 = doc.pdfDataUrl.includes(",")
-          ? doc.pdfDataUrl.split(",")[1]
-          : doc.pdfDataUrl;
+        const full = await dtrStorageApi.getRecord(doc.id);
+        if (full?.pdfDataUrl) {
+          pdfUrl = full.pdfDataUrl;
+          doc.pdfDataUrl = full.pdfDataUrl;
+        }
+      } catch (e) {
+        console.warn("Failed to load PDF for download:", e);
+      }
+    }
+
+    // 1. Download cryptographically signed PDF if available
+    if (pdfUrl) {
+      try {
+        const base64 = pdfUrl.includes(",")
+          ? pdfUrl.split(",")[1]
+          : pdfUrl;
         const binary = atob(base64);
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) {
@@ -1608,16 +1769,29 @@ export function SigningWorkspace() {
       let signedFileObj: File | null = null;
       let signatureCoords: any = null;
 
+      let currentPdfDataUrl = doc.pdfDataUrl;
+      if (!doc.fileObj && (!currentPdfDataUrl || !currentPdfDataUrl.startsWith("data:application/pdf"))) {
+        try {
+          const fullRec = await dtrStorageApi.getRecord(doc.id);
+          if (fullRec?.pdfDataUrl) {
+            currentPdfDataUrl = fullRec.pdfDataUrl;
+            doc.pdfDataUrl = fullRec.pdfDataUrl;
+          }
+        } catch (e) {
+          console.warn("Could not fetch remote PDF data for signing:", e);
+        }
+      }
+
       // If binary PDF file is present, perform cryptographic signing via incremental chaining
-      if (doc.fileObj || (doc.pdfDataUrl && doc.pdfDataUrl.startsWith("data:application/pdf"))) {
+      if (doc.fileObj || (currentPdfDataUrl && currentPdfDataUrl.startsWith("data:application/pdf"))) {
         let pdfBytes: Uint8Array | null = null;
         if (doc.fileObj) {
           const buffer = await doc.fileObj.arrayBuffer();
           pdfBytes = new Uint8Array(buffer);
-        } else if (doc.pdfDataUrl) {
-          const base64 = doc.pdfDataUrl.includes(",")
-            ? doc.pdfDataUrl.split(",")[1]
-            : doc.pdfDataUrl;
+        } else if (currentPdfDataUrl) {
+          const base64 = currentPdfDataUrl.includes(",")
+            ? currentPdfDataUrl.split(",")[1]
+            : currentPdfDataUrl;
           const binary = atob(base64);
           pdfBytes = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i++) {
@@ -1724,36 +1898,46 @@ export function SigningWorkspace() {
       };
 
       // Asynchronously update in Turso dtr_storage table (module = 'SIGNING_WORKSPACE')
+      const signStoragePayload = {
+        id: updatedDoc.id,
+        userId: String(currentUser?.id || "USER-001"),
+        employeeName: updatedDoc.targetPersonnel,
+        employeeId: String(currentUser?.employeeId || "EMP-001"),
+        module: "SIGNING_WORKSPACE",
+        province: currentUser?.province || "Regional Office",
+        sectionDivision: "Regional Office V",
+        periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+        month: new Date().getMonth() + 1,
+        year: new Date().getFullYear(),
+        scope: "full-month",
+        status: newStatus,
+        submittedDate: updatedDoc.uploadedAt,
+        pdfFileName: updatedDoc.fileName,
+        pdfFileSize: updatedDoc.fileSize,
+        pdfDataUrl: signedPdfDataUrl,
+        docType: "AR",
+        hasP12: true,
+        signerName: effectiveSignerName,
+        remarks: JSON.stringify({
+          targetPersonnel: updatedDoc.targetPersonnel,
+          requiredSigners: updatedDoc.requiredSigners,
+          signers: updatedDoc.signers,
+          counterSigners: updatedCounterSigners,
+          scannedInfo: updatedDoc.scannedInfo,
+          notes: updatedDoc.notes,
+        }),
+      };
+
       dtrStorageApi
-        .saveRecord({
-          id: updatedDoc.id,
-          userId: String(currentUser?.id || "USER-001"),
-          employeeName: updatedDoc.targetPersonnel,
-          employeeId: String(currentUser?.employeeId || "EMP-001"),
-          module: "SIGNING_WORKSPACE",
-          province: currentUser?.province || "Regional Office",
-          sectionDivision: "Regional Office V",
-          periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
-          month: new Date().getMonth() + 1,
-          year: new Date().getFullYear(),
-          scope: "full-month",
-          status: newStatus,
-          submittedDate: updatedDoc.uploadedAt,
-          pdfFileName: updatedDoc.fileName,
-          pdfFileSize: updatedDoc.fileSize,
-          pdfDataUrl: signedPdfDataUrl,
-          docType: "AR",
-          hasP12: true,
-          signerName: effectiveSignerName,
-          remarks: JSON.stringify({
-            targetPersonnel: updatedDoc.targetPersonnel,
-            requiredSigners: updatedDoc.requiredSigners,
-            signers: updatedDoc.signers,
-            counterSigners: updatedCounterSigners,
-            notes: updatedDoc.notes,
-          }),
-        })
+        .saveRecord(signStoragePayload)
         .catch((err) => console.warn("Failed to sync signed record to dtr_storage:", err));
+
+      // Broadcast to same-browser tabs immediately
+      broadcastLocalDtrEvent({
+        type: "UPDATE",
+        record: signStoragePayload as any,
+        id: updatedDoc.id,
+      });
 
       return updatedDoc;
     } catch (err: any) {
@@ -1893,34 +2077,44 @@ export function SigningWorkspace() {
       newDocs.push(newDoc);
 
       // Persist to Turso dtr_storage table (module = 'SIGNING_WORKSPACE')
+      const uploadPayload = {
+        id: newDoc.id,
+        userId: String(currentUser?.id || "USER-001"),
+        employeeName: newDoc.targetPersonnel,
+        employeeId: String(currentUser?.employeeId || "EMP-001"),
+        module: "SIGNING_WORKSPACE",
+        province: currentUser?.province || "Regional Office",
+        sectionDivision: "Regional Office V",
+        periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+        month: new Date().getMonth() + 1,
+        year: new Date().getFullYear(),
+        scope: "full-month",
+        status: newDoc.status,
+        submittedDate: newDoc.uploadedAt,
+        pdfFileName: newDoc.fileName,
+        pdfFileSize: newDoc.fileSize,
+        pdfDataUrl: newDoc.pdfDataUrl,
+        docType: "AR",
+        remarks: JSON.stringify({
+          targetPersonnel: newDoc.targetPersonnel,
+          requiredSigners: newDoc.requiredSigners,
+          signers: newDoc.signers,
+          counterSigners: newDoc.counterSigners,
+          scannedInfo: newDoc.scannedInfo,
+          notes: newDoc.notes,
+        }),
+      };
+
       dtrStorageApi
-        .saveRecord({
-          id: newDoc.id,
-          userId: String(currentUser?.id || "USER-001"),
-          employeeName: newDoc.targetPersonnel,
-          employeeId: String(currentUser?.employeeId || "EMP-001"),
-          module: "SIGNING_WORKSPACE",
-          province: currentUser?.province || "Regional Office",
-          sectionDivision: "Regional Office V",
-          periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
-          month: new Date().getMonth() + 1,
-          year: new Date().getFullYear(),
-          scope: "full-month",
-          status: newDoc.status,
-          submittedDate: newDoc.uploadedAt,
-          pdfFileName: newDoc.fileName,
-          pdfFileSize: newDoc.fileSize,
-          pdfDataUrl: newDoc.pdfDataUrl,
-          docType: "AR",
-          remarks: JSON.stringify({
-            targetPersonnel: newDoc.targetPersonnel,
-            requiredSigners: newDoc.requiredSigners,
-            signers: newDoc.signers,
-            counterSigners: newDoc.counterSigners,
-            notes: newDoc.notes,
-          }),
-        })
+        .saveRecord(uploadPayload)
         .catch((err) => console.warn("Could not save to dtr_storage:", err));
+
+      // Broadcast to other tabs immediately
+      broadcastLocalDtrEvent({
+        type: "INSERT",
+        record: uploadPayload as any,
+        id: newDoc.id,
+      });
     }
 
     setDocuments((prev) => [...newDocs, ...prev]);
@@ -2018,6 +2212,9 @@ export function SigningWorkspace() {
       } catch {}
       return updated;
     });
+
+    // Broadcast DELETE event to other same-browser tabs immediately
+    broadcastLocalDtrEvent({ type: "DELETE", id });
 
     // 4. Permanently delete from backend Turso dtr_storage table
     try {

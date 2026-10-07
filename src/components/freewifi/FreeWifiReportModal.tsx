@@ -35,7 +35,9 @@ import {
   getSiteTypeConfig,
   getLinkTypeConfig,
   getMunicipalityDistribution,
-  getFreeWifiSummary
+  getFreeWifiSummary,
+  isSupplier1Site,
+  isSupplier2Site,
 } from "@/data/freewifiData";
 import { exportFreeWifiToExcel, printFreeWifiReport, getSiteOperationalStatus } from "@/utils/freewifiReportGenerator";
 
@@ -93,9 +95,8 @@ export function FreeWifiReportModal({
       if (selectedMunicipality !== "ALL" && s.municipality !== selectedMunicipality) return false;
       
       if (selectedSupplier !== "ALL") {
-        const supp = (sAny.omadaSupplier || sAny.omadaSupplierId || "").toLowerCase();
-        if (selectedSupplier === "supplier1" && !(supp.includes("1") || supp.includes("supplier1"))) return false;
-        if (selectedSupplier === "supplier2" && !(supp.includes("2") || supp.includes("supplier2"))) return false;
+        if (selectedSupplier === "supplier1" && !isSupplier1Site(s, supplier2Name)) return false;
+        if (selectedSupplier === "supplier2" && !isSupplier2Site(s, supplier2Name)) return false;
       }
       
       if (selectedSiteType !== "ALL" && s.siteType !== selectedSiteType) return false;
@@ -113,7 +114,7 @@ export function FreeWifiReportModal({
 
       return true;
     });
-  }, [sites, selectedMunicipality, selectedSupplier, selectedSiteType, selectedLinkType, selectedStatus]);
+  }, [sites, selectedMunicipality, selectedSupplier, selectedSiteType, selectedLinkType, selectedStatus, supplier2Name]);
 
   // KPIs & Health Summary
   const reportSummary = useMemo(() => {
@@ -128,8 +129,8 @@ export function FreeWifiReportModal({
     const fiberCount = reportSites.filter((s) => (s.linkType || "").toLowerCase().includes("fiber") || s.linkType === "FOC").length;
     const satCount = reportSites.filter((s) => (s.linkType || "").toLowerCase().includes("satellite") || s.linkType === "LEO").length;
     
-    const s1Sites = reportSites.filter((s) => ((s as any).omadaSupplier || "").includes("1") || (s as any).omadaSupplierId === "supplier1");
-    const s2Sites = reportSites.filter((s) => ((s as any).omadaSupplier || "").includes("2") || (s as any).omadaSupplierId === "supplier2");
+    const s1Sites = reportSites.filter((s) => isSupplier1Site(s, supplier2Name));
+    const s2Sites = reportSites.filter((s) => isSupplier2Site(s, supplier2Name));
 
     const s1Online = s1Sites.filter(s => getSiteOperationalStatus(s) === "Online").length;
     const s1Offline = s1Sites.filter(s => getSiteOperationalStatus(s) === "Offline").length;
@@ -272,6 +273,8 @@ export function FreeWifiReportModal({
       designation,
       approvedBy,
       approvedDesignation,
+      supplier1Name,
+      supplier2Name,
       reportDate: new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }),
     });
   };
@@ -389,8 +392,8 @@ export function FreeWifiReportModal({
                   className="w-full bg-[#0C101D] border border-[#1C2844] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
                 >
                   <option value="ALL">All Fleets ({supplier1Name} & {supplier2Name})</option>
-                  <option value="supplier1">{supplier1Name} (Schools / HEIs / FOC)</option>
-                  <option value="supplier2">{supplier2Name} (Plazas / LGUs / LEO)</option>
+                  <option value="supplier1">{supplier1Name} Fleet</option>
+                  <option value="supplier2">{supplier2Name} Fleet</option>
                 </select>
               </div>
 
@@ -909,7 +912,7 @@ export function FreeWifiReportModal({
                           <div className="p-3 bg-blue-50/50 border border-blue-200 rounded-lg space-y-2">
                             <div className="flex items-center justify-between pb-1 border-b border-blue-200">
                               <span className="font-bold text-blue-950 text-xs">
-                                📡 {supplier1Name} Fleet (Schools & FOC Hubs)
+                                📡 {supplier1Name} Fleet
                               </span>
                               <span className="font-mono font-bold px-1.5 py-0.5 bg-blue-100 text-blue-900 rounded text-[9px]">
                                 {reportSummary.s1.total} Sites ({reportSummary.s1.pct}%)
@@ -932,7 +935,7 @@ export function FreeWifiReportModal({
                             </div>
 
                             <div className="text-[9px] text-slate-600">
-                              Primary Focus: DepEd Public High Schools, Elementary Schools & State Universities (HEIs).
+                              Primary Controller Fleet for Region V Albay Free Wi-Fi Operations.
                             </div>
                           </div>
 
@@ -940,7 +943,7 @@ export function FreeWifiReportModal({
                           <div className="p-3 bg-emerald-50/50 border border-emerald-200 rounded-lg space-y-2">
                             <div className="flex items-center justify-between pb-1 border-b border-emerald-200">
                               <span className="font-bold text-emerald-950 text-xs">
-                                🌐 {supplier2Name} Fleet (Plazas & LEO Hubs)
+                                🌐 {supplier2Name} Fleet
                               </span>
                               <span className="font-mono font-bold px-1.5 py-0.5 bg-emerald-100 text-emerald-900 rounded text-[9px]">
                                 {reportSummary.s2.total} Sites ({reportSummary.s2.pct}%)
@@ -963,7 +966,7 @@ export function FreeWifiReportModal({
                             </div>
 
                             <div className="text-[9px] text-slate-600">
-                              Primary Focus: Municipal Halls, Public Convergence Plazas & Remote Satellite (LEO) Nodes.
+                              Primary Controller Fleet for Region V Albay Free Wi-Fi Operations.
                             </div>
                           </div>
                         </div>
@@ -1169,7 +1172,7 @@ export function FreeWifiReportModal({
                             {displayedSites.map((site, index) => {
                               const sAny = site as any;
                               const typeCfg = getSiteTypeConfig(site.siteType);
-                              const isSupp1 = (sAny.omadaSupplier || "").includes("1") || sAny.omadaSupplierId === "supplier1";
+                              const isSupp1 = isSupplier1Site(site, supplier2Name);
                               const opStatus = getSiteOperationalStatus(site);
 
                               return (
