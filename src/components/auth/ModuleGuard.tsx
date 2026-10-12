@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Navigate, useParams } from "react-router-dom";
-import { getCurrentUser, setCurrentUser, hasModuleAccess, AUTH_EVENT } from "@/services/authStore";
+import { getCurrentUser, setCurrentUser, refreshCurrentUser, hasModuleAccess, AUTH_EVENT } from "@/services/authStore";
 import { UserRecord } from "@/data/userStore";
 
 interface ModuleGuardProps {
@@ -22,6 +22,9 @@ export function ModuleGuard({ moduleCode, children }: ModuleGuardProps) {
   }, [moduleCode, params.projectId]);
 
   useEffect(() => {
+    refreshCurrentUser().then((verifiedUser) => {
+      setCurrentUserState(verifiedUser);
+    });
     const handleAuthChange = () => {
       setCurrentUserState(getCurrentUser());
     };

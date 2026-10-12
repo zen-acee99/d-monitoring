@@ -47,8 +47,9 @@ export function formatPnpkiDate(d: Date = new Date()): string {
 }
 
 export const DTR_PROVINCE_OPTIONS = [
-
   { value: "Regional Office (RO)", label: "Regional Office (RO)", code: "RO" },
+  { value: "TOD", label: "TOD (Technical Operations Division)", code: "TOD" },
+  { value: "HRM", label: "HRM (Human Resource Management)", code: "HRM" },
   { value: "Albay", label: "Albay", code: "ALB" },
   { value: "Camarines Norte", label: "Camarines Norte", code: "CN" },
   { value: "Camarines Sur", label: "Camarines Sur", code: "CS" },

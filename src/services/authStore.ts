@@ -1,4 +1,4 @@
-import { UserRecord, getStoredUsers } from "@/data/userStore";
+import { UserRecord, getStoredUsers, saveStoredUsers } from "@/data/userStore";
 import { administrationApi, modulesApi, SystemModule } from "@/services/api";
 
 const CURRENT_USER_KEY = "dict_current_user";
@@ -47,7 +47,14 @@ export function getCurrentUser(): UserRecord | null {
     const raw = localStorage.getItem(CURRENT_USER_KEY);
     if (raw) {
       const user = JSON.parse(raw);
-      if (user && user.id) return user;
+      if (user && user.id) {
+        // Purge any previously auto-provisioned unregistered 'g-...' session
+        if (String(user.id).startsWith("g-")) {
+          localStorage.removeItem(CURRENT_USER_KEY);
+          return null;
+        }
+        return user;
+      }
     }
   } catch (e) {
     console.error("Error reading current user session:", e);
@@ -214,6 +221,7 @@ export async function getAllUsers(): Promise<UserRecord[]> {
   try {
     const dbUsers = await administrationApi.getAdministrators();
     if (Array.isArray(dbUsers) && dbUsers.length > 0) {
+      saveStoredUsers(dbUsers as UserRecord[]);
       return dbUsers as UserRecord[];
     }
   } catch (err) {
@@ -230,18 +238,24 @@ export async function refreshCurrentUser(): Promise<UserRecord | null> {
   if (!current) return null;
   try {
     const all = await getAllUsers();
-    const fresh = all.find(
-      (u) =>
-        String(u.id) === String(current.id) ||
-        (u.email && current.email && u.email.toLowerCase() === current.email.toLowerCase())
-    );
-    if (fresh) {
-      if (fresh.status === "inactive") {
+    if (all.length > 0) {
+      const fresh = all.find(
+        (u) =>
+          (u.email && current.email && u.email.toLowerCase().trim() === current.email.toLowerCase().trim()) ||
+          String(u.id) === String(current.id)
+      );
+      if (fresh) {
+        if (fresh.status === "inactive") {
+          setCurrentUser(null);
+          return null;
+        }
+        setCurrentUser(fresh);
+        return fresh;
+      } else {
+        // User is NOT in the registered User List -> immediately terminate session!
         setCurrentUser(null);
         return null;
       }
-      setCurrentUser(fresh);
-      return fresh;
     }
   } catch (e) {
     console.warn("Failed to refresh current user session:", e);

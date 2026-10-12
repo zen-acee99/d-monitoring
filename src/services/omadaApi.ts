@@ -97,6 +97,8 @@ export interface OmadaOverview {
   onlineStatus: string;
 }
 
+import { apiFetch } from "./api";
+
 const API_BASE = "/api/omada";
 
 export const omadaApi = {
@@ -105,7 +107,7 @@ export const omadaApi = {
    */
   async getConfig(): Promise<OmadaConfig | null> {
     try {
-      const res = await fetch(`${API_BASE}/config`);
+      const res = await apiFetch(`${API_BASE}/config`);
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       const data = await res.json();
       return data.config || null;
@@ -120,7 +122,7 @@ export const omadaApi = {
    */
   async updateConfig(updates: Partial<OmadaConfig>): Promise<{ success: boolean; config?: OmadaConfig; message?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/config`, {
+      const res = await apiFetch(`${API_BASE}/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
@@ -146,7 +148,7 @@ export const omadaApi = {
     message?: string;
   }> {
     try {
-      const res = await fetch(`${API_BASE}/test-connection`, {
+      const res = await apiFetch(`${API_BASE}/test-connection`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(supplierConfig),
@@ -166,7 +168,7 @@ export const omadaApi = {
    */
   async getSites(includeDevices = false): Promise<OmadaSite[]> {
     try {
-      const res = await fetch(`${API_BASE}/sites?includeDevices=${includeDevices}`);
+      const res = await apiFetch(`${API_BASE}/sites?includeDevices=${includeDevices}`);
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       const data = await res.json();
       return data.sites || [];
@@ -184,7 +186,7 @@ export const omadaApi = {
     siteId: string
   ): Promise<{ devices: OmadaDevice[]; clients?: any }> {
     try {
-      const res = await fetch(`${API_BASE}/sites/${supplierId}/${encodeURIComponent(siteId)}/devices`);
+      const res = await apiFetch(`${API_BASE}/sites/${supplierId}/${encodeURIComponent(siteId)}/devices`);
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       const data = await res.json();
       return {
@@ -202,7 +204,7 @@ export const omadaApi = {
    */
   async syncNow(): Promise<OmadaSyncResult | null> {
     try {
-      const res = await fetch(`${API_BASE}/sync`, {
+      const res = await apiFetch(`${API_BASE}/sync`, {
         method: "POST",
       });
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
@@ -218,7 +220,7 @@ export const omadaApi = {
    */
   async getOverview(): Promise<OmadaOverview | null> {
     try {
-      const res = await fetch(`${API_BASE}/overview`);
+      const res = await apiFetch(`${API_BASE}/overview`);
       if (!res.ok) return null;
       const data = await res.json();
       return data.overview || null;

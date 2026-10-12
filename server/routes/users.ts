@@ -228,51 +228,36 @@ usersRouter.post("/google-sync", async (req: Request, res: Response) => {
     const cleanAvatar = avatar_url ? String(avatar_url).trim() : null;
     const nowStr = new Date().toLocaleString("en-US", { timeZone: "Asia/Manila" });
 
-    // Look up existing user by exact email in users table or administration table
+    // Look up existing user strictly by exact email in administration table (official User List)
     let userRecord: any = null;
 
-    const userRes = await db.execute({
-      sql: "SELECT * FROM users WHERE LOWER(email) = LOWER(?) LIMIT 1",
+    const adminRes = await db.execute({
+      sql: "SELECT * FROM administration WHERE LOWER(TRIM(email)) = LOWER(TRIM(?)) LIMIT 1",
       args: [cleanEmail],
     });
 
-    if (userRes.rows.length > 0) {
-      userRecord = userRes.rows[0];
+    if (adminRes.rows.length > 0) {
+      userRecord = adminRes.rows[0];
     } else {
-      const adminRes = await db.execute({
-        sql: "SELECT * FROM administration WHERE LOWER(email) = LOWER(?) LIMIT 1",
-        args: [cleanEmail],
-      });
-      if (adminRes.rows.length > 0) {
-        userRecord = adminRes.rows[0];
-      }
-    }
-
-    // Also check prefix matching if user logged in with @gmail.com or @dict.gov.ph alias
-    if (!userRecord) {
-      const usernamePrefix = cleanEmail.split("@")[0];
-      const prefixRes = await db.execute({
-        sql: "SELECT * FROM users WHERE LOWER(email) = LOWER(?) OR LOWER(email) = LOWER(?) LIMIT 1",
-        args: [`${usernamePrefix}@dict.gov.ph`, `${usernamePrefix}@gmail.com`],
-      });
-      if (prefixRes.rows.length > 0) {
-        userRecord = prefixRes.rows[0];
-      } else {
-        const adminPrefixRes = await db.execute({
-          sql: "SELECT * FROM administration WHERE LOWER(email) = LOWER(?) OR LOWER(email) = LOWER(?) LIMIT 1",
-          args: [`${usernamePrefix}@dict.gov.ph`, `${usernamePrefix}@gmail.com`],
+      // Only fall back to users table if administration table is completely empty
+      const countRes = await db.execute("SELECT COUNT(*) as cnt FROM administration");
+      const adminCount = Number((countRes.rows[0] as any)?.cnt || 0);
+      if (adminCount === 0) {
+        const userRes = await db.execute({
+          sql: "SELECT * FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(?)) LIMIT 1",
+          args: [cleanEmail],
         });
-        if (adminPrefixRes.rows.length > 0) {
-          userRecord = adminPrefixRes.rows[0];
+        if (userRes.rows.length > 0) {
+          userRecord = userRes.rows[0];
         }
       }
     }
 
-    // STRICT ACCESS CONTROL: If the GovMail is NOT registered in the database, reject access!
+    // STRICT ACCESS CONTROL: If the GovMail is NOT registered in the User List, reject access!
     if (!userRecord) {
       return res.status(403).json({
         success: false,
-        error: `Access Denied: The GovMail address "${cleanEmail}" is not registered in the system. Only authorized personnel registered by an administrator can log in.`,
+        error: `Access Denied: The GovMail address "${cleanEmail}" is not in the User List. Only registered personnel added by an administrator can log in.`,
       });
     }
 
@@ -307,12 +292,12 @@ usersRouter.post("/google-sync", async (req: Request, res: Response) => {
       args: [cleanGoogleId, cleanAvatar, `Just now (GovMail SSO - ${nowStr})`, userRecord.id],
     }).catch(() => {});
 
-    const updated = await db.execute({
-      sql: "SELECT * FROM users WHERE id = ?",
+    const updatedAdmin = await db.execute({
+      sql: "SELECT * FROM administration WHERE id = ?",
       args: [userRecord.id],
     });
 
-    const finalUser = updated.rows.length > 0 ? updated.rows[0] : userRecord;
+    const finalUser = updatedAdmin.rows.length > 0 ? updatedAdmin.rows[0] : userRecord;
 
     return res.json({
       success: true,

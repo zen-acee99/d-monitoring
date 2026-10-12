@@ -466,7 +466,7 @@ export function DtrStorageView({
 
       const supervisorName = (item.supervisorName || "RENE JANE R. BUENA").trim();
       const supervisorTitle = (item.supervisorTitle || (item.province ? `Provincial Officer - ${item.province}` : "Provincial Officer")).trim();
-      const signerName = (item.signerName || userSigProfile?.Name || currentUser?.name || "Super Admin").trim();
+      const signerName = (item.signerName || supervisorName).trim();
 
       const isSupervisor = item.status === "Verified" || item.status === "Approved";
       let p12Options: any = null;
@@ -497,13 +497,15 @@ export function DtrStorageView({
           if (!supProf && supervisorName) {
             supProf = allProfs.find((p) => matchNames(p.Name, supervisorName) && (p.hasP12 || p.p12));
           }
-          // Priority 3: Current user if they have p12 and are not the employee
-          if (!supProf && userSigProfile && (userSigProfile.hasP12 || userSigProfile.p12) && !matchNames(userSigProfile.Name, item.employeeName)) {
+          // Priority 3: Current user ONLY if they have p12, are not the employee, AND match the document's signer/supervisor
+          if (
+            !supProf &&
+            userSigProfile &&
+            (userSigProfile.hasP12 || userSigProfile.p12) &&
+            !matchNames(userSigProfile.Name, item.employeeName) &&
+            (matchNames(userSigProfile.Name, item.signerName) || matchNames(userSigProfile.Name, supervisorName))
+          ) {
             supProf = userSigProfile;
-          }
-          // Priority 4: Any supervisor/PO profile with p12 distinct from employee
-          if (!supProf) {
-            supProf = allProfs.find((p) => (p.hasP12 || p.p12) && (!empProf || p.id !== empProf.id) && !matchNames(p.Name, item.employeeName));
           }
         } catch {}
 
@@ -545,13 +547,13 @@ export function DtrStorageView({
           employeeSignatureImage: item.employeeSignatureImage || item.signatureImage,
           employeeHasP12: item.employeeHasP12 ?? item.hasP12,
           employeeSignerName: item.employeeSignerName || item.employeeName,
-          supervisorSignatureImage: item.supervisorSignatureImage || (item.status !== "Submitted" ? (supProf?.image_digiSigned || userSigProfile?.image_digiSigned) : undefined),
+          supervisorSignatureImage: item.supervisorSignatureImage || (item.status !== "Submitted" ? supProf?.image_digiSigned : undefined),
           supervisorHasP12: Boolean((item.supervisorHasP12 || supProf) && (item.status === "Verified" || item.status === "Approved")),
           signerName: effectiveSignerName,
         } as any,
         item.rows,
-        isSupervisor ? (item.supervisorSignatureImage || (item.status !== "Submitted" ? (supProf?.image_digiSigned || userSigProfile?.image_digiSigned || item.signatureImage) : undefined)) : (item.employeeSignatureImage || item.signatureImage),
-        Boolean(isSupervisor ? (item.supervisorHasP12 || supProf?.hasP12 || userSigProfile?.hasP12) : (item.employeeHasP12 && Boolean(p12Options))),
+        isSupervisor ? (item.supervisorSignatureImage || (item.status !== "Submitted" ? (supProf?.image_digiSigned || item.signatureImage) : undefined)) : (item.employeeSignatureImage || item.signatureImage),
+        Boolean(isSupervisor ? (item.supervisorHasP12 || supProf?.hasP12) : (item.employeeHasP12 && Boolean(p12Options))),
         p12Options
       );
 

@@ -90,8 +90,8 @@ export function DtrUploadModal({
       setSupervisorTitle("OIC Chief - Technical Operations Division");
       setSectionDivision("Technical Operations Division");
     } else if (newModule === "HRM") {
-      setSupervisorName("MARIA ELENA SANTOS");
-      setSupervisorTitle("Administrative Officer V (HRMO III)");
+      setSupervisorName("LEAH B. DY");
+      setSupervisorTitle("ADMIN V");
       setSectionDivision("Human Resource Management Division");
     } else {
       setSupervisorName("NORLY A. TABO");
@@ -177,8 +177,8 @@ export function DtrUploadModal({
 
         const targetProvince = module === "PROVINCIAL" ? (province || defaultProvince) : undefined;
         const targetSection = module === "PROVINCIAL" ? `${targetProvince} Provincial Operations` : `${module} Division`;
-        const targetSupervisor = module === "PROVINCIAL" ? "RENE JANE R. BUENA" : module === "TOD" ? "NORLY A. TABO" : "MARIA ELENA SANTOS";
-        const targetSupervisorTitle = module === "PROVINCIAL" ? `Provincial Officer - ${targetProvince}` : module === "TOD" ? "OIC Chief - Technical Operations Division" : "Administrative Officer V (HRMO III)";
+        const targetSupervisor = module === "PROVINCIAL" ? "RENE JANE R. BUENA" : module === "TOD" ? "NORLY A. TABO" : "LEAH B. DY";
+        const targetSupervisorTitle = module === "PROVINCIAL" ? `Provincial Officer - ${targetProvince}` : module === "TOD" ? "OIC Chief - Technical Operations Division" : "ADMIN V";
 
         const emptyRows = createEmptyDtrRows();
         const populatedRows = autoFillWeekendsAndHolidays(emptyRows, currentMonth, currentYear, "full");

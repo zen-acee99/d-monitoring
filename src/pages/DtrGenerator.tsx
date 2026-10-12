@@ -361,6 +361,14 @@ export function DtrGenerator() {
   const registeredPo = personnelList.filter(
     (u) => u.role === "Provincial Officer" || (u.role && u.role.toLowerCase().includes("provincial officer"))
   );
+  const registeredHrm = personnelList.filter(
+    (u) =>
+      u.role &&
+      (u.role.toLowerCase().includes("admin") ||
+        u.role.toLowerCase().includes("hrm") ||
+        u.role.toLowerCase().includes("human resource")) &&
+      u.role !== "Super Admin"
+  );
 
   const handleSelectSupervisorOption = (val: string) => {
     setSelectedOfficerOption(val);
@@ -1400,8 +1408,12 @@ export function DtrGenerator() {
     const fileName = `DTR_${safeName.replace(/[^a-zA-Z0-9]/g, "_")}_${MONTH_NAMES[config.month]}_${cutoffTag}_${config.year}.pdf`;
 
     const selectedProv = config.province || "Regional Office (RO)";
+    const isTodSelected = selectedProv === "TOD" || selectedProv.startsWith("TOD");
+    const isHrmSelected = selectedProv === "HRM" || selectedProv.startsWith("HRM");
+    const targetModule: DtrModuleCategory = isTodSelected ? "TOD" : isHrmSelected ? "HRM" : "PROVINCIAL";
+
     let targetProvinceTab: ProvincialTab = "Regional Off";
-    if (selectedProv === "Regional Office (RO)" || selectedProv === "RO") {
+    if (selectedProv === "Regional Office (RO)" || selectedProv === "RO" || isTodSelected || isHrmSelected) {
       targetProvinceTab = "Regional Off";
     } else if (PROVINCIAL_TABS.includes(selectedProv as ProvincialTab)) {
       targetProvinceTab = selectedProv as ProvincialTab;
@@ -1491,9 +1503,15 @@ export function DtrGenerator() {
       employeeId: `DICT-R5-${config.year}-${Math.floor(100 + Math.random() * 900)}`,
       position: "Technical Specialist / Engineer",
       employmentStatus: "Regular",
-      module: "PROVINCIAL",
-      province: targetProvinceTab,
-      sectionDivision: targetProvinceTab === "Regional Off" ? "Regional Operations (RO)" : `${targetProvinceTab} Provincial Office`,
+      module: targetModule,
+      province: targetModule === "PROVINCIAL" ? targetProvinceTab : undefined,
+      sectionDivision: isTodSelected
+        ? "Technical Operations Division (TOD)"
+        : isHrmSelected
+        ? "Human Resource Management (HRM)"
+        : targetProvinceTab === "Regional Off"
+        ? "Regional Operations (RO)"
+        : `${targetProvinceTab} Provincial Office`,
       periodText: config.periodText,
       month: config.month,
       year: config.year,
@@ -1520,14 +1538,25 @@ export function DtrGenerator() {
       supervisorHasP12: false,
       signerName: undefined,
       rows: rows,
-      remarks: `Moved to ${targetProvinceTab} Provincial Archive by ${activeUser?.name || "User"}`
+      remarks: isTodSelected
+        ? `Moved to TOD Archive by ${activeUser?.name || "User"}`
+        : isHrmSelected
+        ? `Moved to HRM Archive by ${activeUser?.name || "User"}`
+        : `Moved to ${targetProvinceTab} Provincial Archive by ${activeUser?.name || "User"}`
     });
 
     refreshCounts();
-    // Switch active view directly to the 4th tab: Provincial Module -> Selected Province Sub-Tab
-    setActiveSubModule("provincial");
-    setActiveProvinceTab(targetProvinceTab);
-    showNotification(`✓ Moved DTR for "${safeName}" to ${targetProvinceTab} Provincial Module! (Rendered: ${metrics.totalHoursRendered}h • Late: ${metrics.lateMinutes}m)`);
+    if (isTodSelected) {
+      setActiveSubModule("tod");
+      showNotification(`✓ Moved DTR for "${safeName}" to TOD Module! (Rendered: ${metrics.totalHoursRendered}h • Late: ${metrics.lateMinutes}m)`);
+    } else if (isHrmSelected) {
+      setActiveSubModule("hrm");
+      showNotification(`✓ Moved DTR for "${safeName}" to HRM Module! (Rendered: ${metrics.totalHoursRendered}h • Late: ${metrics.lateMinutes}m)`);
+    } else {
+      setActiveSubModule("provincial");
+      setActiveProvinceTab(targetProvinceTab);
+      showNotification(`✓ Moved DTR for "${safeName}" to ${targetProvinceTab} Provincial Module! (Rendered: ${metrics.totalHoursRendered}h • Late: ${metrics.lateMinutes}m)`);
+    }
   };
 
   // Save current generated DTR to Storage Repository
@@ -1539,8 +1568,12 @@ export function DtrGenerator() {
     const fileName = `DTR_${safeName.replace(/[^a-zA-Z0-9]/g, "_")}_${MONTH_NAMES[config.month]}_${cutoffTag}_${config.year}.pdf`;
 
     const selectedProv = config.province || "Regional Office (RO)";
+    const isTodSelected = selectedProv === "TOD" || selectedProv.startsWith("TOD");
+    const isHrmSelected = selectedProv === "HRM" || selectedProv.startsWith("HRM");
+    const targetModule: DtrModuleCategory = isTodSelected ? "TOD" : isHrmSelected ? "HRM" : "PROVINCIAL";
+
     let targetProvinceTab: ProvincialTab = "Regional Off";
-    if (selectedProv === "Regional Office (RO)" || selectedProv === "RO") {
+    if (selectedProv === "Regional Office (RO)" || selectedProv === "RO" || isTodSelected || isHrmSelected) {
       targetProvinceTab = "Regional Off";
     } else {
       targetProvinceTab = selectedProv as ProvincialTab;
@@ -1631,9 +1664,15 @@ export function DtrGenerator() {
       employeeId: `DICT-R5-${config.year}-${Math.floor(100 + Math.random() * 900)}`,
       position: "Technical Specialist / Engineer",
       employmentStatus: "Regular",
-      module: "PROVINCIAL",
-      province: targetProvinceTab,
-      sectionDivision: selectedProv === "Regional Office (RO)" ? "Regional Operations (RO)" : `${selectedProv} Provincial Office`,
+      module: targetModule,
+      province: targetModule === "PROVINCIAL" ? targetProvinceTab : undefined,
+      sectionDivision: isTodSelected
+        ? "Technical Operations Division (TOD)"
+        : isHrmSelected
+        ? "Human Resource Management (HRM)"
+        : selectedProv === "Regional Office (RO)"
+        ? "Regional Operations (RO)"
+        : `${selectedProv} Provincial Office`,
       periodText: config.periodText,
       month: config.month,
       year: config.year,
@@ -2008,7 +2047,7 @@ export function DtrGenerator() {
                       type="text"
                       value={otcUsername}
                       onChange={(e) => setOtcUsername(e.target.value)}
-                      placeholder="e.g. Ace M. / ralphdt"
+                      placeholder="username:"
                       className="w-full bg-[#090D18] border border-[#232F4D] focus:border-blue-500 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder:text-slate-600 focus:outline-none transition-colors font-medium"
                     />
                   </div>
@@ -2120,7 +2159,7 @@ export function DtrGenerator() {
                       Station / Province Location
                     </span>
                     <span className="text-[10px] text-amber-400/90 font-mono px-1.5 py-0.5 rounded bg-amber-400/10 border border-amber-400/20">
-                      Includes RO
+                      RO • TOD • HRM • PO
                     </span>
                   </label>
                   <select
@@ -2143,7 +2182,7 @@ export function DtrGenerator() {
                       Select Verifying Officer / Supervisor
                     </span>
                     <span className="text-[9.5px] text-blue-400/90 font-mono px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20">
-                      PO • TOD • RD • ARD
+                      PO • TOD • HRM • RD • ARD
                     </span>
                   </label>
                   <select
@@ -2151,10 +2190,15 @@ export function DtrGenerator() {
                     onChange={(e) => handleSelectSupervisorOption(e.target.value)}
                     className="w-full bg-[#151D2F] border border-blue-500/40 rounded-lg px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400/30 transition-colors cursor-pointer"
                   >
-                    <option value="">-- Choose Verifying Officer (PO / TOD / RD / ARD) --</option>
+                    <option value="">-- Choose Verifying Officer (PO / TOD / HRM / RD / ARD) --</option>
                     <optgroup label="Technical Operations Division (TOD)">
                       <option value="norly-tabo">NORLY A. TABO — OIC Chief, TOD (Default)</option>
                       {registeredTod.map((u) => (
+                        <option key={u.id} value={`u-${u.id}`}>{u.name} — {u.role}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Human Resource Management / Admin (HRM)">
+                      {registeredHrm.map((u) => (
                         <option key={u.id} value={`u-${u.id}`}>{u.name} — {u.role}</option>
                       ))}
                     </optgroup>
@@ -2659,15 +2703,15 @@ export function DtrGenerator() {
                   : "Save as PDF (Civil Service Form 48)"}
               </button>
 
-              {/* Move to PO Button (Transfers PDF to Provincial Module under selected Province) */}
+              {/* Move to PO / TOD / HRM Button (Transfers PDF to target Module under selected Station/Province) */}
               <button
                 type="button"
                 onClick={handleMoveToPo}
                 className="w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white font-bold text-xs tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-amber-950/40 transition-all cursor-pointer active:scale-[0.99]"
-                title={`Move generated PDF to Provincial Module under ${config.province || "selected province"}`}
+                title={`Move generated PDF to ${config.province === "TOD" ? "TOD Module" : config.province === "HRM" ? "HRM Module" : `Provincial Module under ${config.province || "selected province"}`}`}
               >
                 <MapPin className="w-4 h-4 text-amber-200" />
-                Move to PO
+                {config.province === "TOD" ? "Move to TOD" : config.province === "HRM" ? "Move to HRM" : "Move to PO"}
               </button>
 
               {/* Option to export standard PDF even if P12 profile is attached */}

@@ -1,4 +1,5 @@
 import { DtrStorageItem, getDtrStorage, saveDtrStorage, setCachedPdfDataUrl } from "@/data/dtrStorage";
+import { resolveApiCandidateOrigins } from "@/services/api";
 
 export type DtrRealtimeEvent =
   | { type: "INSERT"; record: DtrStorageItem; id: string }
@@ -12,6 +13,7 @@ const listeners = new Set<RealtimeCallback>();
 let eventSource: EventSource | null = null;
 let broadcastChannel: BroadcastChannel | null = null;
 let reconnectTimeout: any = null;
+let sseCandidateIndex = 0;
 
 // Initialize BroadcastChannel for instant same-browser cross-tab messaging
 try {
@@ -76,7 +78,12 @@ function initEventSource() {
   if (eventSource) return;
 
   try {
-    eventSource = new EventSource("/api/dtr-storage/events");
+    const ssePath = "/api/dtr-storage/events";
+    const candidates = resolveApiCandidateOrigins(ssePath);
+    const origin = candidates[sseCandidateIndex % Math.max(1, candidates.length)] || "";
+    const targetUrl = origin ? `${origin}${ssePath}` : ssePath;
+
+    eventSource = new EventSource(targetUrl);
 
     eventSource.onmessage = (event) => {
       try {
@@ -92,6 +99,7 @@ function initEventSource() {
         eventSource.close();
         eventSource = null;
       }
+      sseCandidateIndex++;
       clearTimeout(reconnectTimeout);
       reconnectTimeout = setTimeout(initEventSource, 3000);
     };

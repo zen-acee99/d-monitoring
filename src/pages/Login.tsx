@@ -81,10 +81,7 @@ export function Login() {
     }
 
     const matched = allUsers.find(
-      (u) =>
-        u.email.toLowerCase() === cleanEmail ||
-        u.email.toLowerCase().startsWith(cleanEmail.split("@")[0] + "@") ||
-        cleanEmail.startsWith(u.email.split("@")[0] + "@")
+      (u) => u.email && u.email.trim().toLowerCase() === cleanEmail
     );
 
     if (matched) {

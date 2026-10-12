@@ -21,7 +21,24 @@ const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
 
 // Middleware
-app.use(cors());
+const corsOptions: cors.CorsOptions = {
+  origin: true,
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "x-user-id",
+    "x-lb-node",
+    "Cache-Control",
+    "Pragma",
+    "Accept",
+    "Origin",
+    "X-Requested-With",
+  ],
+};
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 

@@ -285,6 +285,11 @@ export function appendSignatureIncremental(
   const existingSigMatches = [...pdfStr.matchAll(/\/Type\s*\/Sig\b/g)];
   const existingSigCount = existingSigMatches.length;
   const cleanSignerTag = signerName.replace(/[^a-zA-Z0-9]/g, "_");
+  const escapedSigner = signerName.replace(/[()\\]/g, "\\$&");
+  const labelText = "Digitally signed";
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const pnpkiDateStr = `${now.getFullYear()}.${pad(now.getMonth() + 1)}.${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())} +08'00'`;
 
   // 2. Widget Annotations & Appearance Streams
   const newWidgetRefs: string[] = [];
@@ -506,7 +511,8 @@ export async function signPdfBuffer(
       reason,
       contactInfo,
       location,
-      options?.fieldName
+      options?.fieldName,
+      options?.pageIndex
     );
   } else {
     // ── First Signature Mode: Inject placeholder /Sig field and multi-widgets with pdf-lib ──

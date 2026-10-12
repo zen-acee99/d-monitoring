@@ -586,9 +586,14 @@ export function SystemSettings() {
   const focalCount = users.filter((u) => u.isFocal).length;
   const activeCount = users.filter((u) => u.status === "active").length;
 
-  // Filtered module list from Turso table: module
+  // Filtered module list from Turso table: module (excluding hidden Regional Calendar)
+  const visibleModules = useMemo(
+    () => modules.filter((m) => m.code !== "MOD_CALENDAR" && m.id !== "mod-calendar" && m.id !== "calendar"),
+    [modules]
+  );
+
   const filteredModules = useMemo(() => {
-    return modules.filter((m) => {
+    return visibleModules.filter((m) => {
       const q = moduleSearch.toLowerCase().trim();
       const matchesSearch =
         q === "" ||
@@ -605,12 +610,12 @@ export function SystemSettings() {
 
       return matchesSearch && matchesCategory && matchesStatus;
     });
-  }, [modules, moduleSearch, moduleCategoryFilter, moduleStatusFilter]);
+  }, [visibleModules, moduleSearch, moduleCategoryFilter, moduleStatusFilter]);
 
-  const totalModules = modules.length;
-  const activeModulesCount = modules.filter((m) => m.is_active).length;
-  const deactivatedModulesCount = modules.filter((m) => !m.is_active).length;
-  const projectModulesCount = modules.filter((m) => m.category === "Project").length;
+  const totalModules = visibleModules.length;
+  const activeModulesCount = visibleModules.filter((m) => m.is_active).length;
+  const deactivatedModulesCount = visibleModules.filter((m) => !m.is_active).length;
+  const projectModulesCount = visibleModules.filter((m) => m.category === "Project").length;
 
   return (
     <div className="space-y-6 max-w-[1920px] mx-auto text-slate-200">

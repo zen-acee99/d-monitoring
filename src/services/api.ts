@@ -104,6 +104,259 @@ export interface MapSite {
 
 const API_BASE = "/api";
 
+/**
+ * Shared API route prefixes served identically by both `dict-monitoring` and `dict-dtr-generator`
+ * (in Vercel Serverless Functions as well as local Express servers).
+ */
+export const SHARED_API_PREFIXES = [
+  "/api/dtr-generator",
+  "/api/dtr-storage",
+  "/api/dtr/storage",
+  "/api/dtr-user-setup",
+  "/api/dtr-schedule-settings",
+  "/api/opentimeclock",
+  "/api/users",
+  "/api/auth",
+  "/api/administration",
+  "/api/health",
+];
+
+/**
+ * Heavy or high-frequency shared API paths that benefit from Round-Robin load distribution
+ * across both Vercel deployments when a peer URL is configured.
+ */
+const ROUND_ROBIN_SHARED_PATHS = [
+  "/api/dtr-generator/sign-pdf",
+  "/api/dtr-generator/p12-identity",
+  "/api/opentimeclock/fetch",
+  "/api/opentimeclock/verify",
+  "/api/dtr-storage",
+  "/api/dtr/storage",
+];
+
+let roundRobinCounter = 0;
+
+export function normalizeBaseOrigin(raw?: string | null): string {
+  if (!raw || typeof raw !== "string") return "";
+  let trimmed = raw.trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+
+  // Add protocol if user provided a bare domain/host like "dict-dtr-generator.vercel.app" or "localhost:3003"
+  if (!/^https?:\/\//i.test(trimmed) && !trimmed.startsWith("/")) {
+    const isLocalHost = /^(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(trimmed);
+    trimmed = `${isLocalHost ? "http" : "https"}://${trimmed}`;
+  }
+
+  try {
+    if (/^https?:\/\//i.test(trimmed)) {
+      const parsed = new URL(trimmed);
+      // Preserve subpath only if not /api or /api/*
+      const cleanPath = parsed.pathname
+        .replace(/\/+$/, "")
+        .replace(/\/api(\/.*)?$/i, "");
+      return `${parsed.origin}${cleanPath}`;
+    }
+  } catch {
+    // Fallback to string stripping
+  }
+
+  return trimmed.replace(/\/api(\/.*)?$/i, "");
+}
+
+export function isSharedApiEndpoint(pathOrUrl: string): boolean {
+  let pathname = pathOrUrl;
+  try {
+    if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://")) {
+      pathname = new URL(pathOrUrl).pathname;
+    } else {
+      pathname = pathOrUrl.split("?")[0];
+    }
+  } catch {
+    pathname = pathOrUrl.split("?")[0];
+  }
+  return SHARED_API_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+  );
+}
+
+function isRoundRobinCandidate(pathOrUrl: string): boolean {
+  let pathname = pathOrUrl.split("?")[0];
+  try {
+    if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://")) {
+      pathname = new URL(pathOrUrl).pathname;
+    }
+  } catch {}
+  return ROUND_ROBIN_SHARED_PATHS.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+  );
+}
+
+/**
+ * Resolves the ordered list of API base origins [primary, ...secondary/failover]
+ * for a given `/api/...` request path.
+ */
+export function resolveApiCandidateOrigins(apiPath: string): string[] {
+  const env = (import.meta as any)?.env || {};
+  const primaryBase = normalizeBaseOrigin(env.VITE_API_BASE_URL);
+  const currentBrowserOrigin =
+    typeof window !== "undefined" && window.location?.origin
+      ? normalizeBaseOrigin(window.location.origin)
+      : "";
+  const effectivePrimaryOrigin = primaryBase || currentBrowserOrigin;
+
+  const rawPeerSources: (string | null | undefined)[] = [
+    env.VITE_SECONDARY_API_URL,
+    env.VITE_PEER_VERCEL_URL,
+    env.VITE_DTR_VERCEL_URL,
+    env.VITE_MONITORING_VERCEL_URL,
+  ];
+
+  if (typeof window !== "undefined") {
+    try {
+      rawPeerSources.push(
+        window.localStorage.getItem("dict_peer_api_url"),
+        window.localStorage.getItem("dict_secondary_api_url")
+      );
+    } catch {}
+  }
+
+  const configuredPeers: string[] = [];
+  for (const source of rawPeerSources) {
+    if (!source || typeof source !== "string") continue;
+    for (const part of source.split(",")) {
+      const normalized = normalizeBaseOrigin(part);
+      if (
+        normalized &&
+        normalized !== primaryBase &&
+        normalized !== effectivePrimaryOrigin &&
+        !configuredPeers.includes(normalized)
+      ) {
+        configuredPeers.push(normalized);
+      }
+    }
+  }
+
+  const shared = isSharedApiEndpoint(apiPath);
+
+  // Local development cluster automatic peer failover (:3000/:3001 <-> :3002/:3003 <-> :8080)
+  const localFallbacks: string[] = [];
+  if (typeof window !== "undefined" && shared) {
+    const { hostname, port } = window.location;
+    const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
+    if (isLocal) {
+      const host = hostname || "localhost";
+      if (port === "3000" || port === "3001") {
+        localFallbacks.push(`http://${host}:3003`, `http://${host}:8080`);
+      } else if (port === "3002" || port === "3003") {
+        localFallbacks.push(`http://${host}:3001`, `http://${host}:8080`);
+      } else if (port === "8080") {
+        localFallbacks.push(`http://${host}:3001`, `http://${host}:3003`);
+      } else {
+        localFallbacks.push(`http://${host}:3001`, `http://${host}:3003`, `http://${host}:8080`);
+      }
+    }
+  }
+
+  if (!shared) {
+    return [primaryBase];
+  }
+
+  let pool = [primaryBase, ...configuredPeers];
+  // Deduplicate while preserving order
+  pool = Array.from(new Set(pool));
+
+  // If at least one explicit peer Vercel URL is configured, apply Round-Robin load distribution
+  // when enabled via VITE_API_LOAD_BALANCE !== "false" or for heavy endpoints
+  const lbMode = String(env.VITE_API_LOAD_BALANCE || "auto").toLowerCase();
+  let storedLbMode = "";
+  if (typeof window !== "undefined") {
+    try {
+      storedLbMode = String(window.localStorage.getItem("dict_api_lb_mode") || "").toLowerCase();
+    } catch {}
+  }
+  const effectiveLbMode = storedLbMode || lbMode;
+
+  if (configuredPeers.length > 0 && pool.length > 1 && effectiveLbMode !== "failover-only" && effectiveLbMode !== "false") {
+    const shouldRoundRobin =
+      effectiveLbMode === "round-robin" ||
+      effectiveLbMode === "true" ||
+      isRoundRobinCandidate(apiPath);
+
+    if (shouldRoundRobin) {
+      const idx = roundRobinCounter++ % pool.length;
+      if (idx > 0) {
+        pool = [...pool.slice(idx), ...pool.slice(0, idx)];
+      }
+    }
+  }
+
+  for (const lf of localFallbacks) {
+    if (!pool.includes(lf) && lf !== effectivePrimaryOrigin) {
+      pool.push(lf);
+    }
+  }
+
+  return pool;
+}
+
+function shouldFailoverResponse(res: Response): boolean {
+  const status = res.status;
+  // Failover on 5xx server/timeout errors, 429 rate-limit, or 408 request timeout
+  if (status >= 500 || status === 429 || status === 408) {
+    return true;
+  }
+  // Also failover on 404 when a serverless route is missing (non-JSON 404 or Vercel routing error)
+  if (status === 404) {
+    const contentType = (res.headers?.get?.("content-type") || "").toLowerCase();
+    const vercelError = res.headers?.get?.("x-vercel-error");
+    if (vercelError || !contentType.includes("application/json")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Smart Cross-Vercel & Local Cluster Load-Balanced / Auto-Failover `fetch` wrapper.
+ * Automatically distributes load and retries against peer deployment URLs on network failure,
+ * Vercel serverless function timeout (504), rate limit (429), or 5xx error.
+ */
+export async function apiFetch(input: string, init?: RequestInit): Promise<Response> {
+  if (!input.startsWith("/api")) {
+    return fetch(input, init);
+  }
+
+  const candidateOrigins = resolveApiCandidateOrigins(input);
+  let lastError: any = null;
+  let lastResponse: Response | null = null;
+
+  for (let i = 0; i < candidateOrigins.length; i++) {
+    const origin = candidateOrigins[i];
+    const targetUrl = origin ? `${origin}${input}` : input;
+
+    try {
+      const res = await fetch(targetUrl, init);
+      if (!shouldFailoverResponse(res) || i === candidateOrigins.length - 1) {
+        return res;
+      }
+      lastResponse = res;
+      console.warn(
+        `[API Failover] Primary node (${targetUrl}) returned HTTP ${res.status}. Failing over to peer node...`
+      );
+    } catch (err) {
+      lastError = err;
+      if (i < candidateOrigins.length - 1) {
+        console.warn(
+          `[API Failover] Network error on (${targetUrl}). Retrying via peer node (${candidateOrigins[i + 1] || "local"})...`
+        );
+      }
+    }
+  }
+
+  if (lastResponse) return lastResponse;
+  throw lastError || new Error(`Failed to fetch ${input} across all API nodes`);
+}
+
 export const projectApi = {
   // Fetch geographical project sites across all projects
   async getMapSites(municipality?: string): Promise<MapSite[]> {
@@ -111,7 +364,7 @@ export const projectApi = {
       const url = municipality 
         ? `${API_BASE}/projects/map-sites?municipality=${encodeURIComponent(municipality)}`
         : `${API_BASE}/projects/map-sites`;
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       const data = await res.json();
       return data.sites || [];
@@ -124,7 +377,7 @@ export const projectApi = {
   // Fetch live calculated overview stats across all projects
   async getOverviewStats(): Promise<OverviewStats | null> {
     try {
-      const res = await fetch(`${API_BASE}/overview/stats`);
+      const res = await apiFetch(`${API_BASE}/overview/stats`);
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       const data = await res.json();
       return data.stats || null;
@@ -137,7 +390,7 @@ export const projectApi = {
   // Check backend and Turso database health
   async checkHealth(): Promise<BackendHealth | null> {
     try {
-      const res = await fetch(`${API_BASE}/health`);
+      const res = await apiFetch(`${API_BASE}/health`);
       if (!res.ok) return null;
       return await res.json();
     } catch {
@@ -148,7 +401,7 @@ export const projectApi = {
   // Fetch all projects metadata from backend
   async getProjects(): Promise<ApiProject[]> {
     try {
-      const res = await fetch(`${API_BASE}/projects`);
+      const res = await apiFetch(`${API_BASE}/projects`);
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       const data = await res.json();
       return data.projects || [];
@@ -161,7 +414,7 @@ export const projectApi = {
   // Update project metadata
   async updateProject(id: string, updates: Partial<ApiProject>): Promise<ApiProject | null> {
     try {
-      const res = await fetch(`${API_BASE}/projects/${id}`, {
+      const res = await apiFetch(`${API_BASE}/projects/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
@@ -187,7 +440,7 @@ export const projectApi = {
       if (filters?.search) params.set("search", filters.search);
 
       const query = params.toString() ? `?${params.toString()}` : "";
-      const res = await fetch(`${API_BASE}/${table}${query}`);
+      const res = await apiFetch(`${API_BASE}/${table}${query}`);
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       const data = await res.json();
       return data.records || [];
@@ -203,7 +456,7 @@ export const projectApi = {
     record: Record<string, any>
   ): Promise<Record<string, any> | null> {
     try {
-      const res = await fetch(`${API_BASE}/${table}`, {
+      const res = await apiFetch(`${API_BASE}/${table}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(record),
@@ -224,7 +477,7 @@ export const projectApi = {
     updates: Record<string, any>
   ): Promise<Record<string, any> | null> {
     try {
-      const res = await fetch(`${API_BASE}/${table}/${id}`, {
+      const res = await apiFetch(`${API_BASE}/${table}/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
@@ -241,7 +494,7 @@ export const projectApi = {
   // Delete a record from project table
   async deleteTableRecord(table: string, id: string): Promise<boolean> {
     try {
-      const res = await fetch(`${API_BASE}/${table}/${id}`, {
+      const res = await apiFetch(`${API_BASE}/${table}/${id}`, {
         method: "DELETE",
       });
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
@@ -260,7 +513,7 @@ export const projectApi = {
     replaceAll: boolean = false
   ): Promise<{ success: boolean; count?: number }> {
     try {
-      const res = await fetch(`${API_BASE}/${table}/bulk`, {
+      const res = await apiFetch(`${API_BASE}/${table}/bulk`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ records, replaceAll }),
@@ -299,7 +552,7 @@ export const administrationApi = {
   // Authenticate user via email and password
   async login(email: string, password: string): Promise<{ success: boolean; user?: AdminUser; error?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/administration/login`, {
+      const res = await apiFetch(`${API_BASE}/administration/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -317,7 +570,7 @@ export const administrationApi = {
   // Fetch all administrators from Turso administration table
   async getAdministrators(): Promise<AdminUser[]> {
     try {
-      const res = await fetch(`${API_BASE}/administration`);
+      const res = await apiFetch(`${API_BASE}/administration`);
       if (!res.ok) return [];
       const contentType = res.headers.get("content-type");
       if (!contentType || !contentType.includes("application/json")) return [];
@@ -331,7 +584,7 @@ export const administrationApi = {
   // Create new administrator in Turso
   async createAdministrator(user: Partial<AdminUser>): Promise<AdminUser | null> {
     try {
-      const res = await fetch(`${API_BASE}/administration`, {
+      const res = await apiFetch(`${API_BASE}/administration`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(user),
@@ -348,7 +601,7 @@ export const administrationApi = {
   // Update administrator in Turso
   async updateAdministrator(id: string | number, updates: Partial<AdminUser>): Promise<AdminUser | null> {
     try {
-      const res = await fetch(`${API_BASE}/administration/${id}`, {
+      const res = await apiFetch(`${API_BASE}/administration/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
@@ -365,7 +618,7 @@ export const administrationApi = {
   // Delete administrator from Turso
   async deleteAdministrator(id: string | number): Promise<boolean> {
     try {
-      const res = await fetch(`${API_BASE}/administration/${id}`, {
+      const res = await apiFetch(`${API_BASE}/administration/${id}`, {
         method: "DELETE",
       });
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
@@ -380,7 +633,7 @@ export const administrationApi = {
   // Check if a user has permission to modify records in a project module
   async checkPermission(userId: string | number, projectId: string): Promise<{ canModify: boolean; hasAccess: boolean; canDelete: boolean }> {
     try {
-      const res = await fetch(`${API_BASE}/administration/permissions/check?userId=${userId}&projectId=${projectId}`);
+      const res = await apiFetch(`${API_BASE}/administration/permissions/check?userId=${userId}&projectId=${projectId}`);
       if (!res.ok) return { canModify: true, hasAccess: true, canDelete: true };
       const data = await res.json();
       return {
@@ -396,7 +649,7 @@ export const administrationApi = {
   // Reset and restore default administrators in Turso
   async resetDefaults(): Promise<AdminUser[]> {
     try {
-      const res = await fetch(`${API_BASE}/administration/reset-defaults`, {
+      const res = await apiFetch(`${API_BASE}/administration/reset-defaults`, {
         method: "POST",
       });
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
@@ -434,7 +687,7 @@ export const dtrGeneratorApi = {
       if (query?.Name) params.set("Name", query.Name);
       if (query?.email) params.set("email", query.email);
       const url = `${API_BASE}/dtr-generator${params.toString() ? `?${params.toString()}` : ""}`;
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       const data = await res.json();
       return data.records || [];
@@ -447,7 +700,7 @@ export const dtrGeneratorApi = {
   // Get single record by ID or Name
   async getRecord(idOrName: string): Promise<DtrGeneratorSignatureRecord | null> {
     try {
-      const res = await fetch(`${API_BASE}/dtr-generator/${encodeURIComponent(idOrName)}`);
+      const res = await apiFetch(`${API_BASE}/dtr-generator/${encodeURIComponent(idOrName)}`);
       if (!res.ok) return null;
       const data = await res.json();
       return data.record || null;
@@ -473,7 +726,7 @@ export const dtrGeneratorApi = {
       if (data.user_Id) {
         headers["x-user-id"] = data.user_Id;
       }
-      const res = await fetch(`${API_BASE}/dtr-generator`, {
+      const res = await apiFetch(`${API_BASE}/dtr-generator`, {
         method: "POST",
         headers,
         body: JSON.stringify(data),
@@ -510,7 +763,7 @@ export const dtrGeneratorApi = {
     error?: string;
   }> {
     try {
-      const res = await fetch(`${API_BASE}/dtr-generator/p12-identity`, {
+      const res = await apiFetch(`${API_BASE}/dtr-generator/p12-identity`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -549,7 +802,7 @@ export const dtrGeneratorApi = {
     error?: string;
   }> {
     try {
-      const res = await fetch(`${API_BASE}/dtr-generator/sign-pdf`, {
+      const res = await apiFetch(`${API_BASE}/dtr-generator/sign-pdf`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -568,7 +821,7 @@ export const dtrGeneratorApi = {
   // Delete digital signature profile from Turso
   async deleteRecord(id: string): Promise<boolean> {
     try {
-      const res = await fetch(`${API_BASE}/dtr-generator/${encodeURIComponent(id)}`, {
+      const res = await apiFetch(`${API_BASE}/dtr-generator/${encodeURIComponent(id)}`, {
         method: "DELETE",
       });
       if (!res.ok) return false;
@@ -598,7 +851,7 @@ export const modulesApi = {
   // Fetch all modules from Turso module table
   async getModules(): Promise<SystemModule[]> {
     try {
-      const res = await fetch(`${API_BASE}/modules`);
+      const res = await apiFetch(`${API_BASE}/modules`);
       if (!res.ok) return [];
       const contentType = res.headers.get("content-type");
       if (!contentType || !contentType.includes("application/json")) return [];
@@ -612,7 +865,7 @@ export const modulesApi = {
   // Get single module by ID or Code
   async getModule(idOrCode: string): Promise<SystemModule | null> {
     try {
-      const res = await fetch(`${API_BASE}/modules/${encodeURIComponent(idOrCode)}`);
+      const res = await apiFetch(`${API_BASE}/modules/${encodeURIComponent(idOrCode)}`);
       if (!res.ok) return null;
       const contentType = res.headers.get("content-type");
       if (!contentType || !contentType.includes("application/json")) return null;
@@ -634,7 +887,7 @@ export const modulesApi = {
     is_active?: boolean;
   }): Promise<{ success: boolean; module?: SystemModule; error?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/modules`, {
+      const res = await apiFetch(`${API_BASE}/modules`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(moduleData),
@@ -657,7 +910,7 @@ export const modulesApi = {
     updates: Partial<SystemModule>
   ): Promise<{ success: boolean; module?: SystemModule; error?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/modules/${encodeURIComponent(id)}`, {
+      const res = await apiFetch(`${API_BASE}/modules/${encodeURIComponent(id)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
@@ -677,7 +930,7 @@ export const modulesApi = {
   // Toggle module active/deactivated state
   async toggleStatus(id: string | number): Promise<{ success: boolean; module?: SystemModule; error?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/modules/${encodeURIComponent(id)}/toggle`, {
+      const res = await apiFetch(`${API_BASE}/modules/${encodeURIComponent(id)}/toggle`, {
         method: "PATCH",
       });
       if (!res.ok) return { success: false, error: `Server error ${res.status}` };
@@ -695,7 +948,7 @@ export const modulesApi = {
   // Delete a custom module
   async deleteModule(id: string | number): Promise<boolean> {
     try {
-      const res = await fetch(`${API_BASE}/modules/${encodeURIComponent(id)}`, {
+      const res = await apiFetch(`${API_BASE}/modules/${encodeURIComponent(id)}`, {
         method: "DELETE",
       });
       if (!res.ok) return false;
@@ -717,22 +970,22 @@ export const usersApi = {
     email: string;
     name: string;
     avatar_url?: string | null;
-  }): Promise<{ success: boolean; user?: AdminUser; isNewUser?: boolean; error?: string }> {
+  }): Promise<{ success: boolean; user?: AdminUser; isNewUser?: boolean; error?: string; status?: number }> {
     try {
-      const res = await fetch(`${API_BASE}/users/google-sync`, {
+      const res = await apiFetch(`${API_BASE}/users/google-sync`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!res.ok) {
-        return { success: false, error: `Backend unavailable (HTTP ${res.status})` };
-      }
       const contentType = res.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        return { success: false, error: "Non-JSON response from server" };
+      if (contentType && contentType.includes("application/json")) {
+        const data = await res.json();
+        return { ...data, status: res.status };
       }
-      const data = await res.json();
-      return data;
+      if (!res.ok) {
+        return { success: false, status: res.status, error: `Backend unavailable (HTTP ${res.status})` };
+      }
+      return { success: false, status: res.status, error: "Non-JSON response from server" };
     } catch {
       return { success: false, error: "Could not reach backend sync service" };
     }
@@ -747,7 +1000,7 @@ export const usersApi = {
     region?: string;
   }): Promise<{ success: boolean; user?: AdminUser; error?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/users/register`, {
+      const res = await apiFetch(`${API_BASE}/users/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -764,7 +1017,7 @@ export const usersApi = {
   // Login with email + password against users table
   async login(email: string, password: string): Promise<{ success: boolean; user?: AdminUser; error?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/users/login`, {
+      const res = await apiFetch(`${API_BASE}/users/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -780,7 +1033,7 @@ export const usersApi = {
   // Get all users from users table
   async getUsers(): Promise<AdminUser[]> {
     try {
-      const res = await fetch(`${API_BASE}/users`);
+      const res = await apiFetch(`${API_BASE}/users`);
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       const data = await res.json();
       return data.users || [];
@@ -811,7 +1064,7 @@ export const dtrStorageApi = {
       params.set("_t", Date.now().toString());
 
       const query = `?${params.toString()}`;
-      const res = await fetch(`${API_BASE}/dtr-storage${query}`, {
+      const res = await apiFetch(`${API_BASE}/dtr-storage${query}`, {
         cache: "no-store",
         headers: {
           "Cache-Control": "no-cache",
@@ -830,7 +1083,7 @@ export const dtrStorageApi = {
   // Get single record with full binary payload
   async getRecord(id: string): Promise<any | null> {
     try {
-      const res = await fetch(`${API_BASE}/dtr-storage/${encodeURIComponent(id)}`);
+      const res = await apiFetch(`${API_BASE}/dtr-storage/${encodeURIComponent(id)}`);
       if (!res.ok) return null;
       const data = await res.json();
       return data.record || null;
@@ -848,7 +1101,7 @@ export const dtrStorageApi = {
         headers["x-user-id"] = String(payload.userId);
       }
 
-      const res = await fetch(`${API_BASE}/dtr-storage`, {
+      const res = await apiFetch(`${API_BASE}/dtr-storage`, {
         method: "POST",
         headers,
         body: JSON.stringify(payload),
@@ -865,7 +1118,7 @@ export const dtrStorageApi = {
   // Update status or remarks in database
   async updateStatus(id: string, status: string, remarks?: string): Promise<{ success: boolean; record?: any; error?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/dtr-storage/${encodeURIComponent(id)}`, {
+      const res = await apiFetch(`${API_BASE}/dtr-storage/${encodeURIComponent(id)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status, remarks }),
@@ -881,7 +1134,7 @@ export const dtrStorageApi = {
   // Delete DTR record from database
   async deleteRecord(id: string): Promise<boolean> {
     try {
-      const res = await fetch(`${API_BASE}/dtr-storage/${encodeURIComponent(id)}`, {
+      const res = await apiFetch(`${API_BASE}/dtr-storage/${encodeURIComponent(id)}`, {
         method: "DELETE",
       });
       if (!res.ok) return false;
@@ -943,7 +1196,7 @@ export interface DtrUserSetupInput {
 export const dtrUserSetupApi = {
   async getSetup(userId: string): Promise<DtrUserSetup | null> {
     try {
-      const res = await fetch(`${API_BASE}/dtr-user-setup/${encodeURIComponent(userId)}`);
+      const res = await apiFetch(`${API_BASE}/dtr-user-setup/${encodeURIComponent(userId)}`);
       if (!res.ok) return null;
       const data = await res.json();
       return data.setup || null;
@@ -958,7 +1211,7 @@ export const dtrUserSetupApi = {
       if (filters?.user_id) params.set("user_id", filters.user_id);
       if (filters?.employee_name) params.set("employee_name", filters.employee_name);
       const query = params.toString() ? `?${params.toString()}` : "";
-      const res = await fetch(`${API_BASE}/dtr-user-setup${query}`);
+      const res = await apiFetch(`${API_BASE}/dtr-user-setup${query}`);
       if (!res.ok) return [];
       const data = await res.json();
       return data.setups || [];
@@ -969,7 +1222,7 @@ export const dtrUserSetupApi = {
 
   async saveSetup(setup: DtrUserSetupInput): Promise<{ success: boolean; setup?: DtrUserSetup; error?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/dtr-user-setup`, {
+      const res = await apiFetch(`${API_BASE}/dtr-user-setup`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(setup),
@@ -984,7 +1237,7 @@ export const dtrUserSetupApi = {
 
   async deleteSetup(userId: string): Promise<boolean> {
     try {
-      const res = await fetch(`${API_BASE}/dtr-user-setup/${encodeURIComponent(userId)}`, {
+      const res = await apiFetch(`${API_BASE}/dtr-user-setup/${encodeURIComponent(userId)}`, {
         method: "DELETE",
       });
       if (!res.ok) return false;
@@ -1019,7 +1272,7 @@ export interface DtrWorkScheduleSetting {
 export const dtrScheduleSettingsApi = {
   async getSettings(): Promise<DtrWorkScheduleSetting> {
     try {
-      const res = await fetch(`${API_BASE}/dtr-schedule-settings`);
+      const res = await apiFetch(`${API_BASE}/dtr-schedule-settings`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (data.setting) return data.setting;
@@ -1048,7 +1301,7 @@ export const dtrScheduleSettingsApi = {
     settings: Partial<DtrWorkScheduleSetting>
   ): Promise<{ success: boolean; setting?: DtrWorkScheduleSetting; error?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/dtr-schedule-settings`, {
+      const res = await apiFetch(`${API_BASE}/dtr-schedule-settings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(settings),
@@ -1093,7 +1346,7 @@ export const openTimeClockApi = {
     password?: string
   ): Promise<{ success: boolean; employeeName?: string; userName?: string; error?: string; message?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/opentimeclock/verify`, {
+      const res = await apiFetch(`${API_BASE}/opentimeclock/verify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
@@ -1115,7 +1368,7 @@ export const openTimeClockApi = {
 
   async fetchTimeCards(params: OtcFetchParams): Promise<OtcFetchResponse> {
     try {
-      const res = await fetch(`${API_BASE}/opentimeclock/fetch`, {
+      const res = await apiFetch(`${API_BASE}/opentimeclock/fetch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),

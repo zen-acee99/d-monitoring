@@ -31,7 +31,7 @@ import {
   LayoutGrid,
   Table as TableIcon,
 } from "lucide-react";
-import { getCurrentUser } from "@/services/authStore";
+import { getCurrentUser, AUTH_EVENT } from "@/services/authStore";
 import { getStoredUsers } from "@/data/userStore";
 import { dtrGeneratorApi, dtrStorageApi, DtrGeneratorSignatureRecord } from "@/services/api";
 import {
@@ -1478,7 +1478,7 @@ function SingleCounterSignModal({
 
           {/* Info Box */}
           <div className="p-3 rounded-xl bg-cyan-500/5 border border-cyan-500/20 text-[11px] text-slate-400 leading-relaxed">
-            A <span className="text-white font-bold">compact horizontal</span> counter-signature with transparent background and no border (signature on the left, &quot;DigiSigned by {selectedPersonnel || "…"}&quot; on the right in black text) will be placed{" "}
+            A <span className="text-white font-bold">compact horizontal</span> counter-signature with transparent background and no border (signature on the left, &quot;DigiSigned by {getCurrentUser()?.name || "you"}&quot; on the right in black text) will be placed{" "}
             <span className="text-cyan-300 font-bold">
               {selectedPosition === "bottom" ? "directly below" : selectedPosition === "left" ? "directly to the left of" : "directly to the right of"} &quot;{selectedPersonnel || "…"}&quot;
             </span>{" "}
@@ -1671,7 +1671,7 @@ function BulkCounterSignModal({
               <span>Compact Counter-Signature Placement</span>
             </div>
             <p className="text-slate-300 text-[11px] leading-relaxed">
-              When confirmed, a <strong className="text-white">compact horizontal</strong> counter-signature with transparent background and no border (signature on the left, &quot;DigiSigned by {selectedPersonnel || "the selected personnel"}&quot; on the right in black text) will be placed{" "}
+              When confirmed, a <strong className="text-white">compact horizontal</strong> counter-signature with transparent background and no border (signature on the left, &quot;DigiSigned by {getCurrentUser()?.name || "you"}&quot; on the right in black text) will be placed{" "}
               <strong className="text-cyan-300 font-bold">
                 {selectedPosition === "bottom" ? "directly below" : selectedPosition === "left" ? "directly to the left of" : "directly to the right of"} {selectedPersonnel || "the selected personnel"}
               </strong>{" "}
@@ -1720,7 +1720,22 @@ function BulkCounterSignModal({
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export function SigningWorkspace() {
-  const currentUser = getCurrentUser();
+  const [currentUser, setCurrentUser] = useState(() => getCurrentUser());
+
+  useEffect(() => {
+    const handleAuthChange = () => {
+      setCurrentUser(getCurrentUser());
+    };
+    window.addEventListener(AUTH_EVENT, handleAuthChange);
+    window.addEventListener("storage", handleAuthChange);
+    window.addEventListener("dict_users_updated", handleAuthChange);
+    return () => {
+      window.removeEventListener(AUTH_EVENT, handleAuthChange);
+      window.removeEventListener("storage", handleAuthChange);
+      window.removeEventListener("dict_users_updated", handleAuthChange);
+    };
+  }, []);
+
   const [documents, setDocuments] = useState<WorkspaceDocument[]>([]);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [isBulkCounterModalOpen, setIsBulkCounterModalOpen] = useState(false);
@@ -2054,43 +2069,52 @@ export function SigningWorkspace() {
     }
   ): Promise<WorkspaceDocument> => {
     try {
-      const currentUserName = currentUser?.name || "ACE MALTO";
-      const isReq = isUserInRequiredSigners(doc, currentUserName, currentUser?.role);
+      const liveUser = getCurrentUser() || currentUser;
+      const currentUserName = (liveUser?.name || "").trim();
+      const isReq = isUserInRequiredSigners(doc, currentUserName, liveUser?.role);
       const isCounter = options?.isCounterSign !== undefined ? options.isCounterSign : !isReq;
       const counterPos = options?.counterSignPosition || "auto";
 
-      // Fetch digital signature profile for the current logged-in signer
+      // Fetch digital signature profile for the current logged-in signer ONLY
       let userSigProfile: DtrGeneratorSignatureRecord | null = null;
       try {
-        if (currentUser?.id) {
-          const list = await dtrGeneratorApi.getRecords({ user_Id: String(currentUser.id) });
+        if (liveUser?.id) {
+          const list = await dtrGeneratorApi.getRecords({ user_Id: String(liveUser.id) });
           if (Array.isArray(list) && list.length > 0) {
-            userSigProfile = list.find((p) => p.user_Id === String(currentUser.id)) || list[0];
+            userSigProfile = list.find((p) => String(p.user_Id) === String(liveUser.id)) || null;
           }
         }
         if (!userSigProfile && currentUserName) {
           const list = await dtrGeneratorApi.getRecords({ Name: currentUserName });
           if (Array.isArray(list) && list.length > 0) {
             userSigProfile =
-              list.find((p) => p.Name.toLowerCase() === currentUserName.toLowerCase()) || list[0];
+              list.find((p) => p.Name.toLowerCase() === currentUserName.toLowerCase() || matchNames(p.Name, currentUserName)) || null;
           }
         }
-        if (!userSigProfile) {
+        if (!userSigProfile && currentUserName) {
           const all = await dtrGeneratorApi.getRecords();
           if (Array.isArray(all) && all.length > 0) {
             userSigProfile =
-              all.find((p) => matchNames(p.Name, currentUserName)) || all[0];
+              all.find((p) => (p.user_Id && String(p.user_Id) === String(liveUser?.id)) || matchNames(p.Name, currentUserName)) || null;
           }
         }
       } catch (err) {
         console.warn("Could not load digital signature profile:", err);
       }
 
-      const effectiveSignerName =
-        userSigProfile?.Name || currentUserName.toUpperCase() || "AUTHORIZED SIGNER";
-      const signatureImage = userSigProfile?.image_digiSigned || null;
+      // CRITICAL: Signer name MUST ALWAYS be the currently logged-in user! Never fall back to another user's name or Ace Malto.
+      const effectiveSignerName = (currentUserName || userSigProfile?.Name || "Authorized Signer").trim();
+
+      // Only use the signature image and P12 certificate if the profile strictly belongs to the logged-in user
+      const isProfileOwnerMatch = Boolean(
+        userSigProfile &&
+        ((userSigProfile.user_Id && String(userSigProfile.user_Id) === String(liveUser?.id)) ||
+          matchNames(userSigProfile.Name, currentUserName))
+      );
+
+      const signatureImage = isProfileOwnerMatch ? (userSigProfile?.image_digiSigned || null) : null;
       const p12Options =
-        userSigProfile?.hasP12 || userSigProfile?.p12
+        isProfileOwnerMatch && (userSigProfile?.hasP12 || userSigProfile?.p12)
           ? {
               profileId: userSigProfile.id,
               user_Id: userSigProfile.user_Id,
@@ -2154,6 +2178,7 @@ export function SigningWorkspace() {
                 isCounterSign: isCounter,
                 counterSignIndex: counterSignIdx,
                 counterSignPosition: counterPos,
+                signerName: effectiveSignerName,
               }
             );
 
@@ -2224,7 +2249,7 @@ export function SigningWorkspace() {
         signedCount >= doc.requiredSigners.length ? "signed" : "partially_signed";
 
       const placementDesc = isCounter
-        ? `Counter-signed (1-inch square box) placed ${signatureCoords?.appliedPosition || counterPos} personnel "${targetPersonnelName}"`
+        ? `Counter-signed placed ${signatureCoords?.appliedPosition || counterPos} personnel "${targetPersonnelName}"`
         : `Signed directly ABOVE personnel "${targetPersonnelName}"`;
 
       const updatedDoc: WorkspaceDocument = {
@@ -2243,11 +2268,11 @@ export function SigningWorkspace() {
       // Asynchronously update in Turso dtr_storage table (module = 'SIGNING_WORKSPACE')
       const signStoragePayload = {
         id: updatedDoc.id,
-        userId: String(currentUser?.id || "USER-001"),
+        userId: String(liveUser?.id || "USER-001"),
         employeeName: updatedDoc.targetPersonnel,
-        employeeId: String(currentUser?.employeeId || "EMP-001"),
+        employeeId: String(liveUser?.employeeId || "EMP-001"),
         module: "SIGNING_WORKSPACE",
-        province: currentUser?.province || "Regional Office",
+        province: liveUser?.province || "Regional Office",
         sectionDivision: "Regional Office V",
         periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
         month: new Date().getMonth() + 1,
@@ -2259,7 +2284,7 @@ export function SigningWorkspace() {
         pdfFileSize: updatedDoc.fileSize,
         pdfDataUrl: signedPdfDataUrl,
         docType: "AR",
-        hasP12: true,
+        hasP12: Boolean(p12Options),
         signerName: effectiveSignerName,
         remarks: JSON.stringify({
           targetPersonnel: updatedDoc.targetPersonnel,
@@ -2391,11 +2416,12 @@ export function SigningWorkspace() {
   const handleUploadScanned = async (scannedEntries: ScannedFileEntry[]) => {
     const now = new Date().toISOString();
     const newDocs: WorkspaceDocument[] = [];
+    const activeUser = getCurrentUser() || currentUser;
 
     for (let i = 0; i < scannedEntries.length; i++) {
       const entry = scannedEntries[i];
       const scan = entry.scanResult;
-      const defaultUser = currentUser?.name || "ACE M. MALTO";
+      const defaultUser = activeUser?.name || "Personnel";
       const primary = scan?.primaryPersonnel || scan?.requiredSigners?.[0] || defaultUser;
       const required =
         scan?.requiredSigners && scan.requiredSigners.length > 0
@@ -2434,7 +2460,7 @@ export function SigningWorkspace() {
         fileName: entry.file.name,
         fileSize: formatFileSize(entry.file.size),
         uploadedAt: now,
-        uploadedBy: currentUser?.name || "Unknown User",
+        uploadedBy: activeUser?.name || "Unknown User",
         status: "pending" as SigningStatus,
         targetPersonnel: primary,
         requiredSigners: required,
@@ -2457,11 +2483,11 @@ export function SigningWorkspace() {
       // Persist to Turso dtr_storage table (module = 'SIGNING_WORKSPACE')
       const uploadPayload = {
         id: newDoc.id,
-        userId: String(currentUser?.id || "USER-001"),
+        userId: String(activeUser?.id || "USER-001"),
         employeeName: newDoc.targetPersonnel,
-        employeeId: String(currentUser?.employeeId || "EMP-001"),
+        employeeId: String(activeUser?.employeeId || "EMP-001"),
         module: "SIGNING_WORKSPACE",
-        province: currentUser?.province || "Regional Office",
+        province: activeUser?.province || "Regional Office",
         sectionDivision: "Regional Office V",
         periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
         month: new Date().getMonth() + 1,
@@ -2926,7 +2952,7 @@ export function SigningWorkspace() {
                               {doc.fileName}
                             </p>
                             <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-slate-400 mt-0.5">
-                              <span>Personnel: <strong className="text-slate-200">{doc.targetPersonnel || doc.requiredSigners?.[0] || "ACE M. MALTO"}</strong></span>
+                              <span>Personnel: <strong className="text-slate-200">{doc.targetPersonnel || doc.requiredSigners?.[0] || currentUser?.name || "Personnel"}</strong></span>
                               <span>•</span>
                               <span className="font-mono">{doc.fileSize}</span>
                             </div>
@@ -3149,7 +3175,7 @@ export function SigningWorkspace() {
                               </p>
                               <p className="text-[10px] text-slate-400 truncate max-w-xs mt-0.5">
                                 Personnel:{" "}
-                                <span className="text-slate-200 font-bold">{doc.targetPersonnel || doc.requiredSigners?.[0] || "ACE M. MALTO"}</span>
+                                <span className="text-slate-200 font-bold">{doc.targetPersonnel || doc.requiredSigners?.[0] || currentUser?.name || "Personnel"}</span>
                               </p>
                             </div>
                           </div>

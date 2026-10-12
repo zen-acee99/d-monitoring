@@ -800,7 +800,7 @@ export async function getSignedDtrVectorPdfBytes(
       );
     }
     // Fallback: If not found in database, check if p12Options was provided for the employee
-    if (!empProfile && !isSupervisorAction && (p12Options?.p12Base64 || p12Options?.profileId || p12Options?.user_Id)) {
+    if (!empProfile && (p12Options?.signerRole === "employee" || !isSupervisorAction) && (p12Options?.p12Base64 || p12Options?.profileId || p12Options?.user_Id)) {
       if (matchNames(p12Options.signerName, config.employeeName) || !matchNames(p12Options.signerName, config.supervisorName)) {
         empProfile = {
           id: p12Options.profileId,
@@ -857,8 +857,8 @@ export async function getSignedDtrVectorPdfBytes(
           (p) => matchNames(p.Name, config.supervisorName) && (p.hasP12 || p.p12)
         );
       }
-      // 3. Priority 3: Check p12Options if it's supervisor action
-      if (!supProfile && (p12Options?.p12Base64 || p12Options?.profileId || p12Options?.user_Id)) {
+      // 3. Priority 3: Check p12Options if it's supervisor action (and not explicitly employee role)
+      if (!supProfile && p12Options?.signerRole !== "employee" && (p12Options?.p12Base64 || p12Options?.profileId || p12Options?.user_Id)) {
         if (matchNames(p12Options?.signerName, config.supervisorName) || isSupervisorAction) {
           supProfile = {
             id: p12Options.profileId,
@@ -871,12 +871,6 @@ export async function getSignedDtrVectorPdfBytes(
           };
         }
       }
-      // 4. Priority 4: Any supervisor/PO profile with p12 that is distinct from employee
-      if (!supProfile) {
-        supProfile = allProfiles.find(
-          (p) => (p.hasP12 || p.p12) && (!empProfile || p.id !== empProfile.id) && !matchNames(p.Name, config.employeeName)
-        );
-      }
     }
   }
 
@@ -888,7 +882,6 @@ export async function getSignedDtrVectorPdfBytes(
       supProfile =
         allProfiles.find((p) => config.signerName && matchNames(p.Name, config.signerName) && (p.hasP12 || p.p12)) ||
         allProfiles.find((p) => config.supervisorName && matchNames(p.Name, config.supervisorName) && (p.hasP12 || p.p12)) ||
-        allProfiles.find((p) => (p.hasP12 || p.p12) && p.id !== empProfile.id && !matchNames(p.Name, config.employeeName)) ||
         null;
     }
   }
@@ -2275,6 +2268,7 @@ export async function signUploadedPersonnelPdfBytes(
     counterSignIndex?: number;
     counterSignPosition?: CounterSignPosition;
     signerRoleLabel?: string;
+    signerName?: string;
   }
 ): Promise<{ bytes: Uint8Array; resolvedSignerName: string; signatureCoordinates: any }> {
   const incomingBytes =
@@ -2310,7 +2304,12 @@ export async function signUploadedPersonnelPdfBytes(
     `[Personnel Signing] ${loc.detectedReason} => Placing ${isCounter ? `15px Counter-Sign Box BESIDE (${loc.appliedPosition})` : "Signature ABOVE"} "${targetName}" at [x=${boxX}, y=${boxY}, w=${boxW}, h=${boxH}] on page ${loc.pageIndex + 1}`
   );
 
-  let resolvedSignerName = (p12Options?.signerName || targetName).trim();
+  let resolvedSignerName = (
+    options?.signerName ||
+    p12Options?.signerName ||
+    (isCounter ? options?.signerName : targetName) ||
+    targetName
+  ).trim();
   let finalUint8 = incomingBytes;
 
   // Embed the visual signature stamp on the page

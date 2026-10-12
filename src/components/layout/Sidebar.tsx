@@ -22,7 +22,6 @@ interface NavItem {
 const mainNav: NavItem[] = [
   { name: "Overview", path: "/", icon: Home, code: "MOD_OVERVIEW" },
   { name: "DTR Generator", path: "/dtr", icon: FileText, code: "MOD_DTR" },
-  { name: "Regional Calendar", path: "/calendar", icon: Calendar, code: "MOD_CALENDAR" },
   { name: "Signing Workspace", path: "/signing-workspace", icon: PenLine, code: "MOD_SIGNING" },
 ];
 

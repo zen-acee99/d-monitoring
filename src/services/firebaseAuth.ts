@@ -1,7 +1,7 @@
 import { signInWithPopup, signOut, UserCredential } from "firebase/auth";
 import { auth, googleProvider, isFirebaseConfigured } from "@/config/firebase";
-import { getAllUsers, setCurrentUser, createFullAccessMatrix } from "@/services/authStore";
-import { UserRecord, saveStoredUsers } from "@/data/userStore";
+import { getAllUsers, setCurrentUser } from "@/services/authStore";
+import { UserRecord } from "@/data/userStore";
 import { usersApi } from "@/services/api";
 
 export interface GoogleAuthResult {
@@ -13,8 +13,8 @@ export interface GoogleAuthResult {
 
 /**
  * Sign in with Google / Gmail using Firebase Authentication.
- * Matches the Google email with existing registered personnel in the system
- * to preserve their specific roles and module access privileges.
+ * Strictly verifies that the Google email exists in the registered User List.
+ * If the email is not in the User List, login is immediately blocked and signed out.
  */
 export async function signInWithGoogle(): Promise<GoogleAuthResult> {
   // If Firebase API key is not yet configured with real credentials
@@ -30,13 +30,15 @@ export async function signInWithGoogle(): Promise<GoogleAuthResult> {
     const googleUser = credential.user;
 
     if (!googleUser || !googleUser.email) {
+      await signOut(auth).catch(() => {});
+      setCurrentUser(null);
       return { success: false, error: "No email returned from Google account." };
     }
 
     const email = googleUser.email.toLowerCase().trim();
     const displayName = googleUser.displayName || email.split("@")[0];
 
-    // Attempt to sync Google OAuth session and credentials directly to the Turso users table
+    // 1. Verify against backend Turso User List
     try {
       const syncRes = await usersApi.syncGoogleUser({
         google_id: googleUser.uid,
@@ -45,31 +47,54 @@ export async function signInWithGoogle(): Promise<GoogleAuthResult> {
         avatar_url: googleUser.photoURL || null,
       });
 
-      if (syncRes && syncRes.success && syncRes.user) {
-        if (syncRes.user.status === "inactive") {
-          await signOut(auth).catch(() => {});
+      if (syncRes) {
+        if (syncRes.success && syncRes.user) {
+          if (syncRes.user.status === "inactive") {
+            await signOut(auth).catch(() => {});
+            setCurrentUser(null);
+            return {
+              success: false,
+              error: `Access Denied: The account for ${syncRes.user.name} (${email}) is deactivated. You no longer have access to the system.`,
+            };
+          }
+          const sessionUser: UserRecord = {
+            ...(syncRes.user as any),
+            authProvider: "google",
+            lastLogin: "Just now (GovMail SSO)",
+          };
+          setCurrentUser(sessionUser);
           return {
-            success: false,
-            error: `Access Denied: The account for ${syncRes.user.name} (${email}) is deactivated. You no longer have access to the system.`,
+            success: true,
+            user: sessionUser,
+            isNewUser: false,
           };
         }
-        const sessionUser: UserRecord = {
-          ...(syncRes.user as any),
-          authProvider: "google",
-          lastLogin: "Just now (GovMail SSO)",
-        };
-        setCurrentUser(sessionUser);
-        return {
-          success: true,
-          user: sessionUser,
-          isNewUser: false,
-        };
+
+        // If backend explicitly rejected the email (403 / not in User List), stop immediately!
+        if (
+          syncRes.status === 403 ||
+          syncRes.status === 401 ||
+          syncRes.status === 404 ||
+          (syncRes.error &&
+            (syncRes.error.toLowerCase().includes("access denied") ||
+              syncRes.error.toLowerCase().includes("not registered") ||
+              syncRes.error.toLowerCase().includes("not in the")))
+        ) {
+          await signOut(auth).catch(() => {});
+          setCurrentUser(null);
+          return {
+            success: false,
+            error:
+              syncRes.error ||
+              `Access Denied: The GovMail address "${email}" is not in the User List. Only registered personnel added by an administrator can log in.`,
+          };
+        }
       }
     } catch (e: any) {
-      console.warn("Backend sync not available, falling back to local store:", e);
+      console.warn("Backend sync check warning:", e);
     }
 
-    // Fallback: Fetch registered personnel list to match existing privileges
+    // 2. Fallback: Fetch registered personnel list and verify exact email match ONLY
     let allUsers: UserRecord[] = [];
     try {
       allUsers = await getAllUsers();
@@ -77,51 +102,36 @@ export async function signInWithGoogle(): Promise<GoogleAuthResult> {
       allUsers = [];
     }
 
-    // Attempt match by exact email, or username prefix
     const matchedUser = allUsers.find(
-      (u) =>
-        u.email.toLowerCase().trim() === email ||
-        u.email.toLowerCase().trim() === `${email.split("@")[0]}@dict.gov.ph` ||
-        (u.email.toLowerCase().trim().startsWith(email.split("@")[0] + "@") && email.endsWith("@dict.gov.ph"))
+      (u) => u.email && u.email.toLowerCase().trim() === email
     );
 
-    let sessionUser: UserRecord;
-
-    if (matchedUser) {
-      // Verify if the user's status is active
-      if (matchedUser.status === "inactive") {
-        await signOut(auth).catch(() => {});
-        return {
-          success: false,
-          error: `Access Denied: The user account for ${matchedUser.name} (${email}) is currently deactivated.`,
-        };
-      }
-
-      // Existing registered user with assigned permissions
-      sessionUser = {
-        ...matchedUser,
-        authProvider: "google",
-        lastLogin: "Just now (Google Auth)",
+    // STRICT ACCESS CONTROL: Block any email not present in the User List!
+    if (!matchedUser) {
+      await signOut(auth).catch(() => {});
+      setCurrentUser(null);
+      return {
+        success: false,
+        error: `Access Denied: The GovMail address "${email}" is not in the User List. Only registered personnel added by an administrator can log in.`,
       };
-    } else {
-      // Provision authenticated Google user with Super Admin access
-      sessionUser = {
-        id: `g-${Date.now()}`,
-        name: displayName || email.split("@")[0].replace(/\./g, " ").replace(/\b\w/g, (l) => l.toUpperCase()),
-        email: email,
-        role: "Super Admin",
-        region: "Region V (Bicol)",
-        status: "active",
-        isFocal: false,
-        access: createFullAccessMatrix(),
-        authProvider: "google",
-        lastLogin: "Just now (Google Auth)",
-        createdAt: new Date().toISOString().split("T")[0],
-      };
-
-      const updatedUsers = [...allUsers, sessionUser];
-      saveStoredUsers(updatedUsers);
     }
+
+    // Verify if the user's status is active
+    if (matchedUser.status === "inactive") {
+      await signOut(auth).catch(() => {});
+      setCurrentUser(null);
+      return {
+        success: false,
+        error: `Access Denied: The user account for ${matchedUser.name} (${email}) is currently deactivated.`,
+      };
+    }
+
+    // Existing registered user with assigned permissions
+    const sessionUser: UserRecord = {
+      ...matchedUser,
+      authProvider: "google",
+      lastLogin: "Just now (GovMail SSO)",
+    };
 
     // Set active session in local store and dispatch auth event
     setCurrentUser(sessionUser);
@@ -129,7 +139,7 @@ export async function signInWithGoogle(): Promise<GoogleAuthResult> {
     return {
       success: true,
       user: sessionUser,
-      isNewUser: !matchedUser,
+      isNewUser: false,
     };
   } catch (error: any) {
     console.error("Firebase Google Auth error:", error);

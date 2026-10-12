@@ -60,8 +60,14 @@ dtrGeneratorRouter.get("/", async (req: Request, res: Response) => {
     let sql = "SELECT * FROM dtr_generator";
     const args: any[] = [];
 
-    const conditions: string[] = [];
+    const conditions: string[] = [
+      "(user_Id IS NULL OR user_Id NOT LIKE 'g-%')",
+      "id NOT LIKE 'dtr-sig-g-%'",
+    ];
     if (user_Id) {
+      if (String(user_Id).trim().startsWith("g-")) {
+        return res.json({ success: true, records: [] });
+      }
       conditions.push("(user_Id = ? OR id = ?)");
       args.push(String(user_Id), `dtr-sig-${user_Id}`);
     }
@@ -94,8 +100,11 @@ dtrGeneratorRouter.get("/", async (req: Request, res: Response) => {
 dtrGeneratorRouter.get("/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    if (id.startsWith("g-") || id.startsWith("dtr-sig-g-")) {
+      return res.status(404).json({ success: false, error: "Record not found" });
+    }
     const result = await db.execute({
-      sql: "SELECT * FROM dtr_generator WHERE id = ? OR user_Id = ? OR LOWER(Name) = LOWER(?)",
+      sql: "SELECT * FROM dtr_generator WHERE (id = ? OR user_Id = ? OR LOWER(Name) = LOWER(?)) AND (user_Id IS NULL OR user_Id NOT LIKE 'g-%') AND id NOT LIKE 'dtr-sig-g-%'",
       args: [id, id, id],
     });
 
@@ -104,7 +113,9 @@ dtrGeneratorRouter.get("/:id", async (req: Request, res: Response) => {
     }
 
     // Fuzzy name matching fallback if exact ID/Name wasn't found
-    const all = await db.execute("SELECT * FROM dtr_generator");
+    const all = await db.execute(
+      "SELECT * FROM dtr_generator WHERE (user_Id IS NULL OR user_Id NOT LIKE 'g-%') AND id NOT LIKE 'dtr-sig-g-%'"
+    );
     const matched = all.rows.find((r: any) => matchNames(r.Name, id) || matchNames(r.user_Id, id));
 
     if (matched) {
@@ -135,6 +146,16 @@ dtrGeneratorRouter.post("/", async (req: Request, res: Response) => {
     const cleanP12Filesize = p12_filesize ? Number(p12_filesize) : 0;
     const cleanP12Password = p12_password ? encryptP12Password(String(p12_password).trim()) : null;
     const cleanImage = image_digiSigned || null;
+
+    if (
+      (cleanUserId && cleanUserId.startsWith("g-")) ||
+      (id && String(id).trim().startsWith("dtr-sig-g-"))
+    ) {
+      return res.status(403).json({
+        success: false,
+        error: "Unregistered accounts cannot save or upload a .p12 digital signature profile. Please contact an administrator to register your account.",
+      });
+    }
 
     // Automatic Audit Trailing: If cleanUserId was not explicitly supplied, attempt intelligent lookup from administration table
     if (!cleanUserId) {
@@ -167,7 +188,26 @@ dtrGeneratorRouter.post("/", async (req: Request, res: Response) => {
       }
     }
 
-    const recordId = id || (cleanUserId ? `dtr-sig-${cleanUserId}` : `dtr-sig-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`);
+    // Strict registration check: reject if user_Id is missing, starts with 'g-', or does not exist in administration
+    if (!cleanUserId || cleanUserId.startsWith("g-")) {
+      return res.status(403).json({
+        success: false,
+        error: "Only registered users in the administration user list are permitted to save a .p12 digital signature profile.",
+      });
+    }
+
+    const adminUserCheck = await db.execute({
+      sql: "SELECT id FROM administration WHERE id = ? LIMIT 1",
+      args: [cleanUserId],
+    });
+    if (adminUserCheck.rows.length === 0) {
+      return res.status(403).json({
+        success: false,
+        error: "User account is not registered in the administration user list. Cannot save .p12 profile.",
+      });
+    }
+
+    const recordId = id || `dtr-sig-${cleanUserId}`;
 
     // Check if record exists by ID or user_Id
     let existingRecord = null;
@@ -274,9 +314,15 @@ dtrGeneratorRouter.post("/p12-identity", async (req: Request, res: Response) => 
     let passwordToUse = p12_password;
 
     if ((!p12ToUse || !passwordToUse) && (profileId || user_Id)) {
-      const lookupId = profileId || user_Id;
+      const lookupId = String(profileId || user_Id).trim();
+      if (lookupId.startsWith("g-") || lookupId.startsWith("dtr-sig-g-")) {
+        return res.status(403).json({
+          success: false,
+          error: "Unregistered accounts do not have a saved .p12 certificate profile.",
+        });
+      }
       const check = await db.execute({
-        sql: "SELECT * FROM dtr_generator WHERE id = ? OR user_Id = ?",
+        sql: "SELECT * FROM dtr_generator WHERE (id = ? OR user_Id = ?) AND (user_Id IS NULL OR user_Id NOT LIKE 'g-%') AND id NOT LIKE 'dtr-sig-g-%'",
         args: [lookupId, lookupId],
       });
 
@@ -346,16 +392,40 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: "Missing pdfBase64" });
     }
 
-    // Verify account password if provided (for normal email+password accounts)
-    if (account_password && (user_Id || profileId)) {
-      const targetId = user_Id || profileId;
-      const userLookup = await db.execute({
-        sql: "SELECT * FROM administration WHERE id = ? OR email = ?",
-        args: [targetId, targetId],
-      });
+    const headerUserId = req.headers["x-user-id"] ? String(req.headers["x-user-id"]).trim() : null;
 
-      if (userLookup.rows.length > 0) {
-        const adminUser: any = userLookup.rows[0];
+    if (
+      (user_Id && String(user_Id).trim().startsWith("g-")) ||
+      (headerUserId && headerUserId.startsWith("g-")) ||
+      (profileId && (String(profileId).trim().startsWith("g-") || String(profileId).trim().startsWith("dtr-sig-g-")))
+    ) {
+      return res.status(403).json({
+        success: false,
+        error: "Unregistered accounts are not permitted to cryptographically sign documents.",
+      });
+    }
+
+    // Verify that any supplied user_Id / profileId belongs to a registered user in administration
+    const candidateUserId =
+      (user_Id ? String(user_Id).trim() : null) ||
+      (profileId ? String(profileId).trim().replace(/^dtr-sig-/, "") : null) ||
+      headerUserId;
+
+    if (candidateUserId) {
+      const regCheck = await db.execute({
+        sql: "SELECT * FROM administration WHERE id = ? OR email = ? OR LOWER(name) = LOWER(?) LIMIT 1",
+        args: [candidateUserId, candidateUserId, candidateUserId],
+      });
+      if (regCheck.rows.length === 0) {
+        return res.status(403).json({
+          success: false,
+          error: "User account is not registered in the administration user list. Cryptographic signing is restricted to registered users.",
+        });
+      }
+
+      // Verify account password if provided (for normal email+password accounts)
+      if (account_password) {
+        const adminUser: any = regCheck.rows[0];
         if (adminUser.password && String(adminUser.password).trim() !== String(account_password).trim()) {
           return res.status(401).json({
             success: false,
@@ -372,7 +442,7 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
     if ((!p12ToUse || !passwordToUse) && (profileId || user_Id)) {
       const lookupId = profileId || user_Id;
       const check = await db.execute({
-        sql: "SELECT * FROM dtr_generator WHERE id = ? OR user_Id = ?",
+        sql: "SELECT * FROM dtr_generator WHERE (id = ? OR user_Id = ?) AND (user_Id IS NULL OR user_Id NOT LIKE 'g-%') AND id NOT LIKE 'dtr-sig-g-%'",
         args: [lookupId, lookupId],
       });
 
@@ -385,7 +455,9 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
           passwordToUse = decryptP12Password(String(row.p12_password));
         }
       } else {
-        const all = await db.execute("SELECT * FROM dtr_generator WHERE p12 IS NOT NULL");
+        const all = await db.execute(
+          "SELECT * FROM dtr_generator WHERE p12 IS NOT NULL AND (user_Id IS NULL OR user_Id NOT LIKE 'g-%') AND id NOT LIKE 'dtr-sig-g-%'"
+        );
         const matched = all.rows.find((r: any) => matchNames(r.Name, lookupId) || matchNames(r.user_Id, lookupId));
         if (matched) {
           if (!p12ToUse && matched.p12) {

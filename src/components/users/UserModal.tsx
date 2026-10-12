@@ -457,7 +457,15 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
 
   const allDisplayModules = React.useMemo(() => {
     const list = (modules && modules.length > 0)
-      ? modules.filter((m) => m.code !== "MOD_URL_SHORTENER" && m.id !== "mod-url-shortener" && m.id !== "url_shortener")
+      ? modules.filter(
+          (m) =>
+            m.code !== "MOD_URL_SHORTENER" &&
+            m.id !== "mod-url-shortener" &&
+            m.id !== "url_shortener" &&
+            m.code !== "MOD_CALENDAR" &&
+            m.id !== "mod-calendar" &&
+            m.id !== "calendar"
+        )
       : [
           ...PROJECTS.map((p) => ({
             id: p.id,
@@ -476,15 +484,6 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
             category: "Core Tool",
             is_active: true,
             route_path: "/dtr",
-          },
-          {
-            id: "calendar",
-            code: "MOD_CALENDAR",
-            name: "Regional Calendar & Events",
-            shortName: "Calendar",
-            category: "Core Tool",
-            is_active: true,
-            route_path: "/calendar",
           },
           {
             id: "signing-workspace",
