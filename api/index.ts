@@ -18,12 +18,20 @@ dotenv.config();
 
 const app = express();
 
+app.disable("x-powered-by");
+
 // Security headers middleware
 app.use((_req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "SAMEORIGIN");
   res.setHeader("X-XSS-Protection", "1; mode=block");
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://accounts.google.com https://apis.google.com https://www.gstatic.com; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https: wss: ws:; frame-src 'self' https://accounts.google.com https://*.firebaseapp.com; frame-ancestors 'self';"
+  );
   next();
 });
 
@@ -31,11 +39,7 @@ app.use((_req, res, next) => {
 function isAllowedCorsOrigin(origin?: string): boolean {
   if (!origin) return true;
   const trimmed = origin.trim().replace(/\/+$/, "");
-  if (
-    /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.\d+\.\d+\.\d+)(:\d+)?$/i.test(
-      trimmed
-    )
-  ) {
+  if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(trimmed)) {
     return true;
   }
   if (/^https?:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.vercel\.app$/i.test(trimmed)) {
