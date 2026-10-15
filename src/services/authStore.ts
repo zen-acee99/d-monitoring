@@ -215,6 +215,71 @@ export function hasModuleAccess(user: UserRecord | null, moduleCodeOrId: string)
 }
 
 /**
+ * Checks if a user is authorized to edit/modify data for a specific project.
+ * Rule:
+ * - If the user selected a specific <project> (focalProject) in Administration,
+ *   ONLY that selected project can be edited/modified by this user.
+ * - Any project that is NOT the user's selected project cannot be edited (Read-Only).
+ * - If no project is selected for a non-executive user, they cannot edit any project.
+ */
+export function canUserEditProject(user: UserRecord | null | undefined, projectId: string): boolean {
+  if (!user) return false;
+  if (user.status === "inactive") return false;
+
+  const targetProj = String(projectId || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^mod_/, "")
+    .replace(/^mod-/, "");
+  if (!targetProj) return false;
+
+  const hasAccess =
+    hasModuleAccess(user, targetProj) ||
+    hasModuleAccess(user, `MOD_${targetProj.toUpperCase()}`) ||
+    hasModuleAccess(user, `mod-${targetProj}`);
+  if (!hasAccess) return false;
+
+  const canEditFlag = user.canEdit !== undefined ? Boolean(user.canEdit) : user.role !== "Viewer";
+  if (!canEditFlag) return false;
+
+  const userProj = String(user.focalProject || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^mod_/, "")
+    .replace(/^mod-/, "");
+
+  // If a specific project is assigned to this user, they can ONLY edit that project
+  if (userProj && userProj !== "all_projects") {
+    return userProj === targetProj;
+  }
+
+  // If "all_projects" is explicitly assigned, allow editing accessible projects
+  if (userProj === "all_projects") {
+    return true;
+  }
+
+  // Executive fallback only when no specific project restriction is set
+  const isExecutive =
+    user.role === "Super Admin" ||
+    user.role === "Admin" ||
+    user.role === "Regional Director" ||
+    user.role === "Asst. Regional Director" ||
+    user.role === "Assistant Regional Director";
+
+  return isExecutive;
+}
+
+export function canUserDeleteProject(user: UserRecord | null | undefined, projectId: string): boolean {
+  if (!canUserEditProject(user, projectId)) return false;
+  if (!user) return false;
+  const canDeleteFlag =
+    user.canDelete !== undefined
+      ? Boolean(user.canDelete)
+      : user.role === "Super Admin" || user.role === "Regional Director";
+  return canDeleteFlag;
+}
+
+/**
  * Fetch all available users from Turso or local storage
  */
 export async function getAllUsers(): Promise<UserRecord[]> {

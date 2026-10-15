@@ -40,11 +40,17 @@ export async function signInWithGoogle(): Promise<GoogleAuthResult> {
 
     // 1. Verify against backend Turso User List
     try {
+      let idToken: string | undefined;
+      try {
+        idToken = await googleUser.getIdToken();
+      } catch {}
+
       const syncRes = await usersApi.syncGoogleUser({
         google_id: googleUser.uid,
         email,
         name: displayName,
         avatar_url: googleUser.photoURL || null,
+        idToken,
       });
 
       if (syncRes) {

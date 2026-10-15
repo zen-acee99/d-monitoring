@@ -26,7 +26,9 @@ import {
   Upload,
   Timer,
   Clock3,
-  CalendarClock
+  CalendarClock,
+  Lock,
+  MapPin
 } from "lucide-react";
 import {
   DtrModuleCategory,
@@ -44,9 +46,9 @@ import { DtrPdfModal } from "./DtrPdfModal";
 import { DtrUploadModal } from "./DtrUploadModal";
 import { exportDtrToExcel, calculateDtrMetrics } from "@/utils/dtrUtils";
 import { getSignedDtrVectorPdfBytes, downloadDtrVectorPdf, signUploadedArPdfBytes, matchNames } from "@/utils/dtrVectorPdf";
-import { dtrGeneratorApi, dtrStorageApi, DtrGeneratorSignatureRecord, dtrScheduleSettingsApi, DtrWorkScheduleSetting } from "@/services/api";
+import { dtrGeneratorApi, dtrStorageApi, DtrGeneratorSignatureRecord, dtrScheduleSettingsApi, DtrWorkScheduleSetting, administrationApi } from "@/services/api";
 import { getCurrentUser, AUTH_EVENT } from "@/services/authStore";
-import { UserRecord } from "@/data/userStore";
+import { UserRecord, normalizeUserAssignment } from "@/data/userStore";
 import { subscribeToDtrRealtime, broadcastLocalDtrEvent } from "@/services/dtrRealtime";
 
 interface DtrStorageViewProps {
@@ -70,6 +72,7 @@ export function DtrStorageView({
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [uploadDocType, setUploadDocType] = useState<"DTR" | "AR">("AR");
   const [currentUser, setCurrentUser] = useState<UserRecord | null>(() => getCurrentUser());
+  const [personnelList, setPersonnelList] = useState<UserRecord[]>([]);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [notification, setNotification] = useState<string | null>(null);
 
@@ -94,6 +97,17 @@ export function DtrStorageView({
     window.addEventListener("dict_dtr_schedule_settings_updated", handleScheduleChange);
     return () => window.removeEventListener("dict_dtr_schedule_settings_updated", handleScheduleChange);
   }, []);
+
+  const loadPersonnelList = async () => {
+    try {
+      const list = await administrationApi.getAdministrators();
+      if (Array.isArray(list) && list.length > 0) {
+        setPersonnelList(list.map((u: any) => normalizeUserAssignment(u)));
+      }
+    } catch (e) {
+      console.warn("Could not load personnel list for DTR signing authority:", e);
+    }
+  };
 
   const showNotification = (msg: string) => {
     setNotification(msg);
@@ -148,6 +162,7 @@ export function DtrStorageView({
 
   useEffect(() => {
     loadData();
+    loadPersonnelList();
     loadUserSigningProfile(currentUser);
     syncDtrStorageWithBackend().then((synced) => {
       if (Array.isArray(synced)) setRecords(synced);
@@ -157,6 +172,7 @@ export function DtrStorageView({
       const u = getCurrentUser();
       setCurrentUser(u);
       loadUserSigningProfile(u);
+      loadPersonnelList();
     };
 
     const handleStorageUpdate = () => {
@@ -188,6 +204,7 @@ export function DtrStorageView({
 
     const handleFocus = () => {
       loadData();
+      loadPersonnelList();
       syncDtrStorageWithBackend().then((synced) => {
         if (Array.isArray(synced)) setRecords(synced);
       }).catch(() => {});
@@ -210,57 +227,204 @@ export function DtrStorageView({
     };
   }, [module, province]);
 
-  // Determine if the current user has authority to use Bulk Signing
-  const canBulkSign = React.useMemo(() => {
-    if (!currentUser) return false;
-    if (currentUser.status === "inactive") return false;
-
-    const role = (currentUser.role || "").trim().toLowerCase();
-
-    // 1. Super Admin, Admin, and Regional Leadership (Always authorized across all archives)
-    if (
-      role === "super admin" ||
-      role === "admin" ||
-      role.includes("super admin") ||
-      role.includes("admin") ||
-      role.includes("regional director") ||
-      role.includes("asst. regional director") ||
-      role.includes("assistant regional director")
-    ) {
-      return true;
-    }
-
-    // 2. Technical Operations Division (TOD) leadership
-    if (
-      role.includes("technical operations") ||
-      role.includes("oic chief - technical operations") ||
-      role.includes("oic chief") ||
-      role.includes("tod")
-    ) {
-      return true;
-    }
-
-    // 3. Provincial Officer (PO) - Authorized for their assigned province or in general
-    if (
-      role.includes("provincial officer") ||
-      role === "po" ||
-      role.startsWith("po ") ||
-      (currentUser.position && currentUser.position.toLowerCase().includes("provincial officer"))
-    ) {
-      // If we are in the provincial view, verify if the PO is assigned to this province or has regional jurisdiction
+  // Filter records specifically for this module and province
+  const scopedRecords = React.useMemo(() => {
+    return records.filter((r) => {
+      if (r.module?.toUpperCase() !== module?.toUpperCase()) return false;
       if (module === "PROVINCIAL" && province) {
-        if (!currentUser.focalProvince || currentUser.focalProvince === "All" || currentUser.focalProvince.toLowerCase().includes("all")) {
-          return true;
+        const p1 = (r.province || "").toLowerCase().trim();
+        const p2 = province.toLowerCase().trim();
+        if (p2.includes("regional") || p2 === "ro") {
+          return p1.includes("regional") || p1 === "ro" || p1.includes("office");
         }
-        const userScope = currentUser.focalProvince.toLowerCase();
-        const tabScope = province.toLowerCase();
-        return userScope.includes(tabScope) || tabScope.includes(userScope);
+        return p1 === p2 || p1.includes(p2) || p2.includes(p1);
       }
+      return true;
+    });
+  }, [records, module, province]);
+
+  // Resolve the active user's latest record (merged with Turso DB personnelList & normalized)
+  const resolvedCurrentUser = React.useMemo(() => {
+    if (!currentUser) return null;
+    const dbMatch = personnelList.find(
+      (u) =>
+        (currentUser.id && String(u.id) === String(currentUser.id)) ||
+        (currentUser.email && u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()) ||
+        (currentUser.name && u.name && matchNames(u.name, currentUser.name))
+    );
+    const merged: UserRecord = dbMatch
+      ? {
+          ...currentUser,
+          ...dbMatch,
+          role: dbMatch.role || currentUser.role,
+          focalProvince: dbMatch.focalProvince || currentUser.focalProvince,
+        }
+      : currentUser;
+    return normalizeUserAssignment(merged);
+  }, [currentUser, personnelList]);
+
+  // Helper to check if a user is assigned to a specific province/module
+  const isUserAssignedToScope = React.useCallback(
+    (user: UserRecord | null, targetModule: DtrModuleCategory, targetProvince?: ProvincialTab): boolean => {
+      if (!user || user.status === "inactive") return false;
+      const normUser = normalizeUserAssignment(user);
+      const role = (normUser.role || "").trim().toLowerCase();
+      const position = ((normUser as any).position || "").trim().toLowerCase();
+      const rawScope = (normUser.focalProvince || "").trim();
+      const userScope = rawScope.toLowerCase();
+      const hasSpecificScope = Boolean(rawScope && !userScope.includes("all"));
+
+      const isPoRole =
+        role.includes("provincial officer") ||
+        role === "po" ||
+        role.startsWith("po ") ||
+        position.includes("provincial officer");
+
+      const isTodRole =
+        role.includes("technical operations") ||
+        role.includes("oic chief - technical operations") ||
+        role.includes("oic chief") ||
+        role === "tod" ||
+        role.includes("tod");
+
+      const isHrmRole =
+        role.includes("hrm") ||
+        role.includes("human resource") ||
+        role.startsWith("admin ") ||
+        role === "admin";
+
+      const isRdOrArdRole =
+        role.includes("regional director") ||
+        role.includes("asst. regional director") ||
+        role.includes("assistant regional director");
+
+      // 1. PROVINCIAL MODULE (Strict per-province PO assignment)
+      if (targetModule === "PROVINCIAL") {
+        const tabProv = (targetProvince || "Regional Off").trim().toLowerCase();
+
+        // Regional Off tab: only Regional Director / ARD or user explicitly assigned to Regional Off
+        if (tabProv === "regional off" || tabProv.includes("regional")) {
+          if (userScope === "regional off" || userScope === "regional office (ro)" || userScope === "ro") {
+            return true;
+          }
+          if (isRdOrArdRole && (!hasSpecificScope || userScope.includes("regional"))) {
+            return true;
+          }
+          return false;
+        }
+
+        // Specific Province tab (Albay, Sorsogon, Catanduanes, Camarines Sur, Camarines Norte, Masbate):
+        // ONLY the PO or personnel specifically assigned to that province can bulk sign!
+        if (hasSpecificScope && userScope !== "tod" && userScope !== "hrm" && !userScope.includes("regional")) {
+          if (userScope === tabProv || userScope.includes(tabProv) || tabProv.includes(userScope)) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      const focalProj = (normUser.focalProject || "").trim().toLowerCase();
+
+      // 2. TOD MODULE (Strict TOD personnel assignment)
+      if (targetModule === "TOD") {
+        if (userScope === "tod" || focalProj === "tod") return true;
+        if (isTodRole && (!hasSpecificScope || userScope === "tod")) return true;
+        return false;
+      }
+
+      // 3. HRM MODULE (Strict HRM / Admin personnel assignment)
+      if (targetModule === "HRM") {
+        if (userScope === "hrm" || focalProj === "hrm") return true;
+        if (isHrmRole && !isPoRole && !isTodRole && (!hasSpecificScope || userScope === "hrm")) return true;
+        return false;
+      }
+
+      return false;
+    },
+    []
+  );
+
+  // Resolve who is the assigned Bulk Signer / Officer for this specific tab
+  const assignedSignerInfo = React.useMemo(() => {
+    const matchingPersonnel = personnelList.filter((u) => isUserAssignedToScope(u, module, province));
+    if (matchingPersonnel.length > 0) {
+      const names = matchingPersonnel.map((u) => u.name).join(" / ");
+      const primary = matchingPersonnel[0];
+      return {
+        names,
+        primaryName: primary.name,
+        primaryTitle:
+          module === "PROVINCIAL" && province && province !== "Regional Off"
+            ? `Provincial Officer - ${province}`
+            : primary.role || "Verifying Officer",
+      };
+    }
+
+    // Fallback defaults based on module & province
+    if (module === "PROVINCIAL") {
+      if (province === "Albay") {
+        return {
+          names: "Rene Jane R. Buena",
+          primaryName: "RENE JANE R. BUENA",
+          primaryTitle: "Provincial Officer - Albay",
+        };
+      }
+      if (province === "Regional Off") {
+        return {
+          names: "Annabel C. Odoño-Calimpong / Christian Roy N. Melad",
+          primaryName: "ANNABEL C. ODOÑO-CALIMPONG",
+          primaryTitle: "Regional Director",
+        };
+      }
+      return {
+        names: `Assigned PO (${province})`,
+        primaryName: `PROVINCIAL OFFICER - ${(province || "").toUpperCase()}`,
+        primaryTitle: `Provincial Officer - ${province}`,
+      };
+    }
+
+    if (module === "TOD") {
+      return {
+        names: "Norly A. Tabo",
+        primaryName: "NORLY A. TABO",
+        primaryTitle: "OIC Chief - Technical Operations Division",
+      };
+    }
+
+    return {
+      names: "Assigned HRM Officer",
+      primaryName: "HRM VERIFYING OFFICER",
+      primaryTitle: "Human Resource Management Officer",
+    };
+  }, [personnelList, module, province, isUserAssignedToScope]);
+
+  // Determine if the current user has authority to use Bulk Signing in THIS specific tab
+  const canBulkSign = React.useMemo(() => {
+    if (!resolvedCurrentUser) return false;
+    if (resolvedCurrentUser.status === "inactive") return false;
+
+    // Check strict module / province assignment
+    if (isUserAssignedToScope(resolvedCurrentUser, module, province)) {
+      return true;
+    }
+
+    // Also allow if the current user is explicitly named as the Verifying Officer (supervisorName)
+    // on pending records within this specific archive tab (and is not the employee themselves)
+    const pendingInTab = scopedRecords.filter((r) => r.status !== "Approved" && r.status !== "Verified");
+    if (
+      pendingInTab.length > 0 &&
+      pendingInTab.some(
+        (r) =>
+          r.supervisorName &&
+          matchNames(resolvedCurrentUser.name, r.supervisorName) &&
+          !matchNames(resolvedCurrentUser.name, r.employeeName)
+      )
+    ) {
       return true;
     }
 
     return false;
-  }, [currentUser, module, province]);
+  }, [resolvedCurrentUser, module, province, isUserAssignedToScope, scopedRecords]);
 
   // Check user's signing assets requirements - strictly based on user's actual uploaded profile assets
   const hasP12Cert = Boolean(userSigProfile?.hasP12 || userSigProfile?.p12);
@@ -280,20 +444,6 @@ export function DtrStorageView({
     }
     return "";
   }, [hasP12Cert, hasDigiSignedImg]);
-
-  // Filter records specifically for this module and province
-  const scopedRecords = records.filter((r) => {
-    if (r.module?.toUpperCase() !== module?.toUpperCase()) return false;
-    if (module === "PROVINCIAL" && province) {
-      const p1 = (r.province || "").toLowerCase().trim();
-      const p2 = province.toLowerCase().trim();
-      if (p2.includes("regional") || p2 === "ro") {
-        return p1.includes("regional") || p1 === "ro" || p1.includes("office");
-      }
-      return p1 === p2 || p1.includes(p2) || p2.includes(p1);
-    }
-    return true;
-  });
 
   // Helper to extract timestamp for descending sorting (newest upload first)
   const getRecordTimestamp = (r: DtrStorageItem): number => {
@@ -684,8 +834,19 @@ export function DtrStorageView({
       return;
     }
 
-    if (!canBulkSign) {
-      showNotification("Signing authority required: Only assigned Provincial Officers or Super Admin can sign documents.");
+    const isRecordSupervisor = Boolean(
+      resolvedCurrentUser?.name &&
+      item.supervisorName &&
+      matchNames(resolvedCurrentUser.name, item.supervisorName) &&
+      !matchNames(resolvedCurrentUser.name, item.employeeName)
+    );
+
+    if (!canBulkSign && !isRecordSupervisor) {
+      showNotification(
+        `Signing authority required: Only the assigned officer (${assignedSignerInfo.names}) can sign documents in ${
+          module === "PROVINCIAL" ? province : `${module} Module`
+        }.`
+      );
       return;
     }
 
@@ -695,9 +856,19 @@ export function DtrStorageView({
     }
 
     try {
-      const supervisorName = (item.supervisorName || "RENE JANE R. BUENA").trim();
-      const supervisorTitle = (item.supervisorTitle || (item.province ? `Provincial Officer - ${item.province}` : "Provincial Officer")).trim();
-      const signerName = (userSigProfile?.Name || currentUser?.name || "Super Admin").trim();
+      const supervisorName = (
+        item.supervisorName ||
+        resolvedCurrentUser?.name ||
+        assignedSignerInfo.primaryName ||
+        "RENE JANE R. BUENA"
+      ).trim();
+      const supervisorTitle = (
+        item.supervisorTitle ||
+        (module === "PROVINCIAL" && province && province !== "Regional Off"
+          ? `Provincial Officer - ${province}`
+          : resolvedCurrentUser?.role || assignedSignerInfo.primaryTitle || "Verifying Officer")
+      ).trim();
+      const signerName = (userSigProfile?.Name || resolvedCurrentUser?.name || currentUser?.name || supervisorName).trim();
 
       const p12Options = userSigProfile
         ? {
@@ -747,6 +918,15 @@ export function DtrStorageView({
 
   // Bulk Signing Execution (Batch signing of selected or pending records)
   const handleBulkSignExecute = async () => {
+    if (!canBulkSign) {
+      showNotification(
+        `Bulk Signing Restricted: Only ${assignedSignerInfo.names} is authorized to bulk sign in ${
+          module === "PROVINCIAL" ? province : `${module} Module`
+        }.`
+      );
+      return;
+    }
+
     if (!isSigningAssetsReady) {
       showNotification(`Cannot proceed: ${signingAssetsTooltip}`);
       return;
@@ -776,9 +956,19 @@ export function DtrStorageView({
       const item = recordsToSign[i];
       setBulkSignProgress({ current: i + 1, total: recordsToSign.length });
 
-      const supervisorName = (item.supervisorName || "RENE JANE R. BUENA").trim();
-      const supervisorTitle = (item.supervisorTitle || (item.province ? `Provincial Officer - ${item.province}` : "Provincial Officer")).trim();
-      const signerName = (userSigProfile?.Name || currentUser?.name || "Super Admin").trim();
+      const supervisorName = (
+        item.supervisorName ||
+        resolvedCurrentUser?.name ||
+        assignedSignerInfo.primaryName ||
+        "RENE JANE R. BUENA"
+      ).trim();
+      const supervisorTitle = (
+        item.supervisorTitle ||
+        (module === "PROVINCIAL" && province && province !== "Regional Off"
+          ? `Provincial Officer - ${province}`
+          : resolvedCurrentUser?.role || assignedSignerInfo.primaryTitle || "Verifying Officer")
+      ).trim();
+      const signerName = (userSigProfile?.Name || resolvedCurrentUser?.name || currentUser?.name || supervisorName).trim();
 
       const p12Options = userSigProfile
         ? {
@@ -861,12 +1051,35 @@ export function DtrStorageView({
       {/* Top Banner with Stats */}
       <div className="bg-[#0C101D] border border-[#18233C] p-6 rounded-2xl shadow-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div className="space-y-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="px-3 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-blue-500/10 text-blue-400 border border-blue-500/20">
               DTR Document Storage
             </span>
             <span className="px-3 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-purple-500/10 text-purple-400 border border-purple-500/20">
               {module === "PROVINCIAL" ? `Provincial: ${province}` : `${module} Module`}
+            </span>
+            <span
+              className={`px-3 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wider border flex items-center gap-1.5 ${
+                canBulkSign
+                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                  : "bg-amber-500/10 text-amber-300 border-amber-500/30"
+              }`}
+              title={`Assigned Bulk Signer for ${module === "PROVINCIAL" ? province : `${module} Module`}: ${assignedSignerInfo.names}`}
+            >
+              {canBulkSign ? (
+                <ShieldCheck className="w-3 h-3 text-emerald-400" />
+              ) : (
+                <Lock className="w-3 h-3 text-amber-400" />
+              )}
+              <span>
+                {module === "PROVINCIAL" && province !== "Regional Off"
+                  ? `Assigned PO (${province}): ${assignedSignerInfo.names}`
+                  : module === "TOD"
+                  ? `Assigned TOD Signer: ${assignedSignerInfo.names}`
+                  : module === "HRM"
+                  ? `Assigned HRM Signer: ${assignedSignerInfo.names}`
+                  : `Assigned RO Signer: ${assignedSignerInfo.names}`}
+              </span>
             </span>
           </div>
           <h2 className="text-xl font-black text-white tracking-tight flex items-center gap-2">
@@ -878,7 +1091,7 @@ export function DtrStorageView({
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           {notification && (
             <div className="px-3.5 py-2 bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-xs font-semibold rounded-xl animate-in fade-in flex items-center gap-1.5 shadow-lg">
               <Check className="w-4 h-4 text-emerald-400" />
@@ -886,7 +1099,7 @@ export function DtrStorageView({
             </div>
           )}
 
-          {canBulkSign && (
+          {canBulkSign ? (
             <div className="relative group/bulk">
               <button
                 type="button"
@@ -934,6 +1147,16 @@ export function DtrStorageView({
                   </p>
                 </div>
               )}
+            </div>
+          ) : (
+            <div
+              className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-slate-900/80 border border-slate-800 text-slate-400 select-none shrink-0"
+              title={`Only ${assignedSignerInfo.names} is authorized to Bulk Sign in ${
+                module === "PROVINCIAL" ? province : `${module} Module`
+              }`}
+            >
+              <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>Bulk Sign Assigned to: <strong className="text-slate-200">{assignedSignerInfo.names}</strong></span>
             </div>
           )}
 
@@ -1236,7 +1459,13 @@ export function DtrStorageView({
                             )}
                             <span>Download</span>
                           </button>
-                        ) : (
+                        ) : canBulkSign ||
+                          Boolean(
+                            resolvedCurrentUser?.name &&
+                            item.supervisorName &&
+                            matchNames(resolvedCurrentUser.name, item.supervisorName) &&
+                            !matchNames(resolvedCurrentUser.name, item.employeeName)
+                          ) ? (
                           <button
                             type="button"
                             onClick={() => handleSignRecord(item)}
@@ -1246,6 +1475,14 @@ export function DtrStorageView({
                             <FileSignature className="w-3.5 h-3.5" />
                             <span>{item.docType === "AR" || item.pdfFileName.startsWith("AR_") ? "Sign AR" : "Sign DTR"}</span>
                           </button>
+                        ) : (
+                          <span
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-800/50 border border-slate-700/50 text-slate-500 font-semibold text-[10px] inline-flex items-center gap-1 select-none"
+                            title={`Only the assigned officer (${item.supervisorName || assignedSignerInfo.names}) can sign this document`}
+                          >
+                            <Lock className="w-3 h-3 text-slate-500" />
+                            <span>Assigned Signer Only</span>
+                          </span>
                         )}
 
                         {/* Delete Record */}

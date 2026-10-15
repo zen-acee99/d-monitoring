@@ -20,9 +20,55 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
 
-// Middleware
+app.disable("x-powered-by");
+
+// Security headers middleware
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https: wss: ws:; frame-ancestors 'self';"
+  );
+  next();
+});
+
+// CORS origin validation
+function isAllowedCorsOrigin(origin?: string): boolean {
+  if (!origin) return true;
+  const trimmed = origin.trim().replace(/\/+$/, "");
+  if (
+    /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.\d+\.\d+\.\d+)(:\d+)?$/i.test(
+      trimmed
+    )
+  ) {
+    return true;
+  }
+  if (/^https?:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.vercel\.app$/i.test(trimmed)) {
+    return true;
+  }
+  const extraOrigins = (process.env.CORS_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((o) => o.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+  if (extraOrigins.includes(trimmed) || extraOrigins.includes("*")) {
+    return true;
+  }
+  return false;
+}
+
 const corsOptions: cors.CorsOptions = {
-  origin: true,
+  origin: (origin, callback) => {
+    if (isAllowedCorsOrigin(origin)) {
+      callback(null, true);
+    } else {
+      callback(null, false);
+    }
+  },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: [
@@ -42,6 +88,48 @@ app.options("*", cors(corsOptions));
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
+// In-memory rate limiter for authentication & cryptographic signing endpoints
+const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_MAX_REQUESTS = 25;
+
+function authRateLimiter(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const clientIp =
+    (req.headers["x-forwarded-for"] ? String(req.headers["x-forwarded-for"]).split(",")[0].trim() : "") ||
+    req.socket?.remoteAddress ||
+    req.ip ||
+    "unknown";
+  const rawRoute = (req.baseUrl || req.path || req.originalUrl || "").split("?")[0].toLowerCase().replace(/\/+$/, "");
+  const normalizedRoute = rawRoute === "/api/auth/login" ? "/api/users/login" : rawRoute;
+  const key = `${clientIp}:${normalizedRoute}`;
+  const now = Date.now();
+
+  if (rateLimitStore.size > 1000) {
+    for (const [k, v] of rateLimitStore.entries()) {
+      if (now > v.resetAt) rateLimitStore.delete(k);
+    }
+  }
+
+  const entry = rateLimitStore.get(key);
+
+  if (!entry || now > entry.resetAt) {
+    rateLimitStore.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return next();
+  }
+
+  entry.count += 1;
+  if (entry.count > RATE_LIMIT_MAX_REQUESTS) {
+    const retryAfterSec = Math.max(1, Math.ceil((entry.resetAt - now) / 1000));
+    res.setHeader("Retry-After", String(retryAfterSec));
+    return res.status(429).json({
+      success: false,
+      error: "Too many authentication/signing attempts. Please wait a minute before trying again.",
+    });
+  }
+
+  return next();
+}
+
 // Request logger
 app.use((req, res, next) => {
   const start = Date.now();
@@ -54,7 +142,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Health check endpoint
+// Health check endpoint (sanitized — never exposes raw dbUrl)
 app.get("/api/health", async (_req, res) => {
   try {
     const test = await db.execute("SELECT 1 as healthy");
@@ -93,7 +181,6 @@ app.get("/api/health", async (_req, res) => {
     res.json({
       status: "ok",
       database: isRemoteTurso ? "Turso Cloud (libSQL)" : "Local SQLite / libSQL Fallback",
-      dbUrl: dbConfig.url,
       connected: test.rows.length > 0,
       timestamp: new Date().toISOString(),
       projectTables: tableCounts,
@@ -106,6 +193,12 @@ app.get("/api/health", async (_req, res) => {
     });
   }
 });
+
+// Apply rate limiter on sensitive authentication and PDF signing routes
+app.use(
+  ["/api/users/login", "/api/auth/login", "/api/administration/login", "/api/dtr-generator/sign-pdf"],
+  authRateLimiter
+);
 
 // Mount routers on /api
 app.use("/api/users", usersRouter);

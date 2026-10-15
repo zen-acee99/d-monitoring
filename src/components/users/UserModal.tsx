@@ -281,12 +281,15 @@ export const PROVINCE_OPTIONS = [
 
 export const FOCAL_PROVINCE_OPTIONS = [
   "All Provinces / Regional",
+  "Regional Off",
   "Albay",
   "Camarines Sur",
   "Camarines Norte",
   "Catanduanes",
   "Masbate",
   "Sorsogon",
+  "TOD",
+  "HRM",
 ];
 
 const getModuleIcon = (code: string, id?: string) => {
@@ -317,13 +320,14 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
   const [region, setRegion] = useState("Region V (Bicol)");
   const [status, setStatus] = useState<"active" | "inactive">("active");
   const [isFocal, setIsFocal] = useState(false);
-  const [focalProject, setFocalProject] = useState("freewifi");
+  const [focalProject, setFocalProject] = useState("");
+  const [pnpkiRole, setPnpkiRole] = useState<"RAO" | "RAA" | "">("");
   const [focalProvince, setFocalProvince] = useState("All Provinces / Regional");
   const [phone, setPhone] = useState("");
   const [access, setAccess] = useState<Record<string, boolean>>({});
   const [canEdit, setCanEdit] = useState(true);
   const [canDelete, setCanDelete] = useState(false);
-  const [errors, setErrors] = useState<{ name?: string; email?: string }>({});
+  const [errors, setErrors] = useState<{ name?: string; email?: string; focalProject?: string; pnpkiRole?: string }>({});
   const [modules, setModules] = useState<SystemModule[]>([]);
   const [moduleCategoryFilter, setModuleCategoryFilter] = useState<"All" | "Project" | "Core Tool" | "Management">("All");
 
@@ -337,13 +341,36 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
     if (initialUser) {
       setName(initialUser.name || "");
       setEmail(initialUser.email || "");
-      setRole((initialUser.role as UserRole) || "Regional Director");
+      setRole((initialUser.role as UserRole) || "PDO I");
       setRegion(initialUser.region || "Region V (Bicol)");
       setStatus(initialUser.status || "active");
-      setIsFocal(!!initialUser.isFocal);
-      setFocalProject(initialUser.focalProject || "freewifi");
+      const userIsFocal = Boolean(initialUser.isFocal);
+      setIsFocal(userIsFocal);
+      const roleStr = (initialUser.role || "").toLowerCase();
+      const isExec =
+        roleStr.includes("regional director") ||
+        roleStr === "super admin" ||
+        roleStr === "admin";
+      if (userIsFocal && initialUser.focalProject) {
+        setFocalProject(initialUser.focalProject);
+      } else if (isExec) {
+        setFocalProject("all_projects");
+      } else {
+        setFocalProject("none");
+      }
+      setPnpkiRole(userIsFocal ? ((initialUser.pnpkiRole as "RAO" | "RAA") || "") : "");
       if (initialUser.role === "Provincial Officer" && (!initialUser.focalProvince || initialUser.focalProvince === "All Provinces / Regional")) {
         setFocalProvince("Albay");
+      } else if (
+        (initialUser.role === "OIC Chief - Technical Operations Division" || initialUser.role === "Technical Operations Division") &&
+        (!initialUser.focalProvince || initialUser.focalProvince === "All Provinces / Regional")
+      ) {
+        setFocalProvince("TOD");
+      } else if (
+        initialUser.role?.toUpperCase().startsWith("ADMIN ") &&
+        (!initialUser.focalProvince || initialUser.focalProvince === "All Provinces / Regional")
+      ) {
+        setFocalProvince("HRM");
       } else {
         setFocalProvince(initialUser.focalProvince || "All Provinces / Regional");
       }
@@ -355,16 +382,16 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
       // Default new user setup
       setName("");
       setEmail("");
-      setRole("Regional Director");
+      setRole("PDO I");
       setRegion("Region V (Bicol)");
       setStatus("active");
       setIsFocal(false);
-      setFocalProject("freewifi");
+      setFocalProject("none");
+      setPnpkiRole("");
       setFocalProvince("All Provinces / Regional");
       setPhone("");
       setCanEdit(true);
-      setCanDelete(true);
-      // Default: grant full access for executive roles
+      setCanDelete(false);
       setAccess(PROJECTS.reduce((acc, p) => ({ ...acc, [p.id]: true }), {}));
     }
     setErrors({});
@@ -374,9 +401,17 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
   const handleRoleChange = (newRole: UserRole) => {
     setRole(newRole);
     if (newRole === "Provincial Officer") {
-      if (!focalProvince || focalProvince === "All Provinces / Regional") {
+      if (!focalProvince || focalProvince === "All Provinces / Regional" || focalProvince === "TOD" || focalProvince === "HRM") {
         setFocalProvince("Albay");
       }
+    } else if (newRole === "OIC Chief - Technical Operations Division" || newRole === "Technical Operations Division") {
+      setFocalProvince("TOD");
+    } else if (newRole.toUpperCase().startsWith("ADMIN ")) {
+      setFocalProvince("HRM");
+    } else if (newRole === "Regional Director" || newRole === "Asst. Regional Director" || newRole === "Assistant Regional Director") {
+      setFocalProvince("Regional Off");
+      if (!focalProject || focalProject === "none") setFocalProject("all_projects");
+      setIsFocal(false);
     }
     if (
       newRole === "Super Admin" ||
@@ -401,6 +436,42 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
     } else {
       setCanEdit(true);
       setCanDelete(false);
+    }
+  };
+
+  const handleProjectHandledChange = (selectedProj: string) => {
+    setFocalProject(selectedProj);
+    setErrors((prev) => ({ ...prev, focalProject: undefined, pnpkiRole: undefined }));
+    if (selectedProj === "tod" && (!focalProvince || focalProvince === "All Provinces / Regional")) {
+      setFocalProvince("TOD");
+    } else if (selectedProj === "hrm" && (!focalProvince || focalProvince === "All Provinces / Regional")) {
+      setFocalProvince("HRM");
+    }
+    if (
+      selectedProj &&
+      selectedProj !== "all_projects" &&
+      selectedProj !== "none" &&
+      selectedProj !== "tod" &&
+      selectedProj !== "hrm" &&
+      selectedProj !== "provincial"
+    ) {
+      setIsFocal(true);
+      setCanEdit(true);
+      setAccess((prev) => ({
+        ...prev,
+        [selectedProj]: true,
+        [`MOD_${selectedProj.toUpperCase()}`]: true,
+        project_data: true,
+        MOD_PROJECT_DATA: true,
+      }));
+    } else if (selectedProj === "all_projects") {
+      setIsFocal(false);
+      setCanEdit(true);
+    } else if (selectedProj === "none" || !selectedProj) {
+      setIsFocal(false);
+    }
+    if (selectedProj !== "pnpki") {
+      setPnpkiRole("");
     }
   };
 
@@ -568,18 +639,35 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    const newErrors: { name?: string; email?: string } = {};
+    const newErrors: { name?: string; email?: string; focalProject?: string; pnpkiRole?: string } = {};
     if (!name.trim()) newErrors.name = "Full name is required";
     if (!email.trim()) {
       newErrors.email = "Email address is required";
     } else if (!email.includes("@")) {
       newErrors.email = "Please enter a valid email address";
     }
+    if (isFocal && (!focalProject || focalProject === "none" || focalProject === "all_projects")) {
+      newErrors.focalProject = "Please select a specific DICT project for this Focal Person, or uncheck Focal Person below";
+    }
+    if (isFocal && focalProject === "pnpki" && !pnpkiRole) {
+      newErrors.pnpkiRole = "Please select either RAO or RAA for PNPKI project handler";
+    }
 
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       return;
     }
+
+    const hasSpecificFocalProject = Boolean(
+      focalProject &&
+      focalProject !== "all_projects" &&
+      focalProject !== "none"
+    );
+    const effectiveFocal = Boolean(isFocal && hasSpecificFocalProject);
+    const resolvedFocalProvince =
+      role === "Provincial Officer" && (!focalProvince || focalProvince === "All Provinces / Regional")
+        ? "Albay"
+        : focalProvince || "All Provinces / Regional";
 
     const userData: UserRecord = {
       id: initialUser?.id || `usr-${Date.now().toString(36)}`,
@@ -589,12 +677,11 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
       role,
       region,
       status,
-      isFocal,
-      focalProject: isFocal ? focalProject : undefined,
-      focalProvince: (isFocal || role === "Provincial Officer")
-        ? (role === "Provincial Officer" && (!focalProvince || focalProvince === "All Provinces / Regional") ? "Albay" : focalProvince)
-        : undefined,
-      phone: phone.trim() || undefined,
+      isFocal: effectiveFocal,
+      focalProject: effectiveFocal ? focalProject : (null as any),
+      pnpkiRole: effectiveFocal && focalProject === "pnpki" && pnpkiRole ? pnpkiRole : (null as any),
+      focalProvince: resolvedFocalProvince,
+      phone: phone.trim() ? phone.trim() : (null as any),
       access,
       canEdit,
       canDelete,
@@ -725,11 +812,11 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
           </div>
         </div>
 
-        {/* Role & Region Selectors */}
+        {/* Position, Project Handled & Regional Jurisdiction Selectors */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
-              <span>Organizational Role</span>
+              <span>Position / Organizational Role <span className="text-red-400">*</span></span>
               {(role === "Regional Director" || role === "Asst. Regional Director" || role === "Assistant Regional Director" || role === "Super Admin" || role === "Admin") && (
                 <span className="text-[10px] text-blue-400 font-bold flex items-center gap-1">
                   <Shield className="w-3 h-3" /> Executive
@@ -757,6 +844,123 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
             </p>
           </div>
 
+          {/* Project Handled Dropdown right after selecting Position */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
+              <span>Project Handled {isFocal && <span className="text-red-400">*</span>}</span>
+              {isFocal && focalProject && focalProject !== "all_projects" && focalProject !== "none" ? (
+                <span className="text-[10px] text-emerald-400 font-bold font-mono">
+                  {role} &gt; {PROJECTS.find((p) => p.id === focalProject)?.shortName || focalProject.toUpperCase()}
+                </span>
+              ) : (
+                <span className="text-[10px] text-slate-400 font-semibold">
+                  Non-Focal / General
+                </span>
+              )}
+            </label>
+            <select
+              value={focalProject}
+              onChange={(e) => handleProjectHandledChange(e.target.value)}
+              className={`w-full bg-[#111728] border ${
+                errors.focalProject ? "border-red-500" : "border-[#1C2844]"
+              } rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500 transition-colors cursor-pointer`}
+            >
+              <option value="none" className="bg-[#0C101D] text-slate-300">
+                None / Regular Personnel (Not a Project Focal)
+              </option>
+              {PROJECTS.map((p) => (
+                <option key={p.id} value={p.id} className="bg-[#0C101D] text-white">
+                  {p.name} ({p.shortName})
+                </option>
+              ))}
+              <option value="tod" className="bg-[#0C101D] text-cyan-300">
+                Technical Operations Division (TOD)
+              </option>
+              <option value="hrm" className="bg-[#0C101D] text-purple-300">
+                Human Resource Management / Admin (HRM)
+              </option>
+              <option value="provincial" className="bg-[#0C101D] text-amber-300">
+                Provincial Operations Office (PO)
+              </option>
+              <option value="all_projects" className="bg-[#0C101D] text-blue-300">
+                All Projects (Executive / Regional Oversight)
+              </option>
+            </select>
+            {errors.focalProject ? (
+              <p className="text-[10px] text-red-400 font-medium">{errors.focalProject}</p>
+            ) : (
+              <p className="text-[10px] text-slate-400">
+                Select a DICT project if this personnel is a Project Focal Person, or choose "None / Regular Personnel"
+              </p>
+            )}
+          </div>
+
+          {/* PNPKI Catch: 2 Buttons to pick "RAO" or "RAA" when PNPKI is selected */}
+          {isFocal && focalProject === "pnpki" && (
+            <div className="sm:col-span-2 space-y-2.5 animate-in fade-in slide-in-from-top-2 duration-200 bg-gradient-to-r from-amber-500/15 via-blue-500/10 to-transparent border border-amber-500/40 rounded-xl p-4 shadow-[0_0_15px_rgba(245,158,11,0.1)]">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                  <Key className="w-4 h-4 text-amber-400" />
+                  <span>PNPKI Designation Role ({role} &gt; PNPKI) <span className="text-red-400">*</span></span>
+                </label>
+                {pnpkiRole && (
+                  <span className="text-[10px] font-mono font-extrabold px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                    {role} &gt; PNPKI ({pnpkiRole})
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-300">
+                Since <strong className="text-white">PNPKI</strong> is selected as the project handled, please pick the officer designation below:
+              </p>
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPnpkiRole("RAO");
+                    setErrors((prev) => ({ ...prev, pnpkiRole: undefined }));
+                  }}
+                  className={`flex flex-col items-center justify-center gap-1 py-3 px-4 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                    pnpkiRole === "RAO"
+                      ? "bg-amber-500/25 text-amber-200 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.25)] ring-1 ring-amber-400/50"
+                      : "bg-[#0C101D] text-slate-300 border-[#1C2844] hover:border-amber-500/50 hover:text-white"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-sm font-black tracking-wide">
+                    <span className={`w-2.5 h-2.5 rounded-full ${pnpkiRole === "RAO" ? "bg-amber-400 animate-pulse" : "bg-slate-600"}`} />
+                    <span>RAO</span>
+                  </div>
+                  <span className="text-[10px] font-medium text-slate-400">
+                    Registration Authority Officer
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPnpkiRole("RAA");
+                    setErrors((prev) => ({ ...prev, pnpkiRole: undefined }));
+                  }}
+                  className={`flex flex-col items-center justify-center gap-1 py-3 px-4 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                    pnpkiRole === "RAA"
+                      ? "bg-blue-500/25 text-blue-200 border-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.25)] ring-1 ring-blue-400/50"
+                      : "bg-[#0C101D] text-slate-300 border-[#1C2844] hover:border-blue-500/50 hover:text-white"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-sm font-black tracking-wide">
+                    <span className={`w-2.5 h-2.5 rounded-full ${pnpkiRole === "RAA" ? "bg-blue-400 animate-pulse" : "bg-slate-600"}`} />
+                    <span>RAA</span>
+                  </div>
+                  <span className="text-[10px] font-medium text-slate-400">
+                    Registration Authority Assistant
+                  </span>
+                </button>
+              </div>
+              {errors.pnpkiRole && (
+                <p className="text-[10px] text-red-400 font-semibold pt-1">{errors.pnpkiRole}</p>
+              )}
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-slate-300">Regional Jurisdiction</label>
             <select
@@ -767,6 +971,21 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
               {REGION_OPTIONS.map((reg) => (
                 <option key={reg} value={reg} className="bg-[#0C101D] text-white">
                   {reg}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-slate-300">Assigned Province Scope</label>
+            <select
+              value={focalProvince}
+              onChange={(e) => setFocalProvince(e.target.value)}
+              className="w-full bg-[#111728] border border-[#1C2844] rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500 transition-colors cursor-pointer"
+            >
+              {FOCAL_PROVINCE_OPTIONS.map((prov) => (
+                <option key={prov} value={prov} className="bg-[#0C101D] text-white">
+                  {prov}
                 </option>
               ))}
             </select>
@@ -804,68 +1023,85 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
 
         {/* Focal Person Checkbox & Selector */}
         <div className="bg-[#111728] border border-[#1C2844] rounded-xl p-4 space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
             <label className="flex items-center gap-3 cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={isFocal}
-                onChange={(e) => setIsFocal(e.target.checked)}
+                onChange={(e) => {
+                  const nextChecked = e.target.checked;
+                  setIsFocal(nextChecked);
+                  setErrors((prev) => ({ ...prev, focalProject: undefined, pnpkiRole: undefined }));
+                  if (!nextChecked) {
+                    setFocalProject("none");
+                    setPnpkiRole("");
+                  }
+                }}
                 className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-blue-500 focus:ring-offset-slate-900 cursor-pointer"
               />
               <div>
                 <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                  <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
+                  <UserCheck className={`w-3.5 h-3.5 ${isFocal ? "text-emerald-400" : "text-slate-500"}`} />
                   Designate as Project Focal Person
                 </span>
                 <p className="text-[10px] text-slate-400">
-                  Flags this user as the primary contact and regional coordinator for a specific DICT initiative
+                  {isFocal
+                    ? `Flags this user as the primary contact and coordinator for ${PROJECTS.find((p) => p.id === focalProject)?.shortName || focalProject.toUpperCase()} (${focalProvince || "All Provinces / Regional"})`
+                    : "Unchecked — This personnel is NOT designated as a Project Focal Person."}
                 </p>
               </div>
             </label>
 
-            {isFocal && (
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                Focal Active
+            {isFocal ? (
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                  Focal Active {pnpkiRole ? `• ${pnpkiRole}` : ""}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsFocal(false);
+                    setFocalProject("none");
+                    setPnpkiRole("");
+                    setErrors((prev) => ({ ...prev, focalProject: undefined, pnpkiRole: undefined }));
+                  }}
+                  className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/30 transition-colors cursor-pointer"
+                >
+                  Remove Focal
+                </button>
+              </div>
+            ) : (
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-slate-800 text-slate-400 border border-slate-700">
+                Non-Focal
               </span>
             )}
           </div>
 
-          {/* Focal Project & Province Dropdown (when checked) */}
           {isFocal && (
-            <div className="pt-3 border-t border-[#18233C] grid grid-cols-1 sm:grid-cols-2 gap-3 animate-in fade-in">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-emerald-400">
-                  Assigned Focal Project / Service
-                </label>
-                <select
-                  value={focalProject}
-                  onChange={(e) => setFocalProject(e.target.value)}
-                  className="w-full bg-[#0C101D] border border-emerald-500/40 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 cursor-pointer"
-                >
-                  {PROJECTS.map((p) => (
-                    <option key={p.id} value={p.id} className="bg-[#0C101D] text-white">
-                      {p.name} ({p.shortName})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-emerald-400">
-                  Assigned Province Scope
-                </label>
-                <select
-                  value={focalProvince}
-                  onChange={(e) => setFocalProvince(e.target.value)}
-                  className="w-full bg-[#0C101D] border border-emerald-500/40 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 cursor-pointer"
-                >
-                  {FOCAL_PROVINCE_OPTIONS.map((prov) => (
-                    <option key={prov} value={prov} className="bg-[#0C101D] text-white">
-                      {prov}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            <div className="pt-2.5 border-t border-[#1C2844] space-y-1.5 animate-in fade-in slide-in-from-top-1 duration-150">
+              <label className="text-xs font-bold text-emerald-300 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <MapPin className="w-3.5 h-3.5 text-emerald-400" />
+                  Focal Province Assignment (Which province is this Focal assigned to?)
+                </span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                  {focalProvince || "All Provinces / Regional"}
+                </span>
+              </label>
+              <select
+                value={focalProvince}
+                onChange={(e) => setFocalProvince(e.target.value)}
+                className="w-full bg-[#0C101D] border border-emerald-500/40 rounded-xl px-3.5 py-2 text-xs font-semibold text-white focus:outline-none focus:border-emerald-400 transition-colors cursor-pointer"
+              >
+                {FOCAL_PROVINCE_OPTIONS.map((prov) => (
+                  <option key={prov} value={prov} className="bg-[#0C101D] text-white">
+                    {prov}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[10px] text-slate-400">
+                Select a specific province (Albay, Camarines Sur, Camarines Norte, Catanduanes, Masbate, Sorsogon) so this Focal Person appears only on LGUs in that province, or select &quot;All Provinces / Regional&quot; for overall regional lead.
+              </p>
             </div>
           )}
         </div>
@@ -884,31 +1120,89 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
 
         {/* Project Data Management Edit & Modify Authority */}
         <div className="p-3.5 rounded-xl bg-[#111728] border border-[#1C2844] space-y-2.5">
-          <label className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
-            <Shield className="w-4 h-4 text-blue-400" />
-            Project Data Management Authority
-          </label>
-          <p className="text-[10px] text-slate-400">
-            Controls whether this administrator can create, edit, or delete records in project tables
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <label className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+              <Shield className="w-4 h-4 text-blue-400" />
+              Project Data Management Authority
+            </label>
+            {focalProject && focalProject !== "all_projects" ? (
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                Editable Scope: {PROJECTS.find((p) => p.id === focalProject)?.shortName || focalProject.toUpperCase()} Only
+              </span>
+            ) : focalProject === "all_projects" ? (
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                Editable Scope: All Projects
+              </span>
+            ) : (
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                No Project Selected — Read-Only
+              </span>
+            )}
+          </div>
+          <p className="text-[10.5px] text-slate-400 leading-relaxed">
+            {focalProject && focalProject !== "all_projects" ? (
+              <>
+                This user is assigned to{" "}
+                <strong className="text-emerald-300">
+                  {PROJECTS.find((p) => p.id === focalProject)?.name || focalProject.toUpperCase()}
+                </strong>
+                . Only this selected project can be edited or modified; all other projects are locked as{" "}
+                <strong className="text-slate-200">Read-Only</strong>.
+              </>
+            ) : focalProject === "all_projects" ? (
+              "Executive / All-Project assignment allows modifying records across all authorized project tables."
+            ) : (
+              "Select a Project Handled above first. Without a selected project, the user cannot edit or modify any project data."
+            )}
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-            <label className="flex items-center gap-2 p-2 rounded-lg bg-[#0C101D] border border-[#18233C] text-xs text-slate-200 cursor-pointer hover:border-blue-500/40 select-none">
+            <label
+              className={`flex items-center gap-2 p-2.5 rounded-lg bg-[#0C101D] border border-[#18233C] text-xs text-slate-200 select-none ${
+                !focalProject ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:border-blue-500/40"
+              }`}
+            >
               <input
                 type="checkbox"
-                checked={canEdit}
+                checked={Boolean(canEdit && focalProject)}
+                disabled={!focalProject}
                 onChange={(e) => setCanEdit(e.target.checked)}
                 className="rounded border-slate-700 bg-slate-800 text-blue-500 focus:ring-blue-500 w-4 h-4"
               />
-              <span className="font-semibold text-white">Can Edit & Modify Records</span>
+              <div>
+                <span className="font-semibold text-white block">
+                  Can Edit &amp; Modify{" "}
+                  {focalProject && focalProject !== "all_projects"
+                    ? `(${PROJECTS.find((p) => p.id === focalProject)?.shortName || focalProject.toUpperCase()} Only)`
+                    : "Records"}
+                </span>
+                <span className="text-[10px] text-slate-400 block">
+                  Unselected projects cannot be edited
+                </span>
+              </div>
             </label>
-            <label className="flex items-center gap-2 p-2 rounded-lg bg-[#0C101D] border border-[#18233C] text-xs text-slate-200 cursor-pointer hover:border-red-500/40 select-none">
+            <label
+              className={`flex items-center gap-2 p-2.5 rounded-lg bg-[#0C101D] border border-[#18233C] text-xs text-slate-200 select-none ${
+                !focalProject ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:border-red-500/40"
+              }`}
+            >
               <input
                 type="checkbox"
-                checked={canDelete}
+                checked={Boolean(canDelete && focalProject)}
+                disabled={!focalProject}
                 onChange={(e) => setCanDelete(e.target.checked)}
                 className="rounded border-slate-700 bg-slate-800 text-red-500 focus:ring-red-500 w-4 h-4"
               />
-              <span className="font-semibold text-white">Can Delete Records</span>
+              <div>
+                <span className="font-semibold text-white block">
+                  Can Delete{" "}
+                  {focalProject && focalProject !== "all_projects"
+                    ? `(${PROJECTS.find((p) => p.id === focalProject)?.shortName || focalProject.toUpperCase()} Only)`
+                    : "Records"}
+                </span>
+                <span className="text-[10px] text-slate-400 block">
+                  Restricted strictly to selected project
+                </span>
+              </div>
             </label>
           </div>
         </div>
@@ -1002,6 +1296,15 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
             {filteredDisplayModules.map((mod) => {
               const projId = mod.route_path?.split("/projects/")[1] || mod.id.replace("mod-", "");
               const isChecked = Boolean(access[mod.code] || access[mod.id] || access[projId]);
+              const isProjectModule =
+                mod.category === "Project" ||
+                !mod.category ||
+                PROJECTS.some((p) => p.id.toLowerCase() === projId.toLowerCase());
+              const isEditableProject =
+                isProjectModule &&
+                canEdit &&
+                (focalProject === "all_projects" ||
+                  (Boolean(focalProject) && projId.toLowerCase() === focalProject.toLowerCase()));
               return (
                 <div
                   key={mod.id || mod.code}
@@ -1033,6 +1336,17 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
                         <span className="text-[10px] text-slate-400 font-medium">
                           {mod.category || "Project"}
                         </span>
+                        {isProjectModule && (
+                          isEditableProject ? (
+                            <span className="text-[8.5px] font-extrabold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                              Can Edit &amp; Modify
+                            </span>
+                          ) : (
+                            <span className="text-[8.5px] font-bold px-1.5 py-0.5 rounded bg-slate-800/90 text-slate-400 border border-slate-700">
+                              Read-Only
+                            </span>
+                          )
+                        )}
                         {!mod.is_active && (
                           <span
                             className="text-[8.5px] font-bold px-1.5 py-0.5 rounded bg-amber-950/70 text-amber-300 border border-amber-800/60"

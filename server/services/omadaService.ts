@@ -58,19 +58,19 @@ const DEFAULT_CONFIG: OmadaConfig = {
   supplier1: {
     id: "supplier1",
     name: "Supplier 1",
-    baseUrl: "https://aps1-omada-northbound.tplinkcloud.com",
-    omadaId: "05f4dc3c1c94809f73403332c4e51026",
-    clientId: "997fc376f32a402abc6c13e50aee04a7",
-    clientSecret: "a3c36f462325438a8cf8d162e23c5d31",
+    baseUrl: process.env.OMADA_BASE_URL_DTC || "https://aps1-omada-northbound.tplinkcloud.com",
+    omadaId: process.env.OMADA_ID_DTC || "05f4dc3c1c94809f73403332c4e51026",
+    clientId: process.env.OMADA_CLIENT_ID_DTC || "997fc376f32a402abc6c13e50aee04a7",
+    clientSecret: process.env.OMADA_CLIENT_SECRET_DTC || "",
     enabled: true,
   },
   supplier2: {
     id: "supplier2",
     name: "Supplier 2",
-    baseUrl: "https://aps1-omada-northbound.tplinkcloud.com",
-    omadaId: "0198354e765ea6ffff03ee4d9ea32674",
-    clientId: "8f1adacf0ad64c9a8b02043e8d73b3d9",
-    clientSecret: "c7311c18360744fc8cc3b9aff6097b4b",
+    baseUrl: process.env.OMADA_BASE_URL_COMCLARK || "https://aps1-omada-northbound.tplinkcloud.com",
+    omadaId: process.env.OMADA_ID_COMCLARK || "0198354e765ea6ffff03ee4d9ea32674",
+    clientId: process.env.OMADA_CLIENT_ID_COMCLARK || "8f1adacf0ad64c9a8b02043e8d73b3d9",
+    clientSecret: process.env.OMADA_CLIENT_SECRET_COMCLARK || "",
     enabled: true,
   },
   autoSyncEnabled: false,
@@ -282,7 +282,7 @@ class OmadaService {
 
         const data = await res.json();
         if (!res.ok || data.errorCode !== 0) {
-          console.warn(`[Omada API - ${supplier.name}] Fetch sites page ${page} failed:`, data.msg);
+          console.warn("[Omada API]", supplier.name, "Fetch sites page", page, "failed:", data.msg);
           break;
         }
 
@@ -306,7 +306,7 @@ class OmadaService {
         status: "Operational",
       }));
     } catch (e: any) {
-      console.error(`[Omada API - ${supplier.name}] Error fetching sites:`, e.message);
+      console.error("[Omada API]", supplier.name, "Error fetching sites:", e?.message);
       return [];
     }
   }
@@ -354,7 +354,7 @@ class OmadaService {
         supplierId,
       }));
     } catch (e) {
-      console.warn(`Failed to fetch devices for site ${siteId}:`, e);
+      console.warn("Failed to fetch devices for site:", siteId, e);
       return [];
     }
   }

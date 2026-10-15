@@ -121,8 +121,15 @@ function findOtcUser(users: OtcUserRecord[], queryTerm: string): OtcUserRecord |
   if (!queryTerm) return null;
   const q = queryTerm.toLowerCase().trim();
   const qClean = q.replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+  const qTokens = qClean.split(" ").filter((t) => t.length > 0);
 
-  // 1. Exact match on username or full name
+  // 1. Exact Email match (highest priority if query is an email address)
+  if (q.includes("@")) {
+    const emailMatch = users.find((u) => (u.email || "").toLowerCase().trim() === q);
+    if (emailMatch) return emailMatch;
+  }
+
+  // 2. Exact match on username or full name
   const exact = users.find((u) => {
     const uName = (u.userName || "").toLowerCase().trim();
     const fName = (u.userFullName || "").toLowerCase().trim();
@@ -130,7 +137,7 @@ function findOtcUser(users: OtcUserRecord[], queryTerm: string): OtcUserRecord |
   });
   if (exact) return exact;
 
-  // 2. Normalized clean match
+  // 3. Normalized clean match (ignoring dots, dashes, punctuation)
   const cleanMatch = users.find((u) => {
     const uNameClean = (u.userName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
     const fNameClean = (u.userFullName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
@@ -138,22 +145,37 @@ function findOtcUser(users: OtcUserRecord[], queryTerm: string): OtcUserRecord |
   });
   if (cleanMatch) return cleanMatch;
 
-  // 3. Substring / email / employee number match
-  return (
-    users.find((u) => {
-      const uNameClean = (u.userName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
-      const fNameClean = (u.userFullName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
-      const empNo = (u.employeeNumber || "").toLowerCase().trim();
-      const email = (u.email || "").toLowerCase().trim();
+  // 4. Multi-token scoring (e.g. "Ace Malto" matches "Ace Mata Malto" because it contains all tokens)
+  if (qTokens.length > 1) {
+    let bestUser: OtcUserRecord | null = null;
+    let bestScore = 0;
 
-      return (
-        empNo === q ||
-        email === q ||
-        (qClean.length >= 3 && (fNameClean.includes(qClean) || qClean.includes(fNameClean))) ||
-        (qClean.length >= 3 && (uNameClean.includes(qClean) || qClean.includes(uNameClean)))
-      );
-    }) || null
-  );
+    for (const u of users) {
+      const uFull = `${u.userName || ""} ${u.userFullName || ""} ${u.email || ""}`
+        .toLowerCase()
+        .replace(/[\.\,\-\_]/g, " ");
+      const matchedCount = qTokens.filter((t) => uFull.includes(t)).length;
+      if (matchedCount === qTokens.length && matchedCount > bestScore) {
+        bestScore = matchedCount;
+        bestUser = u;
+      }
+    }
+    if (bestUser) return bestUser;
+  }
+
+  // 5. Employee number exact match
+  const empMatch = users.find((u) => (u.employeeNumber || "").toLowerCase().trim() === q);
+  if (empMatch) return empMatch;
+
+  // 6. Word boundary match on first name or last name
+  const wordMatch = users.find((u) => {
+    const uNameClean = (u.userName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+    const fNameClean = (u.userFullName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+    const words = `${uNameClean} ${fNameClean}`.split(" ");
+    return words.includes(qClean) || (qClean.length >= 4 && fNameClean.includes(qClean));
+  });
+
+  return wordMatch || null;
 }
 
 /**
@@ -244,6 +266,8 @@ async function verifyOtcUserAuth(
 
   // If password is provided, perform strict authentication check against Open Time Clock T1 API
   if (password && password.trim()) {
+    // OpenTimeClock third-party API requires md5Password per its external API contract (cmd: "web/sGetOneUserInfo", action: "checkLogin")
+    // nosemgrep: javascript.lang.security.audit.md5-used-as-password.md5-used-as-password
     const md5Password = crypto.createHash("md5").update(password.trim()).digest("hex").toLowerCase();
     const payload = JSON.stringify({
       cmd: "web/sGetOneUserInfo",

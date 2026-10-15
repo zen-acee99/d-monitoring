@@ -1,10 +1,14 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db.js";
+import { encryptP12Password, decryptP12Password } from "../services/pnpkiSigningService.js";
 
 export const dtrUserSetupRouter = Router();
 
 // Helper to format a row
-function formatDtrUserSetupRow(row: any) {
+function formatDtrUserSetupRow(row: any, includeSecret = true) {
+  const decryptedOtcPassword =
+    includeSecret && row.otc_password ? decryptP12Password(String(row.otc_password)) : "";
+
   return {
     id: row.id,
     userId: row.user_id,
@@ -26,8 +30,9 @@ function formatDtrUserSetupRow(row: any) {
     period_text: row.period_text || "",
     otcUsername: row.otc_username || "",
     otc_username: row.otc_username || "",
-    otcPassword: row.otc_password || "",
-    otc_password: row.otc_password || "",
+    otcPassword: decryptedOtcPassword,
+    otc_password: decryptedOtcPassword,
+    hasOtcPassword: Boolean(row.otc_password),
     createdAt: row.created_at,
     created_at: row.created_at,
     updatedAt: row.updated_at,
@@ -35,10 +40,42 @@ function formatDtrUserSetupRow(row: any) {
   };
 }
 
+// Helper to verify caller is resource owner or administrator (prevents IDOR)
+async function isCallerOwnerOrAdmin(callerId: string, targetUserId: string): Promise<boolean> {
+  if (!callerId) return false;
+  if (callerId === targetUserId || callerId === `setup-${targetUserId}`) return true;
+  try {
+    const adminRes = await db.execute({
+      sql: "SELECT role FROM administration WHERE (id = ? OR LOWER(email) = LOWER(?)) AND status = 'active' LIMIT 1",
+      args: [callerId, callerId],
+    });
+    if (adminRes.rows.length > 0) {
+      const role = String(adminRes.rows[0].role || "");
+      if (
+        [
+          "Super Admin",
+          "Admin",
+          "Regional Director",
+          "Asst. Regional Director",
+          "Assistant Regional Director",
+        ].includes(role)
+      ) {
+        return true;
+      }
+    }
+  } catch {}
+  return false;
+}
+
 // GET /api/dtr-user-setup - List all saved setups (or query by user_id / employee_name)
 dtrUserSetupRouter.get("/", async (req: Request, res: Response) => {
   try {
     const { user_id, userId, employee_name, employeeName } = req.query;
+    const callerUserId = req.headers["x-user-id"] ? String(req.headers["x-user-id"]).trim() : "";
+    const isCallerAdmin = callerUserId
+      ? await isCallerOwnerOrAdmin(callerUserId, "__ADMIN_CHECK__")
+      : false;
+
     let sql = "SELECT * FROM dtr_user_setup";
     const args: any[] = [];
     const conditions: string[] = [];
@@ -62,11 +99,17 @@ dtrUserSetupRouter.get("/", async (req: Request, res: Response) => {
     sql += " ORDER BY updated_at DESC";
 
     const result = await db.execute({ sql, args });
-    const setups = result.rows.map(formatDtrUserSetupRow);
+    const setups = result.rows.map((row: any) => {
+      const isOwner =
+        Boolean(callerUserId) &&
+        (String(row.user_id) === callerUserId || String(row.id) === `setup-${callerUserId}`);
+      const includeSecret = isOwner || isCallerAdmin;
+      return formatDtrUserSetupRow(row, includeSecret);
+    });
     return res.json({ success: true, setups });
   } catch (error: any) {
     console.error("Error fetching dtr_user_setup records:", error);
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
@@ -74,6 +117,8 @@ dtrUserSetupRouter.get("/", async (req: Request, res: Response) => {
 dtrUserSetupRouter.get("/:userId", async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
+    const callerUserId = req.headers["x-user-id"] ? String(req.headers["x-user-id"]).trim() : "";
+
     const result = await db.execute({
       sql: "SELECT * FROM dtr_user_setup WHERE user_id = ? OR id = ? OR id = ? LIMIT 1",
       args: [userId, userId, `setup-${userId}`],
@@ -83,10 +128,11 @@ dtrUserSetupRouter.get("/:userId", async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: "No saved setup found for this user" });
     }
 
-    return res.json({ success: true, setup: formatDtrUserSetupRow(result.rows[0]) });
+    const includeSecret = await isCallerOwnerOrAdmin(callerUserId, userId);
+    return res.json({ success: true, setup: formatDtrUserSetupRow(result.rows[0], includeSecret) });
   } catch (error: any) {
     console.error("Error fetching dtr_user_setup by userId:", error);
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
@@ -104,16 +150,33 @@ dtrUserSetupRouter.post("/", async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: "employee_name is required" });
     }
 
+    // IDOR Protection: Caller must either be the user or an active administrator
+    const callerUserId = req.headers["x-user-id"] ? String(req.headers["x-user-id"]).trim() : "";
+    if (callerUserId) {
+      const authorized = await isCallerOwnerOrAdmin(callerUserId, userId);
+      if (!authorized) {
+        return res.status(403).json({
+          success: false,
+          error: "Access Denied: You cannot modify another personnel's setup.",
+        });
+      }
+    }
+
     const id = body.id || `setup-${userId}`;
     const province = body.province || "Regional Office (RO)";
     const supervisorName = body.supervisorName || body.supervisor_name || "NORLY A. TABO";
-    const supervisorTitle = body.supervisorTitle || body.supervisor_title || "OIC Chief - Technical Operations Division";
-    const selectedOfficerOption = body.selectedOfficerOption || body.selected_officer_option || "norly-tabo";
+    const supervisorTitle =
+      body.supervisorTitle ||
+      body.supervisor_title ||
+      "OIC Chief - Technical Operations Division";
+    const selectedOfficerOption =
+      body.selectedOfficerOption || body.selected_officer_option || "norly-tabo";
     const regularHours = body.regularHours || body.regular_hours || "";
     const saturdayHours = body.saturdayHours || body.saturday_hours || "";
     const periodText = body.periodText || body.period_text || "";
     const otcUsername = (body.otcUsername || body.otc_username || "").trim();
     const otcPassword = (body.otcPassword || body.otc_password || "").trim();
+    const encryptedOtcPassword = otcPassword ? encryptP12Password(otcPassword) : null;
 
     await db.execute({
       sql: `INSERT INTO dtr_user_setup (
@@ -145,7 +208,7 @@ dtrUserSetupRouter.post("/", async (req: Request, res: Response) => {
         saturdayHours,
         periodText,
         otcUsername || null,
-        otcPassword || null,
+        encryptedOtcPassword,
       ],
     });
 
@@ -154,11 +217,11 @@ dtrUserSetupRouter.post("/", async (req: Request, res: Response) => {
       args: [userId],
     });
 
-    const saved = result.rows.length > 0 ? formatDtrUserSetupRow(result.rows[0]) : null;
+    const saved = result.rows.length > 0 ? formatDtrUserSetupRow(result.rows[0], true) : null;
     return res.json({ success: true, message: "Personnel setup saved successfully", setup: saved });
   } catch (error: any) {
     console.error("Error upserting dtr_user_setup:", error);
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
@@ -166,6 +229,19 @@ dtrUserSetupRouter.post("/", async (req: Request, res: Response) => {
 dtrUserSetupRouter.delete("/:userId", async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
+    const callerUserId = req.headers["x-user-id"] ? String(req.headers["x-user-id"]).trim() : "";
+
+    // IDOR Protection: Caller must either be the user or an active administrator
+    if (callerUserId) {
+      const authorized = await isCallerOwnerOrAdmin(callerUserId, userId);
+      if (!authorized) {
+        return res.status(403).json({
+          success: false,
+          error: "Access Denied: You cannot delete another personnel's setup.",
+        });
+      }
+    }
+
     await db.execute({
       sql: "DELETE FROM dtr_user_setup WHERE user_id = ? OR id = ? OR id = ?",
       args: [userId, userId, `setup-${userId}`],
@@ -173,6 +249,6 @@ dtrUserSetupRouter.delete("/:userId", async (req: Request, res: Response) => {
     return res.json({ success: true, message: "Setup removed successfully" });
   } catch (error: any) {
     console.error("Error deleting dtr_user_setup:", error);
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error: "Internal server error" });
   }
 });

@@ -1,10 +1,11 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db.js";
 import { PROJECTS } from "../../src/config/projects.js";
+import { hashPassword, verifyPassword, validatePasswordStrength } from "../services/pnpkiSigningService.js";
 
 export const usersRouter = Router();
 
-// Helper to format user record from Turso row
+// Helper to format user record from Turso row (never expose plaintext or hashed passwords)
 function formatUserRow(row: any) {
   let parsedAccess: Record<string, boolean> = {};
   try {
@@ -17,7 +18,7 @@ function formatUserRow(row: any) {
     id: row.id,
     name: row.name,
     email: row.email,
-    password: row.password ? String(row.password) : undefined,
+    password: undefined,
     hasPassword: Boolean(row.password),
     auth_provider: row.auth_provider || (row.email?.toLowerCase().endsWith("@gmail.com") ? "google" : "local"),
     authProvider: row.auth_provider || (row.email?.toLowerCase().endsWith("@gmail.com") ? "google" : "local"),
@@ -28,6 +29,7 @@ function formatUserRow(row: any) {
     status: row.status || "active",
     isFocal: Boolean(row.isFocal),
     focalProject: row.focalProject || null,
+    pnpkiRole: row.pnpkiRole || null,
     focalProvince: row.focalProvince || null,
     phone: row.phone || null,
     access: parsedAccess,
@@ -86,19 +88,42 @@ usersRouter.post("/login", async (req: Request, res: Response) => {
       });
     }
 
-    // Verify password if user has password set
-    if (!user.password || !String(user.password).trim()) {
+    // Verify password if user has password set (check administration table as fallback if users.password is empty)
+    let storedPassword = user.password ? String(user.password).trim() : "";
+    if (!storedPassword) {
+      const adminFallback = await db.execute({
+        sql: "SELECT password FROM administration WHERE id = ? OR LOWER(email) = LOWER(?) LIMIT 1",
+        args: [user.id, user.email],
+      });
+      if (adminFallback.rows.length > 0 && adminFallback.rows[0].password) {
+        storedPassword = String(adminFallback.rows[0].password).trim();
+      }
+    }
+    if (!storedPassword) {
       return res.status(400).json({
         success: false,
         error: `Account "${user.email}" is registered for GovMail Google SSO. Please click "Sign in with Google / Gmail" to log in.`,
       });
     }
 
-    if (String(user.password).trim() !== cleanPassword) {
+    if (!verifyPassword(cleanPassword, storedPassword)) {
       return res.status(401).json({
         success: false,
         error: "Incorrect password. Please verify your credentials or sign in with Google.",
       });
+    }
+
+    // Seamless auto-upgrade of legacy plaintext passwords to scrypt hash
+    const finalPasswordHash = storedPassword.startsWith("scrypt:") ? storedPassword : hashPassword(cleanPassword);
+    if (!storedPassword.startsWith("scrypt:") || !user.password) {
+      await db.execute({
+        sql: "UPDATE users SET password = ? WHERE id = ? OR LOWER(email) = LOWER(?)",
+        args: [finalPasswordHash, user.id, user.email],
+      }).catch(() => {});
+      await db.execute({
+        sql: "UPDATE administration SET password = ? WHERE id = ? OR LOWER(email) = LOWER(?)",
+        args: [finalPasswordHash, user.id, user.email],
+      }).catch(() => {});
     }
 
     // Update lastLogin timestamp in database
@@ -124,9 +149,37 @@ usersRouter.post("/login", async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/users/register (or /api/auth/register) - Register a new account with email + password
+// POST /api/users/register (or /api/auth/register) - Register a new account with email + password (admin-only)
 usersRouter.post("/register", async (req: Request, res: Response) => {
   try {
+    const callerId = req.headers["x-user-id"] ? String(req.headers["x-user-id"]).trim() : "";
+    const ALLOWED_ADMIN_ROLES = [
+      "Super Admin",
+      "Admin",
+      "Regional Director",
+      "Asst. Regional Director",
+      "Assistant Regional Director",
+    ];
+
+    if (!callerId) {
+      return res.status(403).json({
+        success: false,
+        error: "Self-registration is disabled. Only authorized administrators can register accounts.",
+      });
+    }
+
+    const callerRes = await db.execute({
+      sql: "SELECT * FROM administration WHERE (id = ? OR LOWER(email) = LOWER(?)) AND status = 'active' LIMIT 1",
+      args: [callerId, callerId],
+    });
+    const caller: any = callerRes.rows[0];
+    if (!caller || !ALLOWED_ADMIN_ROLES.includes(String(caller.role))) {
+      return res.status(403).json({
+        success: false,
+        error: "Self-registration is disabled. Only authorized administrators can register accounts.",
+      });
+    }
+
     const { name, email, password, role, region } = req.body || {};
     if (!name || typeof name !== "string" || !name.trim()) {
       return res.status(400).json({ success: false, error: "Full Name is required" });
@@ -138,9 +191,14 @@ usersRouter.post("/register", async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: "Password is required" });
     }
 
+    const pwdVal = validatePasswordStrength(String(password).trim());
+    if (!pwdVal.valid) {
+      return res.status(400).json({ success: false, error: pwdVal.message });
+    }
+
     const cleanName = name.trim();
     const cleanEmail = email.trim().toLowerCase();
-    const cleanPassword = String(password).trim();
+    const cleanPassword = hashPassword(String(password).trim());
     const cleanRole = role || "Viewer";
     const cleanRegion = region || "Region V (Bicol)";
 
@@ -218,7 +276,7 @@ usersRouter.post("/register", async (req: Request, res: Response) => {
 // POST /api/users/google-sync (or /api/auth/google-sync) - Save / sync Google OAuth account credentials to DB
 usersRouter.post("/google-sync", async (req: Request, res: Response) => {
   try {
-    const { google_id, email, name, avatar_url } = req.body || {};
+    const { google_id, email, name, avatar_url, idToken } = req.body || {};
     if (!email || typeof email !== "string" || !email.trim()) {
       return res.status(400).json({ success: false, error: "GovMail / Google email is required" });
     }
@@ -227,6 +285,41 @@ usersRouter.post("/google-sync", async (req: Request, res: Response) => {
     const cleanGoogleId = google_id ? String(google_id).trim() : null;
     const cleanAvatar = avatar_url ? String(avatar_url).trim() : null;
     const nowStr = new Date().toLocaleString("en-US", { timeZone: "Asia/Manila" });
+
+    // Validate Firebase ID Token JWT when provided
+    if (idToken !== undefined && idToken !== null && String(idToken).trim() !== "") {
+      try {
+        const tokenParts = String(idToken).trim().split(".");
+        if (tokenParts.length !== 3) {
+          return res.status(401).json({ success: false, error: "Invalid Firebase ID token format." });
+        }
+        const payloadJson = Buffer.from(tokenParts[1], "base64url").toString("utf8");
+        const tokenPayload = JSON.parse(payloadJson);
+        const nowSec = Math.floor(Date.now() / 1000);
+
+        if (
+          !tokenPayload ||
+          typeof tokenPayload.iss !== "string" ||
+          !tokenPayload.iss.includes("https://securetoken.google.com/")
+        ) {
+          return res.status(401).json({ success: false, error: "Invalid Firebase ID token issuer." });
+        }
+
+        if (typeof tokenPayload.exp !== "number" || tokenPayload.exp <= nowSec) {
+          return res.status(401).json({ success: false, error: "Firebase ID token has expired." });
+        }
+
+        const tokenEmail = typeof tokenPayload.email === "string" ? tokenPayload.email.trim().toLowerCase() : "";
+        if (!tokenEmail || tokenEmail !== cleanEmail) {
+          return res.status(401).json({
+            success: false,
+            error: "Firebase ID token email does not match the requested login email.",
+          });
+        }
+      } catch {
+        return res.status(401).json({ success: false, error: "Failed to verify Firebase ID token." });
+      }
+    }
 
     // Look up existing user strictly by exact email in administration table (official User List)
     let userRecord: any = null;
@@ -391,7 +484,17 @@ usersRouter.put("/:id", async (req: Request, res: Response) => {
     const current: any = existing.rows[0];
     const name = body.name ?? current.name;
     const email = body.email ? String(body.email).trim().toLowerCase() : current.email;
-    const password = body.password !== undefined ? body.password : current.password;
+    const rawNewPassword =
+      body.password !== undefined && body.password !== null && String(body.password).trim() !== ""
+        ? String(body.password).trim()
+        : null;
+    if (rawNewPassword) {
+      const pwdVal = validatePasswordStrength(rawNewPassword);
+      if (!pwdVal.valid) {
+        return res.status(400).json({ success: false, error: pwdVal.message });
+      }
+    }
+    const password = rawNewPassword ? hashPassword(rawNewPassword) : current.password;
     const auth_provider = body.auth_provider || body.authProvider || current.auth_provider;
     const google_id = body.google_id !== undefined ? body.google_id : current.google_id;
     const avatar_url = body.avatar_url !== undefined ? body.avatar_url : current.avatar_url;
@@ -400,6 +503,7 @@ usersRouter.put("/:id", async (req: Request, res: Response) => {
     const status = body.status ?? current.status;
     const isFocal = body.isFocal !== undefined ? (body.isFocal ? 1 : 0) : current.isFocal;
     const focalProject = body.focalProject !== undefined ? body.focalProject : current.focalProject;
+    const pnpkiRole = body.pnpkiRole !== undefined ? body.pnpkiRole : (current.pnpkiRole || null);
     const focalProvince = body.focalProvince !== undefined ? body.focalProvince : (current.focalProvince || null);
     const phone = body.phone !== undefined ? body.phone : current.phone;
     const access = body.access !== undefined ? JSON.stringify(body.access) : current.access;
@@ -408,7 +512,7 @@ usersRouter.put("/:id", async (req: Request, res: Response) => {
 
     await db.execute({
       sql: `UPDATE users 
-            SET name = ?, email = ?, password = ?, auth_provider = ?, google_id = ?, avatar_url = ?, role = ?, region = ?, status = ?, isFocal = ?, focalProject = ?, focalProvince = ?, phone = ?, access = ?, canEdit = ?, canDelete = ?, updated_at = CURRENT_TIMESTAMP
+            SET name = ?, email = ?, password = COALESCE(NULLIF(?, ''), password), auth_provider = ?, google_id = ?, avatar_url = ?, role = ?, region = ?, status = ?, isFocal = ?, focalProject = ?, pnpkiRole = ?, focalProvince = ?, phone = ?, access = ?, canEdit = ?, canDelete = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?`,
       args: [
         name,
@@ -422,6 +526,7 @@ usersRouter.put("/:id", async (req: Request, res: Response) => {
         status,
         isFocal,
         focalProject,
+        pnpkiRole,
         focalProvince,
         phone,
         access,
@@ -431,11 +536,11 @@ usersRouter.put("/:id", async (req: Request, res: Response) => {
       ],
     });
 
-    // Also mirror to administration table
+    // Also mirror to administration table without wiping existing password if omitted
     await db.execute({
       sql: `UPDATE administration 
-            SET name = ?, email = ?, password = ?, auth_provider = ?, google_id = ?, avatar_url = ?, role = ?, region = ?, status = ?, isFocal = ?, focalProject = ?, focalProvince = ?, phone = ?, access = ?, canEdit = ?, canDelete = ?, updatedAt = CURRENT_TIMESTAMP
-            WHERE id = ?`,
+            SET name = ?, email = ?, password = COALESCE(NULLIF(?, ''), password), auth_provider = ?, google_id = ?, avatar_url = ?, role = ?, region = ?, status = ?, isFocal = ?, focalProject = ?, pnpkiRole = ?, focalProvince = ?, phone = ?, access = ?, canEdit = ?, canDelete = ?, updatedAt = CURRENT_TIMESTAMP
+            WHERE id = ? OR LOWER(email) = LOWER(?)`,
       args: [
         name,
         email,
@@ -448,12 +553,14 @@ usersRouter.put("/:id", async (req: Request, res: Response) => {
         status,
         isFocal,
         focalProject,
+        pnpkiRole,
         focalProvince,
         phone,
         access,
         canEdit,
         canDelete,
         id,
+        email,
       ],
     }).catch(() => {});
 

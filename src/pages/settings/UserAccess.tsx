@@ -69,8 +69,12 @@ export function UserAccess() {
 
   const isSuperAdminOrDirector =
     currentUser?.role === "Super Admin" ||
+    currentUser?.role === "Admin" ||
     currentUser?.role === "Regional Director" ||
-    currentUser?.role === "Assistant Regional Director";
+    currentUser?.role === "OIC- Regional Director" ||
+    currentUser?.role === "Asst. Regional Director" ||
+    currentUser?.role === "Assistant Regional Director" ||
+    currentUser?.role === "OIC Chief - Technical Operations Division";
   // Exclusively accessible to ace.malto@dict.gov.ph - all other users (even Super Admin, Admin) cannot access
   const canSimulateSwitchUser =
     currentUser?.email?.toLowerCase().trim() === "ace.malto@dict.gov.ph";
@@ -89,30 +93,47 @@ export function UserAccess() {
 
     setIsSubmitting(true);
     try {
-      const isExisting = users.some((u) => String(u.id) === String(userData.id));
+      const existingMatch = users.find(
+        (u) =>
+          String(u.id) === String(userData.id) ||
+          (u.email && userData.email && u.email.toLowerCase() === userData.email.toLowerCase())
+      );
       let resolved: UserRecord;
-      if (isExisting) {
-        const saved = await administrationApi.updateAdministrator(userData.id, userData as any);
-        resolved = (saved as UserRecord) || userData;
+      if (existingMatch) {
+        const targetId = existingMatch.id || userData.id;
+        const saved = await administrationApi.updateAdministrator(targetId, userData as any);
+        if (!saved) {
+          throw new Error("Could not update personnel record in database. Please verify connection or permissions.");
+        }
+        resolved = saved as UserRecord;
         setUsers((prev) => {
-          const updated = prev.map((u) => (String(u.id) === String(userData.id) ? resolved : u));
+          const updated = prev.map((u) =>
+            String(u.id) === String(targetId) ||
+            String(u.id) === String(userData.id) ||
+            (u.email && resolved.email && u.email.toLowerCase() === resolved.email.toLowerCase())
+              ? resolved
+              : u
+          );
           saveStoredUsers(updated);
           return updated;
         });
-        showToast(`Personnel "${userData.name}" successfully updated!`, "success");
+        showToast(`Personnel "${resolved.name}" successfully updated!`, "success");
       } else {
         if (!canGlobalEditUsers) {
           showToast("Access Denied: Only administrators can register new personnel accounts.", "error");
           return;
         }
         const saved = await administrationApi.createAdministrator(userData as any);
-        resolved = (saved as UserRecord) || userData;
+        if (!saved) {
+          throw new Error("Could not register personnel record in database.");
+        }
+        resolved = saved as UserRecord;
         setUsers((prev) => {
           const updated = [resolved, ...prev];
           saveStoredUsers(updated);
           return updated;
         });
-        showToast(`Personnel "${userData.name}" successfully registered in Turso!`, "success");
+        showToast(`Personnel "${resolved.name}" successfully registered in Turso!`, "success");
       }
 
       // Seamless Instant Reaction (No page reload required):
@@ -183,6 +204,35 @@ export function UserAccess() {
       );
     } catch (err: any) {
       showToast("Failed to update status: " + (err.message || "Error"), "error");
+    }
+  };
+
+  const handleRemoveFocal = async (user: UserRecord) => {
+    if (!canGlobalEditUsers) {
+      showToast("Access Denied: Only administrators can modify focal designations.", "error");
+      return;
+    }
+    const payload = {
+      ...user,
+      isFocal: false,
+      focalProject: null as any,
+      pnpkiRole: null as any,
+    };
+    try {
+      const saved = await administrationApi.updateAdministrator(user.id, payload as any);
+      const resolved: UserRecord = saved
+        ? { ...(saved as UserRecord), isFocal: false, focalProject: undefined, pnpkiRole: undefined }
+        : { ...user, isFocal: false, focalProject: undefined, pnpkiRole: undefined };
+      setUsers((prev) => {
+        const updated = prev.map((u) => (String(u.id) === String(user.id) ? resolved : u));
+        saveStoredUsers(updated);
+        return updated;
+      });
+      syncCurrentUserIfUpdated(resolved);
+      window.dispatchEvent(new CustomEvent("dict_users_updated", { detail: resolved }));
+      showToast(`Removed Focal Person designation from ${user.name}.`, "success");
+    } catch (err: any) {
+      showToast("Failed to remove focal designation: " + (err.message || "Error"), "error");
     }
   };
 
@@ -416,17 +466,35 @@ export function UserAccess() {
                       </div>
                     </td>
 
-                    {/* Focal Status */}
+                    {/* Focal Status / Project Handled */}
                     <td className="px-6 py-4">
                       {user.isFocal ? (
                         <div className="space-y-1">
-                          <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 inline-flex items-center gap-1.5 shadow-[0_0_10px_rgba(16,185,129,0.15)]">
-                            <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
-                            Focal Person
-                          </span>
+                          <div className="inline-flex items-center gap-1">
+                            <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 inline-flex items-center gap-1.5 shadow-[0_0_10px_rgba(16,185,129,0.15)]">
+                              <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
+                              {focalProjObj ? focalProjObj.shortName : user.focalProject ? user.focalProject.toUpperCase() : "Focal Person"}
+                              {user.pnpkiRole && (
+                                <span className="ml-1 px-1.5 py-0.5 rounded bg-amber-500/25 text-amber-300 border border-amber-400/40 font-mono text-[9px] font-black">
+                                  {user.pnpkiRole}
+                                </span>
+                              )}
+                            </span>
+                            {canGlobalEditUsers && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveFocal(user)}
+                                title={`Remove Focal designation from ${user.name}`}
+                                className="p-1 rounded-md text-slate-400 hover:text-red-400 hover:bg-red-500/15 transition-colors cursor-pointer"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
                           {focalProjObj && (
                             <div className="text-[11px] text-emerald-400 font-semibold">
-                              {focalProjObj.shortName} ({focalProjObj.category})
+                              {user.role} &gt; {focalProjObj.shortName}
+                              {user.pnpkiRole ? ` (${user.pnpkiRole})` : ` (${focalProjObj.category})`}
                             </div>
                           )}
                           {user.focalProvince && (
@@ -436,7 +504,14 @@ export function UserAccess() {
                           )}
                         </div>
                       ) : (
-                        <span className="text-slate-500 text-[11px]">—</span>
+                        <div className="space-y-0.5">
+                          <span className="text-slate-500 text-[11px] font-medium">Non-Focal</span>
+                          {user.focalProvince && user.focalProvince !== "All Provinces / Regional" && (
+                            <div className="text-[10px] text-slate-400">
+                              Scope: {user.focalProvince}
+                            </div>
+                          )}
+                        </div>
                       )}
                     </td>
 
@@ -446,10 +521,23 @@ export function UserAccess() {
                     </td>
 
                     {/* Accessible Projects */}
-                    <td className="px-6 py-4">
+                    <td className="px-6 py-4 space-y-1">
                       <span className="inline-flex items-center whitespace-nowrap px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-300 border border-blue-500/20 font-mono font-bold text-xs shrink-0">
                         {accessCount} / {PROJECTS.length} Projects
                       </span>
+                      <div>
+                        {user.canEdit && (focalProjObj || isDirector || isAsstDirector || isSuperAdmin) ? (
+                          <span className="inline-flex items-center gap-1 text-[9.5px] font-bold text-emerald-400">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                            {focalProjObj ? `Editable: ${focalProjObj.shortName} Only` : "Editable: All Projects"}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[9.5px] font-bold text-slate-500">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                            Read-Only (Cannot Edit)
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* Actions */}

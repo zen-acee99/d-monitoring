@@ -42,6 +42,7 @@ import {
   ElguDeploymentStatus, 
   ElguVersion, 
   LguRecord, 
+  ELGU_LGUS_DATA,
   ELGU_STATUS_CONFIG, 
   ELGU_VERSION_CONFIG, 
   ELGU_VERSIONS_LIST, 
@@ -49,28 +50,50 @@ import {
   getElguStatusSummaries, 
   getProvincialStatusBreakdown, 
   getVersionAdoptionAnalytics, 
+  normalizeElguRecord,
   ELGU_TRAJECTORY_DATA 
 } from "@/data/elguData";
-import { projectApi } from "@/services/api";
+import { projectApi, administrationApi, AdminUser } from "@/services/api";
+import { getStoredUsers, saveStoredUsers, resolveProjectFocalPerson } from "@/data/userStore";
 import { Modal } from "@/components/ui/modal";
 
 export function ElguAnalytics({ records }: { records?: LguRecord[] }) {
-  const [lgus, setLgus] = useState<LguRecord[]>(records || []);
+  const [rawLgus, setRawLgus] = useState<LguRecord[]>(
+    records && records.length > 0
+      ? records.map((r, i) => normalizeElguRecord(r, i))
+      : ELGU_LGUS_DATA
+  );
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>(() => getStoredUsers() as any);
+
+  const reloadAdminUsers = () => {
+    administrationApi
+      .getAdministrators()
+      .then((list) => {
+        if (Array.isArray(list) && list.length > 0) {
+          setAdminUsers(list);
+          saveStoredUsers(list as any);
+        }
+      })
+      .catch(() => {
+        setAdminUsers(getStoredUsers() as any);
+      });
+  };
 
   const reloadLgus = () => {
     projectApi.getTableRecords("elgu").then((data) => {
-      if (Array.isArray(data)) {
-        setLgus(data as LguRecord[]);
+      if (Array.isArray(data) && data.length > 0) {
+        setRawLgus(data.map((r, i) => normalizeElguRecord(r, i)));
       }
     });
   };
 
   useEffect(() => {
-    if (records) {
-      setLgus(records);
-      return;
+    reloadAdminUsers();
+    if (records && records.length > 0) {
+      setRawLgus(records.map((r, i) => normalizeElguRecord(r, i)));
+    } else {
+      reloadLgus();
     }
-    reloadLgus();
 
     const handleDataUpdate = (e?: any) => {
       const customEv = e as CustomEvent<any>;
@@ -80,13 +103,27 @@ export function ElguAnalytics({ records }: { records?: LguRecord[] }) {
       }
     };
 
+    const handleUsersUpdate = () => {
+      reloadAdminUsers();
+    };
+
     window.addEventListener("dict_records_updated", handleDataUpdate);
     window.addEventListener("dict_project_data_updated", handleDataUpdate);
+    window.addEventListener("dict_users_updated", handleUsersUpdate);
     return () => {
       window.removeEventListener("dict_records_updated", handleDataUpdate);
       window.removeEventListener("dict_project_data_updated", handleDataUpdate);
+      window.removeEventListener("dict_users_updated", handleUsersUpdate);
     };
   }, [records]);
+
+  // Dynamically resolve each LGU's DICT Focal Person from User Directory (isFocal === true & focalProject === 'elgu' & focalProvince)
+  const lgus = useMemo(() => {
+    return rawLgus.map((lgu) => ({
+      ...lgu,
+      dictFocal: resolveProjectFocalPerson("elgu", lgu.province, adminUsers),
+    }));
+  }, [rawLgus, adminUsers]);
 
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<ElguDeploymentStatus | "ALL">("ALL");
   const [selectedVersionFilter, setSelectedVersionFilter] = useState<ElguVersion | "ALL" | "None" | "In-House">("ALL");
@@ -103,18 +140,19 @@ export function ElguAnalytics({ records }: { records?: LguRecord[] }) {
   // Filtered LGUs based on controls
   const filteredLgus = useMemo(() => {
     return lgus.filter((lgu) => {
+      const versions = Array.isArray(lgu.versions) ? lgu.versions : [];
       // Status filter
       if (selectedStatusFilter !== "ALL" && lgu.status !== selectedStatusFilter) {
         return false;
       }
       // Version filter
       if (selectedVersionFilter !== "ALL") {
-        if (selectedVersionFilter === "None" && (lgu.versions.length > 0 || lgu.status === "Own System")) {
+        if (selectedVersionFilter === "None" && (versions.length > 0 || lgu.status === "Own System")) {
           return false;
         } else if (selectedVersionFilter === "In-House" && lgu.status !== "Own System") {
           return false;
         } else if (selectedVersionFilter !== "None" && selectedVersionFilter !== "In-House") {
-          if (!lgu.versions.includes(selectedVersionFilter as ElguVersion)) {
+          if (!versions.includes(selectedVersionFilter as ElguVersion)) {
             return false;
           }
         }
@@ -126,20 +164,20 @@ export function ElguAnalytics({ records }: { records?: LguRecord[] }) {
       // Search query
       if (searchQuery.trim() !== "") {
         const q = searchQuery.toLowerCase();
-        const matchesName = lgu.name.toLowerCase().includes(q);
-        const matchesProvince = lgu.province.toLowerCase().includes(q);
-        const matchesFocal = lgu.dictFocal.toLowerCase().includes(q);
+        const matchesName = (lgu.name || "").toLowerCase().includes(q);
+        const matchesProvince = (lgu.province || "").toLowerCase().includes(q);
+        const matchesFocal = (lgu.dictFocal || "").toLowerCase().includes(q);
         const matchesSystem = lgu.systemName?.toLowerCase().includes(q) || false;
         const matchesBlocker = lgu.blockers?.toLowerCase().includes(q) || false;
         const matchesNotes = lgu.notes?.toLowerCase().includes(q) || false;
-        const matchesVersion = lgu.versions.some(v => v.toLowerCase().includes(q));
+        const matchesVersion = versions.some(v => String(v).toLowerCase().includes(q));
         if (!matchesName && !matchesProvince && !matchesFocal && !matchesSystem && !matchesBlocker && !matchesNotes && !matchesVersion) {
           return false;
         }
       }
       return true;
     });
-  }, [selectedStatusFilter, selectedVersionFilter, selectedProvince, searchQuery]);
+  }, [lgus, selectedStatusFilter, selectedVersionFilter, selectedProvince, searchQuery]);
 
   // Pie chart data for status distribution
   const pieChartData = useMemo(() => {

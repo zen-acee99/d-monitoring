@@ -49,7 +49,7 @@ import {
   openTimeClockApi
 } from "@/services/api";
 import { getCurrentUser } from "@/services/authStore";
-import { UserRecord } from "@/data/userStore";
+import { UserRecord, normalizeUserAssignment } from "@/data/userStore";
 import {
   DtrRow,
   DtrConfig,
@@ -91,7 +91,18 @@ export function DtrGenerator() {
     }
     return "generator";
   });
-  const [activeProvinceTab, setActiveProvinceTab] = useState<ProvincialTab>("Regional Off");
+  const [activeProvinceTab, setActiveProvinceTab] = useState<ProvincialTab>(() => {
+    const u = getCurrentUser();
+    if (u) {
+      const norm = normalizeUserAssignment(u);
+      const fp = (norm.focalProvince || "").trim();
+      const matchedTab = PROVINCIAL_TABS.find(
+        (t) => t.toLowerCase() === fp.toLowerCase()
+      );
+      if (matchedTab) return matchedTab;
+    }
+    return "Regional Off";
+  });
 
   // Keep activeSubModule synchronized when URL query param changes
   useEffect(() => {
@@ -446,23 +457,28 @@ export function DtrGenerator() {
       ) || records[0];
 
       if (userProfile && !p12File && !signatureImage) {
-        setSelectedProfileId(userProfile.id);
-        setSelectedUserId(String(user.id));
-        if (userProfile.image_digiSigned) {
-          setSignatureImage(userProfile.image_digiSigned);
+        let activeProfile = userProfile;
+        if (!activeProfile.p12 && (activeProfile.hasP12 || activeProfile.p12_filename)) {
+          const fullRecord = await dtrGeneratorApi.getRecord(activeProfile.id);
+          if (fullRecord) activeProfile = fullRecord;
         }
-        if (userProfile.p12 && userProfile.p12_filename) {
+        setSelectedProfileId(activeProfile.id);
+        setSelectedUserId(String(user.id));
+        if (activeProfile.image_digiSigned) {
+          setSignatureImage(activeProfile.image_digiSigned);
+        }
+        if ((activeProfile.p12 || activeProfile.hasP12) && activeProfile.p12_filename) {
           setP12File({
-            name: userProfile.p12_filename,
-            size: userProfile.p12_filesize || 0,
-            base64: userProfile.p12,
+            name: activeProfile.p12_filename,
+            size: activeProfile.p12_filesize || 0,
+            base64: activeProfile.p12 || "",
           });
 
-          if (userProfile.hasP12Password) {
+          if (activeProfile.hasP12Password) {
             setIsP12Unlocked(true);
             setIsP12PasswordSaved(true);
             dtrGeneratorApi.getP12Identity({
-              profileId: userProfile.id,
+              profileId: activeProfile.id,
               user_Id: String(user.id),
             }).then((idRes) => {
               if (idRes.success && idRes.identity) {
@@ -506,7 +522,10 @@ export function DtrGenerator() {
           (s) => (user.id && (s.userId === String(user.id) || s.user_id === String(user.id))) || matchNames(s.employeeName || s.employee_name, user.name)
         );
 
-        if (!matched && user.id) {
+        if (matched && !(matched.otcPassword || matched.otc_password) && (matched.hasOtcPassword || matched.otcUsername || matched.otc_username)) {
+          const fullSetup = await dtrUserSetupApi.getSetup(String(matched.userId || matched.user_id || matched.id));
+          if (fullSetup) matched = fullSetup;
+        } else if (!matched && user.id) {
           matched = (await dtrUserSetupApi.getSetup(String(user.id))) || undefined;
         }
 
@@ -621,8 +640,9 @@ export function DtrGenerator() {
       let setup = savedUserSetups.find(
         (s) => s.id === setupIdOrUserId || s.userId === setupIdOrUserId || s.user_id === setupIdOrUserId
       );
-      if (!setup) {
-        setup = (await dtrUserSetupApi.getSetup(setupIdOrUserId)) || undefined;
+      if (!setup || (!(setup.otcPassword || setup.otc_password) && (setup.hasOtcPassword || setup.otcUsername || setup.otc_username))) {
+        const fullSetup = await dtrUserSetupApi.getSetup(setup?.userId || setup?.user_id || setupIdOrUserId);
+        if (fullSetup) setup = fullSetup;
       }
       if (setup) {
         setConfig((prev) => ({
@@ -715,8 +735,8 @@ export function DtrGenerator() {
       return;
     }
 
-    // If .p12 is attached and no password has been entered yet, require password before saving!
-    if (p12File && !p12Password.trim()) {
+    // If .p12 is attached and no password has been entered yet (and not already saved in DB), require password before saving!
+    if (p12File && !p12Password.trim() && !isP12PasswordSaved) {
       setPasswordModalReason("save");
       setModalPasswordInput("");
       setModalPasswordError("");
@@ -737,10 +757,10 @@ export function DtrGenerator() {
       id: user?.id ? `dtr-sig-${user.id}` : selectedProfileId || undefined,
       user_Id: user?.id ? String(user.id) : selectedUserId || undefined,
       Name: nameToSave,
-      p12: p12File?.base64,
+      p12: p12File?.base64 || undefined,
       p12_filename: p12File?.name,
       p12_filesize: p12File?.size,
-      p12_password: savePasswordToDb || pwdToSave ? effectivePwd : undefined,
+      p12_password: (savePasswordToDb || pwdToSave) && effectivePwd ? effectivePwd : undefined,
       image_digiSigned: signatureImage,
     });
     setIsSavingSig(false);
@@ -771,8 +791,8 @@ export function DtrGenerator() {
         (isCurrentUserTheEmployee && currentUser?.id && p.user_Id === String(currentUser.id))
     );
 
-    const hasP12Keystore = Boolean(p12File?.base64 || (matchedProfile && (matchedProfile.hasP12 || matchedProfile.p12_filename)));
-    const hasDbPassword = Boolean(matchedProfile?.hasP12Password);
+    const hasP12Keystore = Boolean(p12File?.base64 || p12File?.name || (matchedProfile && (matchedProfile.hasP12 || matchedProfile.p12_filename)));
+    const hasDbPassword = Boolean(matchedProfile?.hasP12Password || isP12PasswordSaved);
 
     // =========================================================================
     // SCENARIO 1: NO .P12 KEYSTORE -> INSTANT CLEAN CS FORM 48 VECTOR PDF
@@ -808,7 +828,7 @@ export function DtrGenerator() {
         const p12Options = {
           profileId: selectedProfileId || matchedProfile?.id || (currentUser?.id ? `dtr-sig-${currentUser.id}` : undefined),
           user_Id: selectedUserId || matchedProfile?.user_Id || (currentUser?.id ? String(currentUser.id) : undefined),
-          p12Base64: p12File?.base64,
+          p12Base64: p12File?.base64 || undefined,
           p12Password: p12Password || undefined,
           isGoogleAuth: true,
           signerName: p12SignerIdentity?.commonName,
@@ -862,7 +882,7 @@ export function DtrGenerator() {
     const p12Options = {
       profileId: selectedProfileId || (selectedUserId ? `dtr-sig-${selectedUserId}` : undefined),
       user_Id: selectedUserId || (currentUser?.id ? String(currentUser.id) : undefined),
-      p12Base64: p12File?.base64,
+      p12Base64: p12File?.base64 || undefined,
       p12Password: p12Password || undefined,
       isGoogleAuth,
       signerName: p12SignerIdentity?.commonName,
@@ -912,13 +932,13 @@ export function DtrGenerator() {
           (selectedUserId && p.user_Id === selectedUserId) ||
           (isCurrentUserTheEmployee && currentUser?.id && p.user_Id === String(currentUser.id))
       );
-      const hasP12Keystore = Boolean(p12File?.base64 || (matchedProfile && (matchedProfile.hasP12 || matchedProfile.p12_filename)));
+      const hasP12Keystore = Boolean(p12File?.base64 || p12File?.name || (matchedProfile && (matchedProfile.hasP12 || matchedProfile.p12_filename)));
 
       const p12Options = hasP12Keystore
         ? {
           profileId: selectedProfileId || matchedProfile?.id || (currentUser?.id ? `dtr-sig-${currentUser.id}` : undefined),
           user_Id: selectedUserId || matchedProfile?.user_Id || (currentUser?.id ? String(currentUser.id) : undefined),
-          p12Base64: p12File?.base64,
+          p12Base64: p12File?.base64 || undefined,
           account_password: modalPasswordInput,
           isGoogleAuth: false,
           signerName: p12SignerIdentity?.commonName,
@@ -946,11 +966,11 @@ export function DtrGenerator() {
 
     // Validate password and inspect identity from certificate
     let inspectedCertName: string | undefined;
-    const hasP12Source = Boolean(p12File?.base64 || pendingApplyProfile?.p12 || selectedProfileId || selectedUserId);
+    const hasP12Source = Boolean(p12File?.base64 || p12File?.name || pendingApplyProfile?.p12 || pendingApplyProfile?.hasP12 || selectedProfileId || selectedUserId);
 
     if (hasP12Source) {
       const idRes = await dtrGeneratorApi.getP12Identity({
-        p12: p12File?.base64,
+        p12: p12File?.base64 || undefined,
         p12_password: modalPasswordInput,
         profileId: pendingApplyProfile?.id || selectedProfileId,
         user_Id: pendingApplyProfile?.user_Id || selectedUserId,
@@ -980,7 +1000,7 @@ export function DtrGenerator() {
         ? {
           profileId: selectedProfileId || (selectedUserId ? `dtr-sig-${selectedUserId}` : undefined),
           user_Id: selectedUserId || undefined,
-          p12Base64: p12File?.base64,
+          p12Base64: p12File?.base64 || undefined,
           p12Password: modalPasswordInput,
           signerName: inspectedCertName || p12SignerIdentity?.commonName,
           signerRole: "employee" as const,
@@ -992,7 +1012,7 @@ export function DtrGenerator() {
           config,
           rows,
           signatureImage,
-          Boolean(p12File?.base64 || selectedProfileId || selectedUserId),
+          Boolean(p12File?.base64 || p12File?.name || selectedProfileId || selectedUserId),
           p12Options
         );
         showNotification("✓ PNPKI .p12 Keystore unlocked! Generated digitally signed vector PDF.");
@@ -1004,7 +1024,12 @@ export function DtrGenerator() {
   };
 
   // Apply a saved signature profile from Turso
-  const handleApplySavedProfile = async (profile: DtrGeneratorSignatureRecord) => {
+  const handleApplySavedProfile = async (initialProfile: DtrGeneratorSignatureRecord) => {
+    let profile = initialProfile;
+    if (!profile.p12 && (profile.hasP12 || profile.p12_filename)) {
+      const fullRecord = await dtrGeneratorApi.getRecord(profile.id);
+      if (fullRecord) profile = fullRecord;
+    }
     setSelectedProfileId(profile.id);
     if (profile.Name) {
       setConfig((prev) => ({ ...prev, employeeName: profile.Name }));
@@ -1017,11 +1042,11 @@ export function DtrGenerator() {
     if (profile.image_digiSigned) {
       setSignatureImage(profile.image_digiSigned);
     }
-    if (profile.p12 && profile.p12_filename) {
+    if ((profile.p12 || profile.hasP12) && profile.p12_filename) {
       setP12File({
         name: profile.p12_filename,
         size: profile.p12_filesize || 0,
-        base64: profile.p12,
+        base64: profile.p12 || "",
       });
 
       // If password was saved in Turso DB, auto-unlock and fetch certificate identity seamlessly
@@ -1148,9 +1173,21 @@ export function DtrGenerator() {
     yearOverride?: number,
     silentModal: boolean = false
   ) => {
-    const userQuery = otcUsername.trim() || config.employeeName.trim();
-    if (!userQuery) {
-      showNotification("⚠️ Please enter your Open Time Clock Username or Employee Name.");
+    let userQuery = otcUsername.trim();
+    if (!userQuery && config.employeeName.trim() && config.employeeName.trim().toUpperCase() !== "PERSONNEL") {
+      userQuery = config.employeeName.trim();
+    }
+    if (!userQuery && currentUser?.email) {
+      userQuery = currentUser.email.trim();
+    }
+    if (!userQuery && currentUser?.name && currentUser.name.toUpperCase() !== "PERSONNEL") {
+      userQuery = currentUser.name.trim();
+    }
+
+    if (!userQuery || userQuery.toUpperCase() === "PERSONNEL") {
+      if (!silentModal) {
+        showNotification("⚠️ Please enter your Open Time Clock Username (e.g. Ace M.) or Employee Name.");
+      }
       return;
     }
 
@@ -1189,6 +1226,13 @@ export function DtrGenerator() {
           ...prev,
           employeeName: verifyRes.employeeName!,
         }));
+      }
+
+      if (verifyRes.userName && !otcUsername.trim()) {
+        setOtcUsername(verifyRes.userName);
+        if (rememberOtcCreds) {
+          localStorage.setItem("dict_otc_username", verifyRes.userName);
+        }
       }
 
       // Step 2: Fetch Punches for active period & scope

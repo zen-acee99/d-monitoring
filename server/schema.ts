@@ -5,6 +5,8 @@ export const PROJECT_TABLES = [
   "gecs",
   "freewifi",
   "egovph",
+  "egovph_tickets",
+  "egovpay",
   "elgu",
   "nbp",
   "govnet",

@@ -31,13 +31,16 @@ import {
   AlertTriangle,
   Save,
   BookmarkCheck,
-  Sliders
+  Sliders,
+  Sun,
+  Moon
 } from "lucide-react";
 import { PROJECTS } from "@/config/projects";
 import { getStoredUsers, saveStoredUsers, UserRecord } from "@/data/userStore";
 import { UserModal, ROLE_OPTIONS, REGION_OPTIONS } from "@/components/users/UserModal";
 import { administrationApi, modulesApi, SystemModule, dtrScheduleSettingsApi, DtrWorkScheduleSetting } from "@/services/api";
 import { createFullAccessMatrix, createEmptyAccessMatrix, syncCurrentUserIfUpdated, getCurrentUser, hasModuleAccess, AUTH_EVENT, setCachedSystemModules } from "@/services/authStore";
+import { getTheme, toggleTheme, THEME_EVENT, AppTheme } from "@/services/themeStore";
 
 // Interactive switch component for project permissions
 const ToggleSwitch: React.FC<{
@@ -76,8 +79,12 @@ export function SystemSettings() {
 
   const isSuperAdminOrDirector =
     currentUser?.role === "Super Admin" ||
+    currentUser?.role === "Admin" ||
     currentUser?.role === "Regional Director" ||
-    currentUser?.role === "Assistant Regional Director";
+    currentUser?.role === "OIC- Regional Director" ||
+    currentUser?.role === "Asst. Regional Director" ||
+    currentUser?.role === "Assistant Regional Director" ||
+    currentUser?.role === "OIC Chief - Technical Operations Division";
   const canGlobalEdit = isSuperAdminOrDirector || (currentUser?.canEdit && hasModuleAccess(currentUser, "MOD_ADMIN"));
 
   const [users, setUsers] = useState<UserRecord[]>([]);
@@ -399,24 +406,50 @@ export function SystemSettings() {
 
     setIsSubmitting(true);
     try {
-      const isExisting = users.some((u) => String(u.id) === String(userData.id));
-      if (isExisting) {
-        const saved = await administrationApi.updateAdministrator(userData.id, userData as any);
-        const resolved = (saved as UserRecord) || userData;
-        setUsers((prev) =>
-          prev.map((u) => (String(u.id) === String(userData.id) ? resolved : u))
-        );
+      const existingMatch = users.find(
+        (u) =>
+          String(u.id) === String(userData.id) ||
+          (u.email && userData.email && u.email.toLowerCase() === userData.email.toLowerCase())
+      );
+      if (existingMatch) {
+        const targetId = existingMatch.id || userData.id;
+        const saved = await administrationApi.updateAdministrator(targetId, userData as any);
+        if (!saved) {
+          throw new Error("Could not update personnel record in database. Please verify connection or permissions.");
+        }
+        const resolved = saved as UserRecord;
+        setUsers((prev) => {
+          const updated = prev.map((u) =>
+            String(u.id) === String(targetId) ||
+            String(u.id) === String(userData.id) ||
+            (u.email && resolved.email && u.email.toLowerCase() === resolved.email.toLowerCase())
+              ? resolved
+              : u
+          );
+          saveStoredUsers(updated);
+          return updated;
+        });
         syncCurrentUserIfUpdated(resolved);
-        showToast(`Personnel "${userData.name}" successfully updated in Turso!`, "success");
+        window.dispatchEvent(new CustomEvent("dict_users_updated", { detail: resolved }));
+        window.dispatchEvent(new CustomEvent(AUTH_EVENT, { detail: getCurrentUser() }));
+        showToast(`Personnel "${resolved.name}" successfully updated in Turso!`, "success");
       } else {
         if (!canGlobalEdit) {
           showToast("Access Denied: Only administrators can register new accounts.", "error");
           return;
         }
         const saved = await administrationApi.createAdministrator(userData as any);
-        const resolved = (saved as UserRecord) || userData;
-        setUsers((prev) => [resolved, ...prev]);
-        showToast(`New personnel "${userData.name}" successfully registered in Turso!`, "success");
+        if (!saved) {
+          throw new Error("Could not register personnel record in database.");
+        }
+        const resolved = saved as UserRecord;
+        setUsers((prev) => {
+          const updated = [resolved, ...prev];
+          saveStoredUsers(updated);
+          return updated;
+        });
+        window.dispatchEvent(new CustomEvent("dict_users_updated", { detail: resolved }));
+        showToast(`New personnel "${resolved.name}" successfully registered in Turso!`, "success");
       }
       setIsModalOpen(false);
       setEditingUser(null);
@@ -446,6 +479,35 @@ export function SystemSettings() {
       );
     } catch (err: any) {
       showToast("Failed to update status: " + (err.message || "Error"), "error");
+    }
+  };
+
+  const handleRemoveFocal = async (user: UserRecord) => {
+    if (!canGlobalEdit) {
+      showToast("Access Denied: Only administrators can modify focal designations.", "error");
+      return;
+    }
+    const payload = {
+      ...user,
+      isFocal: false,
+      focalProject: null as any,
+      pnpkiRole: null as any,
+    };
+    try {
+      const saved = await administrationApi.updateAdministrator(user.id, payload as any);
+      const resolved: UserRecord = saved
+        ? { ...(saved as UserRecord), isFocal: false, focalProject: undefined, pnpkiRole: undefined }
+        : { ...user, isFocal: false, focalProject: undefined, pnpkiRole: undefined };
+      setUsers((prev) => {
+        const updated = prev.map((u) => (String(u.id) === String(user.id) ? resolved : u));
+        saveStoredUsers(updated);
+        return updated;
+      });
+      syncCurrentUserIfUpdated(resolved);
+      window.dispatchEvent(new CustomEvent("dict_users_updated", { detail: resolved }));
+      showToast(`Removed Focal Person designation from ${user.name}.`, "success");
+    } catch (err: any) {
+      showToast("Failed to remove focal designation: " + (err.message || "Error"), "error");
     }
   };
 
@@ -617,6 +679,29 @@ export function SystemSettings() {
   const deactivatedModulesCount = visibleModules.filter((m) => !m.is_active).length;
   const projectModulesCount = visibleModules.filter((m) => m.category === "Project").length;
 
+  const [currentTheme, setCurrentTheme] = useState<AppTheme>(() => getTheme());
+  const [isSavingTheme, setIsSavingTheme] = useState(false);
+
+  useEffect(() => {
+    const handleTheme = (e: Event) => {
+      const customEv = e as CustomEvent<AppTheme>;
+      setCurrentTheme(customEv.detail || getTheme());
+    };
+    window.addEventListener(THEME_EVENT, handleTheme);
+    return () => window.removeEventListener(THEME_EVENT, handleTheme);
+  }, []);
+
+  const handleToggleAppTheme = async () => {
+    setIsSavingTheme(true);
+    const { theme: nextTheme, savedToDb } = await toggleTheme();
+    setCurrentTheme(nextTheme);
+    setIsSavingTheme(false);
+    showToast(
+      `Switched to ${nextTheme === "light" ? "White / Light" : "Dark"} Theme${savedToDb ? " (Saved to Turso DB)" : ""}!`,
+      "success"
+    );
+  };
+
   return (
     <div className="space-y-6 max-w-[1920px] mx-auto text-slate-200">
       
@@ -657,7 +742,31 @@ export function SystemSettings() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2 z-10">
+        <div className="flex flex-wrap items-center gap-2 z-10">
+          <button
+            type="button"
+            onClick={handleToggleAppTheme}
+            disabled={isSavingTheme}
+            className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+              currentTheme === "light"
+                ? "bg-amber-500/15 border-amber-500/40 text-amber-600 hover:bg-amber-500/25"
+                : "bg-[#111728] hover:bg-[#1C263E] border-[#1C2844] text-slate-200"
+            }`}
+            title="Toggle Dark / White Theme and save to Turso Database"
+          >
+            {currentTheme === "light" ? (
+              <>
+                <Sun className="w-3.5 h-3.5 text-amber-500" />
+                <span>Theme: White (Saved in DB)</span>
+              </>
+            ) : (
+              <>
+                <Moon className="w-3.5 h-3.5 text-blue-400" />
+                <span>Theme: Dark (Saved in DB)</span>
+              </>
+            )}
+          </button>
+
           <button
             onClick={() => {
               loadUsers();
@@ -1074,17 +1183,35 @@ export function SystemSettings() {
                         </div>
                       </td>
 
-                      {/* Focal Status */}
+                      {/* Focal Status / Project Handled */}
                       <td className="px-6 py-4">
                         {user.isFocal ? (
                           <div className="space-y-1">
-                            <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 inline-flex items-center gap-1.5 shadow-[0_0_10px_rgba(16,185,129,0.15)]">
-                              <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
-                              Focal Person
-                            </span>
+                            <div className="inline-flex items-center gap-1">
+                              <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 inline-flex items-center gap-1.5 shadow-[0_0_10px_rgba(16,185,129,0.15)]">
+                                <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
+                                {focalProjObj ? focalProjObj.shortName : user.focalProject ? user.focalProject.toUpperCase() : "Focal Person"}
+                                {user.pnpkiRole && (
+                                  <span className="ml-1 px-1.5 py-0.5 rounded bg-amber-500/25 text-amber-300 border border-amber-400/40 font-mono text-[9px] font-black">
+                                    {user.pnpkiRole}
+                                  </span>
+                                )}
+                              </span>
+                              {canGlobalEdit && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveFocal(user)}
+                                  title={`Remove Focal designation from ${user.name}`}
+                                  className="p-1 rounded-md text-slate-400 hover:text-red-400 hover:bg-red-500/15 transition-colors cursor-pointer"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
                             {focalProjObj && (
                               <div className="text-[11px] text-emerald-400 font-semibold">
-                                {focalProjObj.shortName} ({focalProjObj.category})
+                                {user.role} &gt; {focalProjObj.shortName}
+                                {user.pnpkiRole ? ` (${user.pnpkiRole})` : ` (${focalProjObj.category})`}
                               </div>
                             )}
                             {user.focalProvince && (
@@ -1094,7 +1221,14 @@ export function SystemSettings() {
                             )}
                           </div>
                         ) : (
-                          <span className="text-slate-500 text-[11px]">—</span>
+                          <div className="space-y-0.5">
+                            <span className="text-slate-500 text-[11px] font-medium">Non-Focal</span>
+                            {user.focalProvince && user.focalProvince !== "All Provinces / Regional" && (
+                              <div className="text-[10px] text-slate-400">
+                                Scope: {user.focalProvince}
+                              </div>
+                            )}
+                          </div>
                         )}
                       </td>
 
@@ -1112,11 +1246,18 @@ export function SystemSettings() {
 
                       {/* Data Management Authority */}
                       <td className="px-6 py-4">
-                        {user.canEdit ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                            Can Edit & Modify
-                          </span>
+                        {user.canEdit && (focalProjObj || isDirector || isAsstDirector || isSuperAdmin) ? (
+                          <div className="space-y-1">
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                              {focalProjObj ? `Can Edit: ${focalProjObj.shortName} Only` : "Can Edit: All Projects"}
+                            </span>
+                            {focalProjObj && (
+                              <div className="text-[9.5px] text-slate-400">
+                                Other projects: Read-Only
+                              </div>
+                            )}
+                          </div>
                         ) : (
                           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700">
                             <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />

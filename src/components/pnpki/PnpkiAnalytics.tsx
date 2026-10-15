@@ -51,6 +51,20 @@ import { Modal } from "@/components/ui/modal";
 
 const COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#EC4899", "#8B5CF6", "#06B6D4"];
 
+export function censorSubscriberName(name?: string): string {
+  const raw = String(name || "").trim();
+  if (!raw) return "********";
+  return raw.replace(/[A-Za-z0-9]/g, "*");
+}
+
+function censorSubscriberEmail(email?: string): string {
+  const raw = String(email || "").trim();
+  if (!raw) return "*****";
+  const [local, domain] = raw.split("@");
+  if (!domain) return raw.replace(/[A-Za-z0-9]/g, "*");
+  return `${local.replace(/[A-Za-z0-9]/g, "*")}@${domain}`;
+}
+
 function formatDecryptedMobile(cert: PnpkiCertificate): string {
   if (cert.mobileNumber && cert.mobileNumber !== "Encrypted") {
     return cert.mobileNumber;
@@ -544,7 +558,9 @@ export function PnpkiAnalytics({ records }: { records?: PnpkiCertificate[] }) {
                 {filteredCertificates.map((cert) => (
                   <tr key={cert.id} className="hover:bg-[#111520] transition-colors group">
                     <td className="px-5 py-3.5">
-                      <div className="font-bold text-white text-sm">{cert.fullName}</div>
+                      <div className="font-bold text-white text-sm font-mono tracking-wider" title="Subscriber name is censored for privacy">
+                        {censorSubscriberName(cert.fullName || (cert as any).applicantName)}
+                      </div>
                     </td>
 
                     <td className="px-4 py-3.5">
@@ -796,7 +812,9 @@ export function PnpkiAnalytics({ records }: { records?: PnpkiCertificate[] }) {
                 {filteredTickets.map((tk) => (
                   <tr key={tk.id} className="hover:bg-[#111520] transition-colors">
                     <td className="px-5 py-3.5">
-                      <div className="font-bold text-white text-sm">{tk.subscriber}</div>
+                      <div className="font-bold text-white text-sm font-mono tracking-wider" title="Subscriber name is censored for privacy">
+                        {censorSubscriberName(tk.subscriber)}
+                      </div>
                       <div className="text-[11px] text-slate-400">{tk.agency || "Public Stakeholder"}</div>
                     </td>
 
@@ -832,7 +850,7 @@ export function PnpkiAnalytics({ records }: { records?: PnpkiCertificate[] }) {
         <Modal
           isOpen={!!selectedCert}
           onClose={() => setSelectedCert(null)}
-          title={`PNPKI Certificate: ${selectedCert.fullName}`}
+          title={`PNPKI Certificate: ${censorSubscriberName(selectedCert.fullName || (selectedCert as any).applicantName)}`}
         >
           <div className="space-y-4 text-sm">
             <div className="p-4 rounded-xl border border-blue-500/30 bg-[#07090E] flex items-center justify-between">
@@ -841,8 +859,10 @@ export function PnpkiAnalytics({ records }: { records?: PnpkiCertificate[] }) {
                   <KeyRound className="w-6 h-6" />
                 </div>
                 <div>
-                  <h4 className="font-bold text-base text-white">{selectedCert.fullName}</h4>
-                  <p className="text-xs text-slate-400 font-mono">{selectedCert.email}</p>
+                  <h4 className="font-bold text-base text-white font-mono tracking-wider">
+                    {censorSubscriberName(selectedCert.fullName || (selectedCert as any).applicantName)}
+                  </h4>
+                  <p className="text-xs text-slate-400 font-mono">{censorSubscriberEmail(selectedCert.email)}</p>
                 </div>
               </div>
               <span className="px-3 py-1 rounded-full text-xs font-bold border border-emerald-500/40 bg-emerald-500/15 text-emerald-400 uppercase tracking-wider">

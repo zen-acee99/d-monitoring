@@ -1891,7 +1891,7 @@ export function SigningWorkspace() {
     const unsubscribeRealtime = subscribeToDtrRealtime((event) => {
       if (event.type === "INSERT" || event.type === "UPDATE") {
         const record = event.record;
-        if (record && (record.module === "SIGNING_WORKSPACE" || String(record.module).toUpperCase() === "SIGNING_WORKSPACE")) {
+        if (record && ((record.module as any) === "SIGNING_WORKSPACE" || String(record.module).toUpperCase() === "SIGNING_WORKSPACE")) {
           const deleted = getDeletedDocIds();
           if (!deleted.has(record.id)) {
             const mapped = mapDtrRecordToWorkspaceDoc(record);
@@ -2081,7 +2081,8 @@ export function SigningWorkspace() {
         if (liveUser?.id) {
           const list = await dtrGeneratorApi.getRecords({ user_Id: String(liveUser.id) });
           if (Array.isArray(list) && list.length > 0) {
-            userSigProfile = list.find((p) => String(p.user_Id) === String(liveUser.id)) || null;
+            userSigProfile =
+              list.find((p) => String(p.user_Id) === String(liveUser.id) || p.id === `dtr-sig-${liveUser.id}`) || null;
           }
         }
         if (!userSigProfile && currentUserName) {
@@ -2109,6 +2110,7 @@ export function SigningWorkspace() {
       const isProfileOwnerMatch = Boolean(
         userSigProfile &&
         ((userSigProfile.user_Id && String(userSigProfile.user_Id) === String(liveUser?.id)) ||
+          (liveUser?.id && userSigProfile.id === `dtr-sig-${liveUser.id}`) ||
           matchNames(userSigProfile.Name, currentUserName))
       );
 
@@ -2118,7 +2120,7 @@ export function SigningWorkspace() {
           ? {
               profileId: userSigProfile.id,
               user_Id: userSigProfile.user_Id,
-              p12Base64: userSigProfile.p12,
+              p12Base64: userSigProfile.p12 || undefined,
               signerName: effectiveSignerName,
               signerRole: "supervisor" as const,
             }

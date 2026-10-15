@@ -194,7 +194,7 @@ export const omadaApi = {
         clients: data.clients || null,
       };
     } catch (e) {
-      console.warn(`Failed to fetch devices for ${siteId}:`, e);
+      console.warn("Failed to fetch devices for site:", siteId, e);
       return { devices: [] };
     }
   },

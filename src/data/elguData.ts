@@ -179,7 +179,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-03-15",
     lastUpdated: "2026-08-15",
     notes: "Operating on V2 eLGU integrated suite with online permit assessment."
@@ -196,7 +196,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-05-20",
     lastUpdated: "2026-08-16",
     notes: "Active V2 eLGU with online business tax computation."
@@ -213,7 +213,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-08-10",
     lastUpdated: "2026-08-10",
     notes: "V2 eLGU active deployment."
@@ -230,7 +230,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-09-01",
     lastUpdated: "2026-08-12",
     notes: "Upgraded and operating on V2 eLGU."
@@ -243,14 +243,14 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     district: "2nd District",
     status: "Live",
     version: "V1 BPBC",
-    versions: ["V1 BPBC"],
+    versions: ["V1 BPBC", "V1 BPCO"],
     progressPercentage: 90,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-15",
-    lastUpdated: "2026-08-14",
-    notes: "Live on V1 BPBC; preparing V2 eLGU migration schedule."
+    lastUpdated: "2026-10-13",
+    notes: "Live on V1 BPBC and BPCO; preparing V2 eLGU migration schedule."
   },
   {
     id: "albay-libon",
@@ -264,7 +264,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 88,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-10-18",
     lastUpdated: "2026-08-15",
     notes: "Live on V1 BPBC cluster server."
@@ -281,7 +281,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 85,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-12-05",
     lastUpdated: "2026-08-14",
     notes: "Live on V1 BPBC business licensing."
@@ -298,7 +298,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 85,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-09-20",
     lastUpdated: "2026-08-10",
     notes: "Operating on V1 BPBC."
@@ -315,7 +315,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 82,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-10-10",
     lastUpdated: "2026-08-08",
     notes: "V1 BPBC system active."
@@ -332,7 +332,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 86,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-28",
     lastUpdated: "2026-08-11",
     notes: "Live on V1 BPBC."
@@ -349,7 +349,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 45,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q4 2026",
     lastUpdated: "2026-08-15",
     notes: "BUILDUPGLP: Active data buildup and Go-Live Program onboarding."
@@ -366,7 +366,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 78,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q3 2026",
     lastUpdated: "2026-08-16",
     notes: "Conducting User Acceptance Testing on V2 eLGU suite."
@@ -383,7 +383,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 82,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q3 2026",
     lastUpdated: "2026-08-17",
     notes: "V2 eLGU UAT verification in progress."
@@ -400,7 +400,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 90,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Daraga e-Tax & BPLS Core",
     lastUpdated: "2026-08-16",
     notes: "Proprietary in-house tax assessment system; connected to eGovPH bridge."
@@ -417,7 +417,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 95,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Tabaco Smart City Portal",
     lastUpdated: "2026-08-15",
     notes: "Custom City LGU ERP and e-Services."
@@ -434,7 +434,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 92,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Ligao City Digital Governance",
     lastUpdated: "2026-08-14",
     notes: "In-house municipal system."
@@ -451,7 +451,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 98,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Legazpi City e-Permit Integrated Engine",
     lastUpdated: "2026-08-17",
     notes: "Comprehensive in-house e-governance suite."
@@ -468,7 +468,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 0,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Rene Jane Buena",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     lastUpdated: "2026-08-10",
     notes: "Manual paper-based operations. Island municipality scheduled for digital assessment."
   },
@@ -486,7 +486,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-04-12",
     lastUpdated: "2026-08-15",
     notes: "Live on V2 eLGU."
@@ -503,7 +503,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-06-18",
     lastUpdated: "2026-08-14",
     notes: "V2 eLGU active."
@@ -520,7 +520,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-02-28",
     lastUpdated: "2026-08-16",
     notes: "Live on V2 eLGU."
@@ -537,7 +537,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-05-15",
     lastUpdated: "2026-08-15",
     notes: "V2 eLGU deployment active."
@@ -554,7 +554,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-07-22",
     lastUpdated: "2026-08-16",
     notes: "Operating on V2 eLGU."
@@ -571,7 +571,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-06-05",
     lastUpdated: "2026-08-13",
     notes: "Live on V2 eLGU."
@@ -588,7 +588,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-04-30",
     lastUpdated: "2026-08-14",
     notes: "V2 eLGU integrated suite live."
@@ -605,7 +605,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-07-10",
     lastUpdated: "2026-08-12",
     notes: "Live on V2 eLGU."
@@ -622,7 +622,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-08-01",
     lastUpdated: "2026-08-11",
     notes: "Live on V2 eLGU."
@@ -639,7 +639,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-08-15",
     lastUpdated: "2026-08-14",
     notes: "V2 eLGU operational."
@@ -656,7 +656,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 85,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-10",
     lastUpdated: "2026-08-13",
     notes: "Operating on V1 BPBC."
@@ -673,7 +673,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 86,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-10-25",
     lastUpdated: "2026-08-15",
     notes: "Live on V1 BPBC."
@@ -690,7 +690,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 84,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-12-01",
     lastUpdated: "2026-08-12",
     notes: "Live on V1 BPBC."
@@ -703,13 +703,13 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     district: "1st District",
     status: "Live",
     version: "V2 eLGU",
-    versions: ["V2 eLGU", "V1 BPBC"],
+    versions: ["V2 eLGU"],
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-06-20",
-    lastUpdated: "2026-08-16",
+    lastUpdated: "2026-10-13",
     notes: "Transitioned from V1 BPBC to full V2 eLGU deployment."
   },
   {
@@ -724,7 +724,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 83,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-18",
     lastUpdated: "2026-08-11",
     notes: "Live on V1 BPBC."
@@ -741,7 +741,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 82,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-10-15",
     lastUpdated: "2026-08-10",
     notes: "Operating on V1 BPBC."
@@ -758,7 +758,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 85,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-12-12",
     lastUpdated: "2026-08-14",
     notes: "Live on V1 BPBC."
@@ -769,16 +769,16 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     province: "Camarines Sur",
     classification: "2nd District",
     district: "2nd District",
-    status: "Live",
-    version: "V1 BPBC",
-    versions: ["V1 BPBC"],
-    progressPercentage: 85,
+    status: "Inactive",
+    version: "None",
+    versions: [],
+    progressPercentage: 30,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-05",
-    lastUpdated: "2026-08-12",
-    notes: "Live on V1 BPBC."
+    lastUpdated: "2026-10-13",
+    notes: "Inactive; scheduled for V2 eLGU re-onboarding."
   },
   {
     id: "camsur-goa",
@@ -792,7 +792,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 88,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-09-30",
     lastUpdated: "2026-08-15",
     notes: "Live on V1 BPBC."
@@ -809,7 +809,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 40,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q4 2026",
     lastUpdated: "2026-08-14",
     notes: "BUILDUPGLP: Hardware setup and legacy permit data encoding."
@@ -826,7 +826,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 50,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q4 2026",
     lastUpdated: "2026-08-15",
     notes: "BUILDUPGLP: Staff training and data migration."
@@ -843,7 +843,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 48,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q4 2026",
     lastUpdated: "2026-08-13",
     notes: "BUILDUPGLP: Go-Live preparation program."
@@ -860,7 +860,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 55,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q4 2026",
     lastUpdated: "2026-08-16",
     notes: "BUILDUPGLP: Provincial capital onboarding and configuration."
@@ -877,7 +877,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-08-20",
     lastUpdated: "2026-08-16",
     notes: "Operating on V2 eLGU integrated suite."
@@ -894,7 +894,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 72,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q3 2026",
     lastUpdated: "2026-08-15",
     notes: "UAT simulation in progress."
@@ -911,7 +911,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 88,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Libmanan Revenue & Licensing System",
     lastUpdated: "2026-08-16",
     notes: "Operating on in-house system (and evaluating UAT bridge)."
@@ -928,7 +928,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 85,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Bato Municipal ERP",
     lastUpdated: "2026-08-14",
     notes: "In-house system."
@@ -945,7 +945,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 88,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Baao Digital Service Portal",
     lastUpdated: "2026-08-15",
     notes: "In-house system."
@@ -962,7 +962,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 82,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Bombon Local e-Tax",
     lastUpdated: "2026-08-12",
     notes: "In-house system."
@@ -979,7 +979,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 90,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Calabanga Integrated e-LGU",
     lastUpdated: "2026-08-16",
     notes: "In-house customized system."
@@ -996,7 +996,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 94,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Iriga City e-Governance Suite",
     lastUpdated: "2026-08-17",
     notes: "Full city-wide proprietary ERP."
@@ -1013,7 +1013,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 80,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Gainza Local Portal",
     lastUpdated: "2026-08-10",
     notes: "In-house system."
@@ -1030,7 +1030,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 85,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Caramoan Tourism & Revenue Engine",
     lastUpdated: "2026-08-15",
     notes: "In-house system."
@@ -1047,7 +1047,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 90,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Nabua Municipal Tax & Licensing Suite",
     lastUpdated: "2026-08-16",
     notes: "In-house system."
@@ -1064,7 +1064,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 88,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Sipocot e-Services",
     lastUpdated: "2026-08-14",
     notes: "In-house system."
@@ -1081,7 +1081,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Naga City i-Governance Core",
     lastUpdated: "2026-08-17",
     notes: "Nationally recognized i-Governance system fully synchronized with national API."
@@ -1098,7 +1098,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 80,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "D. Villafuerte",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Lupi Local e-Tax",
     lastUpdated: "2026-08-11",
     notes: "In-house system."
@@ -1117,7 +1117,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 90,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Engr. R. De Leon",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-20",
     lastUpdated: "2026-08-15",
     notes: "Live on V1 BPCO (Central Office Cloud) and V1 BPBC."
@@ -1134,7 +1134,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 86,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Engr. R. De Leon",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-12-08",
     lastUpdated: "2026-08-14",
     notes: "Live on V1 BPBC."
@@ -1151,7 +1151,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 90,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Engr. R. De Leon",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-10-22",
     lastUpdated: "2026-08-16",
     notes: "Live on V1 BPCO Central Office and V1 BPBC."
@@ -1168,7 +1168,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 92,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Engr. R. De Leon",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-09-18",
     lastUpdated: "2026-08-16",
     notes: "Live on V1 BPCO and V1 BPBC."
@@ -1185,7 +1185,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 90,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Engr. R. De Leon",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-10-30",
     lastUpdated: "2026-08-15",
     notes: "Live on V1 BPCO and V1 BPBC."
@@ -1202,7 +1202,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 90,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Engr. R. De Leon",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-12",
     lastUpdated: "2026-08-14",
     notes: "Live on V1 BPCO and V1 BPBC."
@@ -1219,7 +1219,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 84,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Engr. R. De Leon",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-25",
     lastUpdated: "2026-08-13",
     notes: "Live on V1 BPBC (active municipal deployment)."
@@ -1236,7 +1236,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 82,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Engr. R. De Leon",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-12-15",
     lastUpdated: "2026-08-11",
     notes: "Live on V1 BPBC."
@@ -1253,7 +1253,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 86,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Engr. R. De Leon",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-10-10",
     lastUpdated: "2026-08-15",
     notes: "Live on V1 BPBC."
@@ -1270,7 +1270,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 88,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Engr. R. De Leon",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-02",
     lastUpdated: "2026-08-13",
     notes: "Live on V1 BPCO and V1 BPBC."
@@ -1287,7 +1287,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 25,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Engr. R. De Leon",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     lastUpdated: "2026-08-16",
     blockers: "MOA ratification pending at Sangguniang Bayan; technical assistance requested.",
     notes: "Capital town inactive; awaiting council resolution for eLGU reactivation."
@@ -1304,7 +1304,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 20,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "Engr. R. De Leon",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     lastUpdated: "2026-08-12",
     blockers: "Network and hardware connectivity repair underway.",
     notes: "Flagged inactive pending infrastructure inspection."
@@ -1323,7 +1323,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "J. Morales",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-05-18",
     lastUpdated: "2026-08-14",
     notes: "Live on V2 eLGU."
@@ -1340,7 +1340,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "J. Morales",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-06-25",
     lastUpdated: "2026-08-12",
     notes: "Live on V2 eLGU."
@@ -1357,7 +1357,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "J. Morales",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-07-15",
     lastUpdated: "2026-08-13",
     notes: "Live on V2 eLGU."
@@ -1374,7 +1374,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "J. Morales",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-06-10",
     lastUpdated: "2026-08-15",
     notes: "V2 eLGU active."
@@ -1391,7 +1391,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "J. Morales",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-04-20",
     lastUpdated: "2026-08-16",
     notes: "Live on V2 eLGU."
@@ -1408,7 +1408,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 82,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "J. Morales",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-15",
     lastUpdated: "2026-08-10",
     notes: "Live on V1 BPBC."
@@ -1421,14 +1421,14 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     district: "Lone District",
     status: "Live",
     version: "V1 BPBC",
-    versions: ["V1 BPBC"],
+    versions: ["V1 BPBC", "V1 BPCO"],
     progressPercentage: 88,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "J. Morales",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-09-15",
-    lastUpdated: "2026-08-16",
-    notes: "Provincial capital live on V1 BPBC; scheduling V2 migration."
+    lastUpdated: "2026-10-13",
+    notes: "Provincial capital live on V1 BPBC and BPCO; scheduling V2 migration."
   },
   {
     id: "catanduanes-bagamanoc",
@@ -1442,7 +1442,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 70,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "J. Morales",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q3 2026",
     lastUpdated: "2026-08-14",
     notes: "UAT testing phase."
@@ -1453,16 +1453,16 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     province: "Catanduanes",
     classification: "Lone District",
     district: "Lone District",
-    status: "UAT",
+    status: "Live",
     version: "V2 eLGU",
     versions: ["V2 eLGU"],
-    progressPercentage: 80,
+    progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "J. Morales",
-    targetGoLiveDate: "Q3 2026",
-    lastUpdated: "2026-08-15",
-    notes: "Conducting V2 eLGU UAT simulation."
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
+    goLiveDate: "2026-10-13",
+    lastUpdated: "2026-10-13",
+    notes: "Operational on V2 eLGU integrated suite."
   },
   {
     id: "catanduanes-viga",
@@ -1476,7 +1476,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 80,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "J. Morales",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Viga Local Tax & Registry",
     lastUpdated: "2026-08-12",
     notes: "In-house system."
@@ -1493,7 +1493,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 0,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "J. Morales",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     lastUpdated: "2026-08-10",
     notes: "Manual paper processes; scheduled for onboarding."
   },
@@ -1511,7 +1511,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-05-12",
     lastUpdated: "2026-08-13",
     notes: "Live on V2 eLGU."
@@ -1528,7 +1528,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-06-18",
     lastUpdated: "2026-08-14",
     notes: "Live on V2 eLGU."
@@ -1545,7 +1545,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 86,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-20",
     lastUpdated: "2026-08-15",
     notes: "Live on V1 BPBC."
@@ -1558,14 +1558,14 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     district: "2nd District",
     status: "Live",
     version: "V1 BPBC",
-    versions: ["V1 BPBC"],
+    versions: ["V1 BPBC", "V1 BPCO"],
     progressPercentage: 90,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-10-15",
-    lastUpdated: "2026-08-16",
-    notes: "Live on V1 BPBC."
+    lastUpdated: "2026-10-13",
+    notes: "Live on V1 BPBC and BPCO."
   },
   {
     id: "masbate-cawayan",
@@ -1579,7 +1579,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 85,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-12-05",
     lastUpdated: "2026-08-12",
     notes: "Live on V1 BPBC."
@@ -1596,7 +1596,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 84,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-10",
     lastUpdated: "2026-08-11",
     notes: "Live on V1 BPBC."
@@ -1613,7 +1613,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 86,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-10-28",
     lastUpdated: "2026-08-14",
     notes: "Live on V1 BPBC."
@@ -1630,7 +1630,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 82,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-18",
     lastUpdated: "2026-08-10",
     notes: "Live on V1 BPBC."
@@ -1647,7 +1647,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 82,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-12-12",
     lastUpdated: "2026-08-09",
     notes: "Live on V1 BPBC."
@@ -1664,7 +1664,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 82,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-25",
     lastUpdated: "2026-08-12",
     notes: "Live on V1 BPBC."
@@ -1681,7 +1681,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 84,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-10-30",
     lastUpdated: "2026-08-13",
     notes: "Live on V1 BPBC."
@@ -1694,14 +1694,14 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     district: "2nd District",
     status: "Live",
     version: "V1 BPBC",
-    versions: ["V1 BPBC", "V2 eLGU"],
+    versions: ["V1 BPBC"],
     progressPercentage: 88,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-05",
-    lastUpdated: "2026-08-15",
-    notes: "Live on V1 BPBC while simultaneously undergoing V2 eLGU UAT testing."
+    lastUpdated: "2026-10-13",
+    notes: "Operational on V1 BPBC."
   },
   {
     id: "masbate-sanpascual",
@@ -1715,7 +1715,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 42,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q4 2026",
     lastUpdated: "2026-08-12",
     notes: "BUILDUPGLP: Onboarding and data encoding in progress."
@@ -1732,7 +1732,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 55,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q4 2026",
     lastUpdated: "2026-08-15",
     notes: "BUILDUPGLP: V2 eLGU data build-up."
@@ -1749,7 +1749,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 78,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q3 2026",
     lastUpdated: "2026-08-16",
     notes: "V2 eLGU UAT testing in progress."
@@ -1766,7 +1766,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 94,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Masbate City e-Governance Engine",
     lastUpdated: "2026-08-16",
     notes: "In-house city system."
@@ -1783,7 +1783,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 0,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     lastUpdated: "2026-08-10",
     notes: "Manual operations; candidate for eLGU deployment."
   },
@@ -1799,7 +1799,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 0,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     lastUpdated: "2026-08-10",
     notes: "Manual paper processes."
   },
@@ -1815,7 +1815,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 0,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     lastUpdated: "2026-08-10",
     notes: "Manual paper processes."
   },
@@ -1831,7 +1831,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 0,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     lastUpdated: "2026-08-10",
     notes: "Manual paper processes on Burias Island."
   },
@@ -1847,7 +1847,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 0,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "A. Santos",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     lastUpdated: "2026-08-10",
     notes: "Manual paper processes."
   },
@@ -1865,7 +1865,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "K. Bermudez",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-05-10",
     lastUpdated: "2026-08-16",
     notes: "Live on V1 BPBC business licensing."
@@ -1882,7 +1882,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "K. Bermudez",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-07-20",
     lastUpdated: "2026-08-14",
     notes: "Live on V2 eLGU."
@@ -1899,7 +1899,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "K. Bermudez",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-15",
     lastUpdated: "2026-08-11",
     notes: "Operating on V2 eLGU integrated suite with BPCO active."
@@ -1916,7 +1916,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 90,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "K. Bermudez",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-09-25",
     lastUpdated: "2026-08-16",
     notes: "Major commercial hub live on V1 BPBC."
@@ -1933,7 +1933,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 88,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "K. Bermudez",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-10-18",
     lastUpdated: "2026-08-15",
     notes: "Live on V1 BPBC."
@@ -1945,15 +1945,15 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     classification: "2nd District",
     district: "2nd District",
     status: "Live",
-    version: "V1 BPCO",
-    versions: ["V1 BPCO"],
+    version: "V1 BPBC",
+    versions: ["V1 BPBC"],
     progressPercentage: 88,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "K. Bermudez",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2023-11-28",
-    lastUpdated: "2026-08-14",
-    notes: "Live on V1 BPCO Central Office Cloud."
+    lastUpdated: "2026-10-13",
+    notes: "Live on V1 BPBC."
   },
   {
     id: "sorsogon-donsol",
@@ -1967,7 +1967,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 50,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "K. Bermudez",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q4 2026",
     lastUpdated: "2026-08-15",
     notes: "BUILDUPGLP: Eco-tourism LGU data build-up."
@@ -1984,7 +1984,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 45,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "K. Bermudez",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q4 2026",
     lastUpdated: "2026-08-13",
     notes: "BUILDUPGLP: Go-Live Program preparation."
@@ -2001,7 +2001,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 100,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "K. Bermudez",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     goLiveDate: "2024-08-25",
     lastUpdated: "2026-08-16",
     notes: "Operating on V2 eLGU integrated suite."
@@ -2018,7 +2018,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 70,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "K. Bermudez",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q3 2026",
     lastUpdated: "2026-08-14",
     notes: "UAT testing phase."
@@ -2035,7 +2035,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 82,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "K. Bermudez",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q3 2026",
     lastUpdated: "2026-08-16",
     notes: "Conducting V2 eLGU UAT simulation."
@@ -2052,7 +2052,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 88,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "K. Bermudez",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Castilla Digital Revenue Engine",
     lastUpdated: "2026-08-15",
     notes: "In-house system."
@@ -2069,7 +2069,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 96,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "K. Bermudez",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     systemName: "Sorsogon City Smart LGU Portal",
     lastUpdated: "2026-08-17",
     notes: "Full city-wide proprietary system."
@@ -2086,7 +2086,7 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 0,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "K. Bermudez",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     lastUpdated: "2026-08-10",
     notes: "Manual paper processes."
   },
@@ -2102,12 +2102,224 @@ export const ELGU_LGUS_DATA: LguRecord[] = [
     progressPercentage: 42,
     monthlyTransactions: 0,
     registeredUsers: 0,
-    dictFocal: "K. Bermudez",
+    dictFocal: "TALAGTAG, RALPH SPENCER Y.",
     targetGoLiveDate: "Q4 2026",
     lastUpdated: "2026-08-12",
     notes: "Port municipality onboarding and data buildup."
   },
 ];
+
+const hasVersion = (l: LguRecord, v: ElguVersion): boolean =>
+  Array.isArray(l?.versions) && l.versions.includes(v);
+
+/**
+ * Normalizes any imported or stored record (from CSV, Excel, PDF, JSON, or Turso DB)
+ * into a complete and valid LguRecord, matching canonical LGU IDs where possible.
+ */
+export function normalizeElguRecord(raw: Record<string, any>, fallbackIndex = 0): LguRecord {
+  const rawName = String(
+    raw.name ||
+      raw.lguName ||
+      raw["LGU Name"] ||
+      raw["LGU Name & Province"] ||
+      raw["Municipality"] ||
+      raw["LGU"] ||
+      ""
+  )
+    .replace(/^Municipality of\s+/i, "")
+    .trim();
+
+  const rawProvince = String(
+    raw.province || raw["Province"] || ""
+  ).trim();
+
+  const normStr = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const targetNameKey = normStr(rawName);
+  const targetProvKey = normStr(rawProvince);
+
+  // Match against canonical ELGU_LGUS_DATA by ID, or by (name + province), or by unique name
+  const canonicalMatch =
+    ELGU_LGUS_DATA.find((item) => raw.id && item.id === raw.id) ||
+    ELGU_LGUS_DATA.find(
+      (item) =>
+        targetNameKey &&
+        normStr(item.name) === targetNameKey &&
+        (!targetProvKey || normStr(item.province) === targetProvKey)
+    ) ||
+    (targetNameKey
+      ? ELGU_LGUS_DATA.find((item) => normStr(item.name) === targetNameKey)
+      : undefined);
+
+  const validProvinces = PROVINCES_LIST as readonly string[];
+  const matchedProvince =
+    validProvinces.find((p) => p.toLowerCase() === rawProvince.toLowerCase()) ||
+    canonicalMatch?.province ||
+    "Albay";
+
+  // Normalize status
+  const rawStatus = String(
+    raw.status || raw["Deployment Status"] || raw["Status"] || canonicalMatch?.status || "Live"
+  ).trim();
+  const statusMap: Record<string, ElguDeploymentStatus> = {
+    live: "Live",
+    "build up": "Build UP",
+    buildup: "Build UP",
+    glp: "Build UP",
+    uat: "UAT",
+    inactive: "Inactive",
+    "no system": "No System",
+    nosystem: "No System",
+    "own system": "Own System",
+    ownsystem: "Own System",
+    "in-house": "Own System",
+  };
+  const status: ElguDeploymentStatus =
+    statusMap[rawStatus.toLowerCase()] || canonicalMatch?.status || "Live";
+
+  // Normalize versions array
+  const parseVersionToken = (token: string): ElguVersion | null => {
+    const t = token.toLowerCase().trim();
+    if (!t || t === "none" || t.includes("in-house") || t.includes("own")) return null;
+    if (t.includes("v2") || t.includes("elgu")) return "V2 eLGU";
+    if (t.includes("bpbc")) return "V1 BPBC";
+    if (t.includes("bpco")) return "V1 BPCO";
+    return null;
+  };
+
+  let parsedVersions: ElguVersion[] = [];
+  const rawVersionsInput =
+    raw.versions ??
+    raw.version ??
+    raw["Active Version / Module"] ??
+    raw["eLGU Version / Platform"] ??
+    raw["eLGU Version"];
+
+  if (Array.isArray(rawVersionsInput)) {
+    parsedVersions = rawVersionsInput
+      .map((v) => parseVersionToken(String(v)))
+      .filter((v): v is ElguVersion => Boolean(v));
+  } else if (typeof rawVersionsInput === "string" && rawVersionsInput.trim() !== "") {
+    parsedVersions = rawVersionsInput
+      .split(/[,/|;&+]+/)
+      .map((v) => parseVersionToken(v))
+      .filter((v): v is ElguVersion => Boolean(v));
+  } else if (canonicalMatch?.versions) {
+    parsedVersions = [...canonicalMatch.versions];
+  }
+
+  // Deduplicate versions
+  const versions = Array.from(new Set(parsedVersions));
+  const primaryVersion: LguRecord["version"] =
+    versions[0] || (status === "Own System" ? "In-House" : "None");
+
+  // Parse progressPercentage
+  const rawProgress =
+    raw.progressPercentage ?? raw["Progress %"] ?? raw.progress ?? canonicalMatch?.progressPercentage;
+  const parsedProgress =
+    typeof rawProgress === "number"
+      ? rawProgress
+      : parseInt(String(rawProgress || "").replace(/[^0-9]/g, ""), 10);
+  const defaultProgressByStatus: Record<ElguDeploymentStatus, number> = {
+    Live: 100,
+    "Own System": 100,
+    UAT: 80,
+    "Build UP": 45,
+    Inactive: 30,
+    "No System": 0,
+  };
+  const progressPercentage = Number.isFinite(parsedProgress)
+    ? Math.min(100, Math.max(0, parsedProgress))
+    : defaultProgressByStatus[status];
+
+  // Parse numeric metrics
+  const rawTx =
+    raw.monthlyTransactions ??
+    raw["Monthly Transactions"] ??
+    raw["Avg. Monthly Txns"] ??
+    canonicalMatch?.monthlyTransactions ??
+    0;
+  const monthlyTransactions = Number(String(rawTx).replace(/[^0-9.-]/g, "")) || 0;
+
+  const rawUsers =
+    raw.registeredUsers ??
+    raw["Registered Citizen Users"] ??
+    canonicalMatch?.registeredUsers ??
+    0;
+  const registeredUsers = Number(String(rawUsers).replace(/[^0-9.-]/g, "")) || 0;
+
+  const name = rawName || canonicalMatch?.name || `LGU ${fallbackIndex + 1}`;
+  const id =
+    canonicalMatch?.id ||
+    (raw.id && !String(raw.id).startsWith("elgu-imp-") ? String(raw.id) : "") ||
+    `${matchedProvince.toLowerCase().replace(/\s+/g, "")}-${normStr(name) || `lgu-${fallbackIndex}`}`;
+
+  const classification = String(
+    raw.classification ||
+      raw["Classification"] ||
+      raw["Congressional District / Class"] ||
+      canonicalMatch?.classification ||
+      "1st District"
+  ).trim();
+
+  const dictFocal = String(
+    raw.dictFocal ||
+      raw["DICT Focal Officer"] ||
+      raw["DICT Focal Person"] ||
+      canonicalMatch?.dictFocal ||
+      "TBA"
+  ).trim();
+
+  const goLiveDateRaw = String(
+    raw.goLiveDate || raw["Target/Go-Live Date"] || raw["Official Go-Live Date"] || canonicalMatch?.goLiveDate || ""
+  ).trim();
+  const goLiveDate = goLiveDateRaw && goLiveDateRaw !== "N/A" ? goLiveDateRaw : canonicalMatch?.goLiveDate;
+
+  const notesRaw = String(
+    raw.notes || raw["Notes / Blockers"] || raw.blockers || canonicalMatch?.notes || ""
+  ).trim();
+
+  return {
+    ...(canonicalMatch || {}),
+    ...raw,
+    id,
+    name,
+     ...( { lguName: name } as any ),
+    province: matchedProvince as LguRecord["province"],
+    classification,
+    status,
+    version: primaryVersion,
+    versions,
+    progressPercentage,
+    monthlyTransactions,
+    registeredUsers,
+    dictFocal,
+    ...(goLiveDate ? { goLiveDate } : {}),
+    ...(notesRaw ? { notes: notesRaw } : {}),
+  };
+}
+
+/**
+ * Merges incoming eLGU records with existing records by canonical `id` (or `province + name`),
+ * updating matching LGUs in place and appending any genuinely new LGUs.
+ */
+export function mergeElguRecords(
+  incomingRaw: Record<string, any>[],
+  existingRaw: Record<string, any>[] = ELGU_LGUS_DATA
+): LguRecord[] {
+  const baseList = (existingRaw.length > 0 ? existingRaw : ELGU_LGUS_DATA).map((r, i) =>
+    normalizeElguRecord(r, i)
+  );
+  const byId = new Map<string, LguRecord>();
+  baseList.forEach((item) => byId.set(item.id, item));
+
+  incomingRaw.forEach((raw, idx) => {
+    const normalized = normalizeElguRecord(raw, idx);
+    const prev = byId.get(normalized.id);
+    byId.set(normalized.id, prev ? { ...prev, ...normalized } : normalized);
+  });
+
+  return Array.from(byId.values());
+}
 
 /**
  * Calculates summary metrics for all 6 deployment statuses.
@@ -2126,14 +2338,14 @@ export function getElguStatusSummaries(lgus: LguRecord[] = ELGU_LGUS_DATA): Elgu
     let keyMetricLabel = "Total LGUs";
 
     if (status === "Live") {
-      const totalTx = subset.reduce((acc, curr) => acc + curr.monthlyTransactions, 0);
+      const totalTx = subset.reduce((acc, curr) => acc + (Number(curr.monthlyTransactions) || 0), 0);
       keyMetric = `${totalTx.toLocaleString()} tx/mo`;
       keyMetricLabel = "Total Tx Volume";
     } else if (status === "Build UP") {
       keyMetric = `${count} in GLP`;
       keyMetricLabel = "Go-Live Program";
     } else if (status === "UAT") {
-      const v2Count = subset.filter((l) => l.versions.includes("V2 eLGU")).length;
+      const v2Count = subset.filter((l) => hasVersion(l, "V2 eLGU")).length;
       keyMetric = `${v2Count} on V2`;
       keyMetricLabel = "Testing V2 Suite";
     } else if (status === "Inactive") {
@@ -2179,9 +2391,9 @@ export function getProvincialStatusBreakdown(lgus: LguRecord[] = ELGU_LGUS_DATA)
     const ownSystem = provinceLgus.filter((l) => l.status === "Own System").length;
 
     // Version counts
-    const v2Elgu = provinceLgus.filter((l) => l.versions.includes("V2 eLGU")).length;
-    const v1Bpbc = provinceLgus.filter((l) => l.versions.includes("V1 BPBC")).length;
-    const v1Bpco = provinceLgus.filter((l) => l.versions.includes("V1 BPCO")).length;
+    const v2Elgu = provinceLgus.filter((l) => hasVersion(l, "V2 eLGU")).length;
+    const v1Bpbc = provinceLgus.filter((l) => hasVersion(l, "V1 BPBC")).length;
+    const v1Bpco = provinceLgus.filter((l) => hasVersion(l, "V1 BPCO")).length;
 
     // Readiness score
     const readinessScore =
@@ -2220,11 +2432,11 @@ export function getVersionAdoptionAnalytics(lgus: LguRecord[] = ELGU_LGUS_DATA):
       name: "V2 eLGU Suite",
       fullName: "Comprehensive eLGU Version 2.0 (Integrated Digitalization Platform)",
       desc: "Latest integrated multi-service architecture including Business Permits, Real Property, Barangay Info, Civil Registry & Citizen Portal.",
-      totalCount: lgus.filter((l) => l.versions.includes("V2 eLGU")).length,
-      liveCount: lgus.filter((l) => l.versions.includes("V2 eLGU") && l.status === "Live").length,
-      uatCount: lgus.filter((l) => l.versions.includes("V2 eLGU") && l.status === "UAT").length,
-      buildUpCount: lgus.filter((l) => l.versions.includes("V2 eLGU") && l.status === "Build UP").length,
-      adoptionRate: total > 0 ? Math.round((lgus.filter((l) => l.versions.includes("V2 eLGU")).length / total) * 100) : 0,
+      totalCount: lgus.filter((l) => hasVersion(l, "V2 eLGU")).length,
+      liveCount: lgus.filter((l) => hasVersion(l, "V2 eLGU") && l.status === "Live").length,
+      uatCount: lgus.filter((l) => hasVersion(l, "V2 eLGU") && l.status === "UAT").length,
+      buildUpCount: lgus.filter((l) => hasVersion(l, "V2 eLGU") && l.status === "Build UP").length,
+      adoptionRate: total > 0 ? Math.round((lgus.filter((l) => hasVersion(l, "V2 eLGU")).length / total) * 100) : 0,
       color: "#10B981",
     },
     {
@@ -2232,11 +2444,11 @@ export function getVersionAdoptionAnalytics(lgus: LguRecord[] = ELGU_LGUS_DATA):
       name: "V1 BPBC (Bicol Cluster)",
       fullName: "eBPLS Version 1.0 (Regional Bicol Server Cluster)",
       desc: "Regional cluster-hosted electronic Business Permits & Licensing System deployed across municipalities.",
-      totalCount: lgus.filter((l) => l.versions.includes("V1 BPBC")).length,
-      liveCount: lgus.filter((l) => l.versions.includes("V1 BPBC") && l.status === "Live").length,
-      uatCount: lgus.filter((l) => l.versions.includes("V1 BPBC") && l.status === "UAT").length,
-      buildUpCount: lgus.filter((l) => l.versions.includes("V1 BPBC") && l.status === "Build UP").length,
-      adoptionRate: total > 0 ? Math.round((lgus.filter((l) => l.versions.includes("V1 BPBC")).length / total) * 100) : 0,
+      totalCount: lgus.filter((l) => hasVersion(l, "V1 BPBC")).length,
+      liveCount: lgus.filter((l) => hasVersion(l, "V1 BPBC") && l.status === "Live").length,
+      uatCount: lgus.filter((l) => hasVersion(l, "V1 BPBC") && l.status === "UAT").length,
+      buildUpCount: lgus.filter((l) => hasVersion(l, "V1 BPBC") && l.status === "Build UP").length,
+      adoptionRate: total > 0 ? Math.round((lgus.filter((l) => hasVersion(l, "V1 BPBC")).length / total) * 100) : 0,
       color: "#3B82F6",
     },
     {
@@ -2244,11 +2456,11 @@ export function getVersionAdoptionAnalytics(lgus: LguRecord[] = ELGU_LGUS_DATA):
       name: "V1 BPCO (Central Office)",
       fullName: "eBPLS Version 1.0 (Central Office Cloud Infrastructure)",
       desc: "Centralized cloud-hosted eBPLS Version 1 instances managed via national DICT data centers.",
-      totalCount: lgus.filter((l) => l.versions.includes("V1 BPCO")).length,
-      liveCount: lgus.filter((l) => l.versions.includes("V1 BPCO") && l.status === "Live").length,
-      uatCount: lgus.filter((l) => l.versions.includes("V1 BPCO") && l.status === "UAT").length,
-      buildUpCount: lgus.filter((l) => l.versions.includes("V1 BPCO") && l.status === "Build UP").length,
-      adoptionRate: total > 0 ? Math.round((lgus.filter((l) => l.versions.includes("V1 BPCO")).length / total) * 100) : 0,
+      totalCount: lgus.filter((l) => hasVersion(l, "V1 BPCO")).length,
+      liveCount: lgus.filter((l) => hasVersion(l, "V1 BPCO") && l.status === "Live").length,
+      uatCount: lgus.filter((l) => hasVersion(l, "V1 BPCO") && l.status === "UAT").length,
+      buildUpCount: lgus.filter((l) => hasVersion(l, "V1 BPCO") && l.status === "Build UP").length,
+      adoptionRate: total > 0 ? Math.round((lgus.filter((l) => hasVersion(l, "V1 BPCO")).length / total) * 100) : 0,
       color: "#8B5CF6",
     },
   ];

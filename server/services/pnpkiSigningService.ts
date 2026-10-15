@@ -13,6 +13,7 @@ const ENCRYPTION_KEY = crypto.scryptSync(
 
 export function encryptP12Password(plainText: string): string {
   if (!plainText) return "";
+  if (plainText.startsWith("enc:")) return plainText;
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", ENCRYPTION_KEY, iv);
   let encrypted = cipher.update(plainText, "utf8", "hex");
@@ -26,14 +27,75 @@ export function decryptP12Password(cipherText: string): string {
   if (!cipherText.startsWith("enc:")) return cipherText; // legacy fallback
   const parts = cipherText.split(":");
   if (parts.length !== 4) return "";
-  const iv = Buffer.from(parts[1], "hex");
-  const tag = Buffer.from(parts[2], "hex");
-  const encrypted = parts[3];
-  const decipher = crypto.createDecipheriv("aes-256-gcm", ENCRYPTION_KEY, iv);
-  decipher.setAuthTag(tag);
-  let decrypted = decipher.update(encrypted, "hex", "utf8");
-  decrypted += decipher.final("utf8");
-  return decrypted;
+  try {
+    const iv = Buffer.from(parts[1], "hex");
+    const tag = Buffer.from(parts[2], "hex");
+    if (tag.length !== 16 || iv.length !== 12) return "";
+    const encrypted = parts[3];
+    const decipher = crypto.createDecipheriv("aes-256-gcm", ENCRYPTION_KEY, iv, { authTagLength: 16 });
+    decipher.setAuthTag(tag);
+    let decrypted = decipher.update(encrypted, "hex", "utf8");
+    decrypted += decipher.final("utf8");
+    return decrypted;
+  } catch {
+    return "";
+  }
+}
+
+export function validatePasswordStrength(password: string): { valid: boolean; message?: string } {
+  const p = String(password || "").trim();
+  if (p.length < 8) {
+    return { valid: false, message: "Password must be at least 8 characters long." };
+  }
+  if (!/[A-Za-z]/.test(p)) {
+    return { valid: false, message: "Password must contain at least one letter." };
+  }
+  if (!/[0-9]/.test(p) && !/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(p)) {
+    return { valid: false, message: "Password must contain at least one number or special character." };
+  }
+  const lower = p.toLowerCase();
+  const commonWeak = ["password", "12345678", "admin123", "dict1234", "qwerty123"];
+  if (commonWeak.some((w) => lower.includes(w))) {
+    return {
+      valid: false,
+      message: "Password is too common or easily guessable. Please choose a stronger password.",
+    };
+  }
+  return { valid: true };
+}
+
+export function hashPassword(plain: string): string {
+  const clean = String(plain || "").trim();
+  if (!clean) return "";
+  if (clean.startsWith("scrypt:")) return clean;
+  const salt = crypto.randomBytes(16).toString("hex");
+  const derivedKey = crypto.scryptSync(clean, salt, 64).toString("hex");
+  return `scrypt:${salt}:${derivedKey}`;
+}
+
+
+export function verifyPassword(plain: string, stored: string): boolean {
+  const cleanPlain = String(plain || "").trim();
+  const cleanStored = String(stored || "").trim();
+  if (!cleanPlain || !cleanStored) return false;
+  if (cleanStored.startsWith("scrypt:")) {
+    const parts = cleanStored.split(":");
+    if (parts.length !== 3) return false;
+    const [, salt, hashHex] = parts;
+    if (!salt || !hashHex || hashHex.length < 64 || hashHex.length % 2 !== 0) return false;
+    try {
+      const expectedBuf = Buffer.from(hashHex, "hex");
+      if (expectedBuf.length < 32) return false;
+      const derivedBuf = crypto.scryptSync(cleanPlain, salt, expectedBuf.length);
+      if (expectedBuf.length !== derivedBuf.length) return false;
+      return crypto.timingSafeEqual(expectedBuf, derivedBuf);
+    } catch {
+      return false;
+    }
+  }
+  const plainDigest = crypto.createHash("sha256").update(cleanPlain, "utf8").digest();
+  const storedDigest = crypto.createHash("sha256").update(cleanStored, "utf8").digest();
+  return crypto.timingSafeEqual(plainDigest, storedDigest);
 }
 
 export interface SignerIdentity {
@@ -315,65 +377,14 @@ export function appendSignatureIncremental(
       ? (sigRects.length > 1 ? `${customFieldName}_${idx + 1}` : customFieldName)
       : defaultFieldName;
 
-    // Appearance XObject stream rendering visual signature in Adobe Acrobat
-    const isSigningWorkspace = reason.toLowerCase().includes("signing workspace");
-    const isSmallCounterSign =
-      (bboxW <= 85 && bboxH <= 85) ||
-      fieldName.toLowerCase().includes("counter");
-
-    let streamContent = `q\n`;
-    // Only draw bounding border if NOT in Signing Workspace (border-none for Signing Workspace)
-    if (!isSigningWorkspace && !isSmallCounterSign) {
-      streamContent += `0.35 0.45 0.75 RG 0.75 w 0.5 0.5 ${bboxW - 1} ${bboxH - 1} re s\n`;
-    }
-
-    if (isSmallCounterSign) {
-      // Compact horizontal counter-signature stamp: border-none, bg-transparent, sign on left, DigiSigned on right in text-black
-      const nameParts = escapedSigner.split(" ").filter(Boolean);
-      const compactName =
-        escapedSigner.length <= 10
-          ? escapedSigner
-          : nameParts.length > 1
-          ? `${nameParts[0][0]}. ${nameParts[nameParts.length - 1]}`
-          : escapedSigner.slice(0, 10);
-
-      streamContent +=
-        `0 0 0 RG 1.1 w\n` +
-        `2 6.5 m 6 2.5 l 13 11.5 l S\n` +
-        `BT\n` +
-        `/F1 3.3 Tf\n` +
-        `0 0 0 rg\n` +
-        `16 7.8 Td\n` +
-        `(DigiSigned) Tj\n` +
-        `/F1 3 Tf\n` +
-        `0 0 0 rg\n` +
-        `0 -4.6 Td\n` +
-        `(by ${compactName}) Tj\n` +
-        `ET\n` +
-        `Q`;
-    } else {
-      streamContent +=
-        `BT\n` +
-        `/F1 6.5 Tf\n` +
-        `0.08 0.20 0.50 rg\n` +
-        `4 ${Math.max(4, Math.round(bboxH - 10))} Td\n` +
-        `(${labelText}) Tj\n` +
-        `0 -7.5 Td\n` +
-        `0 0 0 rg\n` +
-        `(by ${escapedSigner}) Tj\n` +
-        `/F2 5.2 Tf\n` +
-        `0.25 0.30 0.40 rg\n` +
-        `0 -6.5 Td\n` +
-        `(Date: ${pnpkiDateStr}) Tj\n` +
-        `ET\n` +
-        `Q`;
-    }
+    // Transparent Appearance XObject stream (visual signature & text are already rendered in the vector PDF content stream, matching Pass 1)
+    const streamContent = `q\nQ`;
     const streamLen = Buffer.from(streamContent, "binary").length;
 
     // Appearance XObject
     appendObj(
       apNum,
-      `<<\n/Type /XObject\n/Subtype /Form\n/BBox [0 0 ${bboxW} ${bboxH}]\n/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >> /F2 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>\n/Length ${streamLen}\n>>\nstream\n${streamContent}\nendstream`
+      `<<\n/Type /XObject\n/Subtype /Form\n/BBox [0 0 ${bboxW} ${bboxH}]\n/Resources <<>>\n/Length ${streamLen}\n>>\nstream\n${streamContent}\nendstream`
     );
 
     // Widget Annotation

@@ -135,7 +135,7 @@ export function DashboardProjectsTabs() {
         setCountsMap((prev) => ({ ...prev, [activeProjectId]: data.length }));
       }
     } catch (err) {
-      console.error(`Failed to load ${activeProjectId} records`, err);
+      console.error("Failed to load project records:", activeProjectId, err);
     } finally {
       setLoading(false);
     }

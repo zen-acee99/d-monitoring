@@ -3,19 +3,21 @@ import { db } from "../db.js";
 import {
   encryptP12Password,
   decryptP12Password,
+  hashPassword,
+  verifyPassword,
   signPdfBuffer,
   getSignerIdentityFromP12,
 } from "../services/pnpkiSigningService.js";
 
 export const dtrGeneratorRouter = Router();
 
-// Helper to format a dtr_generator row (Never expose sensitive passwords)
-function formatDtrGeneratorRow(row: any) {
+// Helper to format a dtr_generator row (Never expose sensitive passwords; strip p12 on unscoped bulk listings)
+function formatDtrGeneratorRow(row: any, includeP12 = true) {
   return {
     id: row.id,
     user_Id: row.user_Id || "",
     Name: row.Name || "",
-    p12: row.p12 || null, // Base64 data
+    p12: includeP12 ? (row.p12 || null) : null, // Base64 data (omitted on unscoped bulk listings)
     p12_filename: row.p12_filename || null,
     p12_filesize: Number(row.p12_filesize) || 0,
     p12_password: "", // Kept strictly private on server
@@ -79,7 +81,8 @@ dtrGeneratorRouter.get("/", async (req: Request, res: Response) => {
     sql += " ORDER BY updated_at DESC";
 
     const result = await db.execute({ sql, args });
-    let records = result.rows.map(formatDtrGeneratorRow);
+    const includeP12 = Boolean(user_Id);
+    let records = result.rows.map((row: any) => formatDtrGeneratorRow(row, includeP12));
 
     if (Name && typeof Name === "string" && Name.trim()) {
       const targetName = Name.trim();
@@ -146,6 +149,27 @@ dtrGeneratorRouter.post("/", async (req: Request, res: Response) => {
     const cleanP12Filesize = p12_filesize ? Number(p12_filesize) : 0;
     const cleanP12Password = p12_password ? encryptP12Password(String(p12_password).trim()) : null;
     const cleanImage = image_digiSigned || null;
+
+    if (cleanP12) {
+      if (typeof cleanP12 !== "string" || cleanP12.length > 14_000_000) {
+        return res.status(400).json({ success: false, error: "File too large. Maximum P12 size is 10MB." });
+      }
+      if (cleanP12Filename && !/\.(p12|pfx)$/i.test(cleanP12Filename)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid certificate format. Only .p12 and .pfx are supported.",
+        });
+      }
+    }
+
+    if (cleanImage) {
+      if (typeof cleanImage !== "string" || cleanImage.length > 7_000_000) {
+        return res.status(400).json({
+          success: false,
+          error: "Image too large. Maximum signature image size is 5MB.",
+        });
+      }
+    }
 
     if (
       (cleanUserId && cleanUserId.startsWith("g-")) ||
@@ -426,11 +450,33 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
       // Verify account password if provided (for normal email+password accounts)
       if (account_password) {
         const adminUser: any = regCheck.rows[0];
-        if (adminUser.password && String(adminUser.password).trim() !== String(account_password).trim()) {
+        const cleanAccPwd = String(account_password).trim();
+        let storedAccPwd = adminUser.password ? String(adminUser.password).trim() : "";
+        if (!storedAccPwd) {
+          const userPwdRes = await db.execute({
+            sql: "SELECT password FROM users WHERE id = ? OR LOWER(email) = LOWER(?) LIMIT 1",
+            args: [adminUser.id, adminUser.email],
+          });
+          if (userPwdRes.rows.length > 0 && userPwdRes.rows[0].password) {
+            storedAccPwd = String(userPwdRes.rows[0].password).trim();
+          }
+        }
+        if (storedAccPwd && !verifyPassword(cleanAccPwd, storedAccPwd)) {
           return res.status(401).json({
             success: false,
             error: "Incorrect account password. Please enter your valid web application login password.",
           });
+        }
+        if (storedAccPwd && (!storedAccPwd.startsWith("scrypt:") || !adminUser.password)) {
+          const upgradedHash = storedAccPwd.startsWith("scrypt:") ? storedAccPwd : hashPassword(cleanAccPwd);
+          await db.execute({
+            sql: "UPDATE administration SET password = ? WHERE id = ? OR LOWER(email) = LOWER(?)",
+            args: [upgradedHash, adminUser.id, adminUser.email],
+          }).catch(() => {});
+          await db.execute({
+            sql: "UPDATE users SET password = ? WHERE id = ? OR LOWER(email) = LOWER(?)",
+            args: [upgradedHash, adminUser.id, adminUser.email],
+          }).catch(() => {});
         }
       }
     }

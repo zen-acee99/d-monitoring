@@ -984,7 +984,7 @@ export async function getSignedDtrVectorPdfBytes(
           finalUint8 = base64ToUint8(empSignResult.signedPdfBase64);
         }
       } catch (empErr) {
-        console.warn(`Pass (Employee Copy ${copyNum}) warning:`, empErr);
+        console.warn("Pass Employee Copy", copyNum, "warning:", empErr);
       }
     }
   }
@@ -1016,7 +1016,7 @@ export async function getSignedDtrVectorPdfBytes(
           finalUint8 = base64ToUint8(supSignResult.signedPdfBase64);
         }
       } catch (supErr) {
-        console.warn(`Pass (Supervisor Copy ${copyNum}) warning:`, supErr);
+        console.warn("Pass Supervisor Copy", copyNum, "warning:", supErr);
       }
     }
   }

@@ -40,15 +40,19 @@ import {
   XCircle,
   ExternalLink,
   EyeOff,
-  ChevronUp
+  ChevronUp,
+  FileText
 } from "lucide-react";
+import * as XLSX from "xlsx";
 import { PROJECT_SCHEMAS, ProjectSchema } from "@/data/projectDataStore";
+import { normalizeElguRecord, mergeElguRecords } from "@/data/elguData";
 import { PROJECTS, Project, getStoredProjects, saveStoredProjects, updateProjectSetting } from "@/config/projects";
 import { projectApi, BackendHealth, administrationApi, AdminUser, modulesApi, SystemModule } from "@/services/api";
 import { omadaApi, OmadaConfig, OmadaSupplierConfig, OmadaSyncResult } from "@/services/omadaApi";
-import { getCurrentUser, hasModuleAccess, AUTH_EVENT } from "@/services/authStore";
-import { getStoredUsers } from "@/data/userStore";
+import { getCurrentUser, hasModuleAccess, canUserEditProject, canUserDeleteProject, AUTH_EVENT } from "@/services/authStore";
+import { getStoredUsers, resolveProjectFocalPerson } from "@/data/userStore";
 import { isSupplier1Site } from "@/data/freewifiData";
+import { exportProjectRecordsToPdf, parsePdfFileToRecords } from "@/utils/projectPdfExportImport";
 
 // Icon mapping
 const ICONS: Record<string, React.ElementType> = {
@@ -167,15 +171,24 @@ export function ProjectConfig() {
   }, [effectiveUser, schemaKeys]);
 
   const [selectedProjectId, setSelectedProjectId] = useState<string>(() => {
+    const userFocal = String(effectiveUser?.focalProject || "").trim().toLowerCase();
+    if (userFocal && userFocal !== "all_projects" && authorizedSchemaKeys.includes(userFocal)) {
+      return userFocal;
+    }
     return authorizedSchemaKeys[0] || "freewifi";
   });
 
   // Automatically ensure selectedProjectId is always one of the authorized project keys
   useEffect(() => {
     if (authorizedSchemaKeys.length > 0 && !authorizedSchemaKeys.includes(selectedProjectId)) {
-      setSelectedProjectId(authorizedSchemaKeys[0]);
+      const userFocal = String(effectiveUser?.focalProject || "").trim().toLowerCase();
+      if (userFocal && userFocal !== "all_projects" && authorizedSchemaKeys.includes(userFocal)) {
+        setSelectedProjectId(userFocal);
+      } else {
+        setSelectedProjectId(authorizedSchemaKeys[0]);
+      }
     }
-  }, [authorizedSchemaKeys, selectedProjectId]);
+  }, [authorizedSchemaKeys, selectedProjectId, effectiveUser?.focalProject]);
   
   // Active schema
   const activeSchema: ProjectSchema = PROJECT_SCHEMAS[selectedProjectId] || PROJECT_SCHEMAS.freewifi;
@@ -259,24 +272,17 @@ export function ProjectConfig() {
     );
   }, [effectiveUser, selectedProjectId]);
 
-  // Check if active user can edit and modify this module
+  // Check if active user can edit and modify this module (strictly restricted to user's selected focalProject)
   const userCanModify = useMemo(() => {
     if (!effectiveUser) return false;
-    if (effectiveUser.status === "inactive") return false;
-    const canEditFlag = effectiveUser.canEdit !== undefined ? Boolean(effectiveUser.canEdit) : effectiveUser.role !== "Viewer";
-    return canEditFlag && userHasAccess;
-  }, [effectiveUser, userHasAccess]);
+    return canUserEditProject(effectiveUser, selectedProjectId);
+  }, [effectiveUser, selectedProjectId]);
 
-  // Check if active user can delete records
+  // Check if active user can delete records (strictly restricted to user's selected focalProject)
   const userCanDelete = useMemo(() => {
     if (!effectiveUser) return false;
-    if (effectiveUser.status === "inactive") return false;
-    const canDeleteFlag =
-      effectiveUser.canDelete !== undefined
-        ? Boolean(effectiveUser.canDelete)
-        : effectiveUser.role === "Super Admin" || effectiveUser.role === "Regional Director";
-    return canDeleteFlag && userHasAccess;
-  }, [effectiveUser, userHasAccess]);
+    return canUserDeleteProject(effectiveUser, selectedProjectId);
+  }, [effectiveUser, selectedProjectId]);
 
   // Sync records directly from the project's Turso database table
   useEffect(() => {
@@ -350,7 +356,7 @@ export function ProjectConfig() {
 
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [importRawText, setImportRawText] = useState("");
-  const [importFormat, setImportFormat] = useState<"csv" | "json">("json");
+  const [importFormat, setImportFormat] = useState<"csv" | "json" | "pdf">("pdf");
   const [importError, setImportError] = useState<string | null>(null);
 
   const [isViewDetailOpen, setIsViewDetailOpen] = useState(false);
@@ -533,90 +539,11 @@ export function ProjectConfig() {
   // Helper to dynamically get designated focal person for any project (and optional province)
   const getProjectFocalPerson = useCallback(
     (projectId: string, province?: string): string => {
-      const projId = String(projectId || "").toLowerCase().replace(/^mod_/, "").replace(/^mod-/, "");
-
-      // Normalize check helper
-      const matchesProject = (uFocalProject?: string) => {
-        if (!uFocalProject) return projId === "elgu";
-        const norm = uFocalProject.toLowerCase().replace(/^mod_/, "").replace(/^mod-/, "");
-        return norm === projId;
-      };
-
-      const matchesProvince = (u: any, targetProv: string) => {
-        const pNorm = targetProv.toLowerCase().trim();
-        const fProv = String(u.focalProvince || "").toLowerCase().trim();
-        const uReg = String(u.region || "").toLowerCase().trim();
-        return fProv.includes(pNorm) || uReg.includes(pNorm);
-      };
-
-      // 1. If province is provided, prioritize focal user assigned specifically to that province
-      if (province) {
-        // A. Logged in user
-        if (currentUser?.isFocal && matchesProject(currentUser.focalProject) && matchesProvince(currentUser, province)) {
-          return currentUser.name;
-        }
-        // B. Active admin user in preview
-        if (activeAdminUser?.isFocal && matchesProject(activeAdminUser.focalProject) && matchesProvince(activeAdminUser, province)) {
-          return activeAdminUser.name;
-        }
-        // C. Database administrators
-        const provAdmin = administrators.find(
-          (u) => Boolean(u.isFocal) && matchesProject(u.focalProject) && matchesProvince(u, province)
-        );
-        if (provAdmin) return provAdmin.name;
-
-        // D. Locally stored users
-        try {
-          const stored = getStoredUsers();
-          const provStored = stored.find(
-            (u) => Boolean(u.isFocal) && matchesProject(u.focalProject) && matchesProvince(u, province)
-          );
-          if (provStored) return provStored.name;
-        } catch {}
-      }
-
-      // 2. Fallback to regional / overall focal lead for this project
-      // A. Logged in user
-      if (currentUser?.isFocal && matchesProject(currentUser.focalProject)) {
-        return currentUser.name;
-      }
-      // B. Active admin user in preview
-      if (activeAdminUser?.isFocal && matchesProject(activeAdminUser.focalProject)) {
-        return activeAdminUser.name;
-      }
-      // C. Database administrators
-      const projAdmin = administrators.find(
-        (u) => Boolean(u.isFocal) && matchesProject(u.focalProject)
-      );
-      if (projAdmin) return projAdmin.name;
-
-      // D. Locally stored users
-      try {
-        const stored = getStoredUsers();
-        const projStored = stored.find(
-          (u) => Boolean(u.isFocal) && matchesProject(u.focalProject)
-        );
-        if (projStored) return projStored.name;
-      } catch {}
-
-      // 3. Default regional leads if none designated yet in User Directory
-      const defaults: Record<string, string> = {
-        elgu: "Engr. K. Bermudez",
-        freewifi: "Engr. Ronald Morales",
-        govnet: "Engr. Marco Villareal",
-        nbp: "Engr. Salvador Gomez",
-        cybersecurity: "Michelle Agua",
-        pnpki: "Gerald Andrew Gojar",
-        ilcdb: "Engr. Jonathan Santos",
-        gecs: "TOD Emergency Lead",
-        egovph: "eGov Regional Lead",
-        miss: "DICT Systems Unit",
-        iidb: "Industry Development Lead",
-      };
-
-      return defaults[projId] || "DICT Region V Focal";
+      const combinedUsers =
+        administrators.length > 0 ? administrators : getStoredUsers();
+      return resolveProjectFocalPerson(projectId, province, combinedUsers);
     },
-    [administrators, currentUser, activeAdminUser]
+    [administrators]
   );
 
   // Active project focal lead
@@ -813,28 +740,54 @@ export function ProjectConfig() {
     }
   };
 
-  // Export Data to CSV / JSON
-  const handleExportData = (format: "csv" | "json") => {
-    if (format === "json") {
-      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(currentRecords, null, 2));
+  // Export Data to PDF / CSV / JSON
+  const handleExportData = (format: "csv" | "json" | "pdf") => {
+    const exportRecords = currentRecords.map((row) => {
+      if (selectedProjectId === "pnpki") {
+        const copy = { ...row };
+        ["applicantName", "fullName", "subscriber"].forEach((k) => {
+          if (copy[k] !== undefined) {
+            copy[k] = String(copy[k] || "").trim().replace(/[A-Za-z0-9]/g, "*") || "********";
+          }
+        });
+        return copy;
+      }
+      return row;
+    });
+
+    if (format === "pdf") {
+      try {
+        exportProjectRecordsToPdf({
+          projectId: activeSchema.id,
+          projectName: activeSchema.name,
+          shortName: activeSchema.shortName,
+          fields: activeSchema.fields,
+          records: exportRecords,
+        });
+        showNotification(`Exported ${exportRecords.length} records to PDF.`);
+      } catch (err: any) {
+        showNotification(`Failed to export PDF: ${err.message || "Error"}`, "error");
+      }
+    } else if (format === "json") {
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportRecords, null, 2));
       const downloadAnchor = document.createElement("a");
       downloadAnchor.setAttribute("href", dataStr);
       downloadAnchor.setAttribute("download", `DICT_${activeSchema.id}_records_${Date.now()}.json`);
       document.body.appendChild(downloadAnchor);
       downloadAnchor.click();
       downloadAnchor.remove();
-      showNotification(`Exported ${currentRecords.length} records to JSON.`);
+      showNotification(`Exported ${exportRecords.length} records to JSON.`);
     } else {
       // Export CSV
-      if (currentRecords.length === 0) {
+      if (exportRecords.length === 0) {
         showNotification("No records to export.", "error");
         return;
       }
-      const keys = Object.keys(currentRecords[0]);
+      const keys = Object.keys(exportRecords[0]);
       const csvRows = [];
       csvRows.push(keys.join(","));
 
-      currentRecords.forEach((row) => {
+      exportRecords.forEach((row) => {
         const values = keys.map((k) => {
           const val = row[k] ?? "";
           return `"${String(val).replace(/"/g, '""')}"`;
@@ -851,18 +804,26 @@ export function ProjectConfig() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      showNotification(`Exported ${currentRecords.length} records to CSV.`);
+      showNotification(`Exported ${exportRecords.length} records to CSV.`);
     }
   };
 
   // Download Sample Template
-  const handleDownloadSampleTemplate = (format: "csv" | "json") => {
+  const handleDownloadSampleTemplate = (format: "csv" | "json" | "pdf") => {
     const sampleRecord: Record<string, any> = { id: `${activeSchema.id}-001` };
     activeSchema.fields.forEach((f) => {
-      sampleRecord[f.key] = f.defaultValue ?? (f.options ? f.options[0] : f.type === "number" ? 0 : "");
+      sampleRecord[f.key] = f.defaultValue ?? (f.options ? f.options[0] : f.type === "number" ? 0 : "Sample Value");
     });
 
-    if (format === "json") {
+    if (format === "pdf") {
+      exportProjectRecordsToPdf({
+        projectId: activeSchema.id,
+        projectName: activeSchema.name,
+        shortName: activeSchema.shortName,
+        fields: activeSchema.fields,
+        records: [sampleRecord],
+      });
+    } else if (format === "json") {
       const sample = [sampleRecord];
       const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(sample, null, 2));
       const downloadAnchor = document.createElement("a");
@@ -889,60 +850,94 @@ export function ProjectConfig() {
   };
 
   // Execute Import
-  const handleExecuteImport = () => {
+  const handleExecuteImport = async () => {
+    if (!userCanModify) {
+      setImportError(
+        `Permission Denied: Only the personnel assigned to ${activeSchema.shortName} can import or modify records in this project.`
+      );
+      return;
+    }
     setImportError(null);
     if (!importRawText.trim()) {
-      setImportError("Please paste data or upload a file first.");
+      setImportError("Please upload a PDF/CSV/JSON file or paste data first.");
       return;
     }
 
     try {
       let parsedRecords: Record<string, any>[] = [];
 
-      if (importFormat === "json") {
-        const obj = JSON.parse(importRawText);
-        if (Array.isArray(obj)) {
-          parsedRecords = obj;
+      if (importFormat === "json" || importFormat === "pdf") {
+        // When PDF is uploaded, parsePdfFileToRecords populates importRawText with JSON array of extracted records
+        const trimmed = importRawText.trim();
+        if (trimmed.startsWith("[")) {
+          const obj = JSON.parse(trimmed);
+          if (Array.isArray(obj)) {
+            parsedRecords = obj;
+          } else {
+            setImportError("Parsed data must be an array of records [ { ... }, { ... } ]");
+            return;
+          }
         } else {
-          setImportError("JSON must be an array of records [ { ... }, { ... } ]");
-          return;
+          // Fallback: parse line-by-line text into schema fields
+          const lines = trimmed.split("\n").map((l) => l.trim()).filter(Boolean);
+          parsedRecords = lines.map((line, idx) => {
+            const parts = line.split(/[,|\t]/).map((v) => v.replace(/^["']|["']$/g, "").trim());
+            const rowObj: Record<string, any> = { id: `${activeSchema.id}-imp-${Date.now()}-${idx}` };
+            activeSchema.fields.forEach((f, i) => {
+              rowObj[f.key] = parts[i] ?? f.defaultValue ?? (f.options ? f.options[0] : f.type === "number" ? 0 : "");
+            });
+            return rowObj;
+          });
         }
       } else {
-        // Parse CSV
-        const lines = importRawText.split("\n").map((l) => l.trim()).filter(Boolean);
-        if (lines.length < 2) {
+        // Parse CSV via XLSX to preserve quoted commas (e.g. "V1 BPBC, V1 BPCO")
+        const wb = XLSX.read(importRawText, { type: "string" });
+        const firstSheet = wb.SheetNames[0];
+        const rows = firstSheet
+          ? XLSX.utils.sheet_to_json<Record<string, any>>(wb.Sheets[firstSheet], { defval: "" })
+          : [];
+        if (rows.length === 0) {
           setImportError("CSV must contain a header line and at least 1 data row.");
           return;
         }
-        const headers = lines[0].split(",").map((h) => h.replace(/^["']|["']$/g, "").trim());
-        parsedRecords = lines.slice(1).map((line, idx) => {
-          const values = line.split(",").map((v) => v.replace(/^["']|["']$/g, "").trim());
-          const rowObj: Record<string, any> = { id: `${activeSchema.id}-imp-${Date.now()}-${idx}` };
-          headers.forEach((h, i) => {
-            rowObj[h] = values[i] ?? "";
-          });
-          return rowObj;
-        });
+        parsedRecords = rows.map((r, idx) => ({
+          id: r.id || `${activeSchema.id}-imp-${Date.now()}-${idx}`,
+          ...r,
+        }));
       }
 
       if (parsedRecords.length === 0) {
-        setImportError("No records parsed.");
+        setImportError("No records parsed from the file.");
         return;
       }
 
-      // Save to Turso table in background
-      projectApi.bulkImport(selectedProjectId, parsedRecords, false);
+      const finalIncoming =
+        selectedProjectId === "elgu"
+          ? parsedRecords.map((r, i) => normalizeElguRecord(r, i))
+          : parsedRecords;
 
-      // Merge or Replace
+      // Save to Turso table first
+      try {
+        await projectApi.bulkImport(selectedProjectId, finalIncoming, false);
+      } catch {
+        // fallback to local store if offline
+      }
+
+      // Merge into local store
       setRecordsStore((prev) => {
         const existing = prev[selectedProjectId] || [];
+        const merged =
+          selectedProjectId === "elgu"
+            ? mergeElguRecords(finalIncoming, existing)
+            : [...finalIncoming, ...existing];
         return {
           ...prev,
-          [selectedProjectId]: [...parsedRecords, ...existing],
+          [selectedProjectId]: merged,
         };
       });
 
-      showNotification(`Successfully imported ${parsedRecords.length} records into table "${selectedProjectId}"!`);
+      window.dispatchEvent(new CustomEvent("dict_records_updated", { detail: { projectId: selectedProjectId, timestamp: Date.now() } }));
+      showNotification(`Successfully imported ${finalIncoming.length} records into table "${selectedProjectId}"!`);
       setIsImportOpen(false);
       setImportRawText("");
     } catch (err: any) {
@@ -950,18 +945,39 @@ export function ProjectConfig() {
     }
   };
 
-  // Handle File Input for Import
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Handle File Input for Import (Supports .pdf, .csv, .json)
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setImportError(null);
+
+    if (file.name.toLowerCase().endsWith(".pdf") || file.type === "application/pdf") {
+      setImportFormat("pdf");
+      try {
+        const { records, rawPreview } = await parsePdfFileToRecords(
+          file,
+          selectedProjectId,
+          activeSchema.fields
+        );
+        if (records.length === 0) {
+          setImportError("Could not extract table rows from this PDF. Try a PDF exported from this system or paste records below.");
+        } else {
+          setImportRawText(rawPreview);
+          showNotification(`Extracted ${records.length} record(s) from PDF "${file.name}". Click Import Records to save.`);
+        }
+      } catch (err: any) {
+        setImportError(`Failed to read PDF file: ${err.message || "Invalid PDF"}`);
+      }
+      return;
+    }
 
     const reader = new FileReader();
     reader.onload = (event) => {
       const text = event.target?.result as string;
       setImportRawText(text);
-      if (file.name.endsWith(".json")) {
+      if (file.name.toLowerCase().endsWith(".json")) {
         setImportFormat("json");
-      } else if (file.name.endsWith(".csv")) {
+      } else if (file.name.toLowerCase().endsWith(".csv")) {
         setImportFormat("csv");
       }
     };
@@ -1066,7 +1082,11 @@ export function ProjectConfig() {
                 ? "bg-[#141C2E] hover:bg-[#1C263E] border-blue-500/30 text-blue-300 cursor-pointer"
                 : "bg-[#0C101D] border-slate-800 text-slate-500 cursor-not-allowed opacity-60"
             }`}
-            title={userCanModify ? "Configure Project Metadata" : "Restricted: Current personnel role cannot edit this module"}
+            title={
+              userCanModify
+                ? "Configure Project Metadata"
+                : `Restricted: Only personnel assigned to ${activeSchema.shortName} can edit this module`
+            }
           >
             {userCanModify ? <Settings2 className="w-3.5 h-3.5 text-blue-400" /> : <Lock className="w-3.5 h-3.5 text-slate-500" />}
             Project Settings
@@ -1080,10 +1100,23 @@ export function ProjectConfig() {
                 ? "bg-[#141C2E] hover:bg-[#1C263E] border-[#222E4A] text-slate-200 cursor-pointer"
                 : "bg-[#0C101D] border-slate-800 text-slate-500 cursor-not-allowed opacity-60"
             }`}
-            title={userCanModify ? "Import Data" : "Restricted: Current personnel role cannot edit this module"}
+            title={
+              userCanModify
+                ? "Import PDF / CSV / JSON Data"
+                : `Restricted: Only personnel assigned to ${activeSchema.shortName} can import data into this module`
+            }
           >
             {userCanModify ? <Upload className="w-3.5 h-3.5 text-blue-400" /> : <Lock className="w-3.5 h-3.5 text-slate-500" />}
-            Import Data
+            Import Data (PDF/CSV)
+          </button>
+
+          <button
+            onClick={() => handleExportData("pdf")}
+            className="flex-1 sm:flex-none px-3.5 py-2 rounded-xl bg-rose-600/15 hover:bg-rose-600/25 border border-rose-500/40 text-rose-200 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            title="Export project records as an official PDF report"
+          >
+            <FileText className="w-3.5 h-3.5 text-rose-400" />
+            Export PDF
           </button>
 
           <button
@@ -1110,7 +1143,11 @@ export function ProjectConfig() {
                 ? "bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white shadow-lg shadow-blue-900/30 cursor-pointer"
                 : "bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed opacity-60"
             }`}
-            title={userCanModify ? "Add Record" : "Restricted: Current personnel role cannot edit this module"}
+            title={
+              userCanModify
+                ? "Add Record"
+                : `Restricted: Only personnel assigned to ${activeSchema.shortName} can add or modify records`
+            }
           >
             {userCanModify ? <Plus className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
             Add Record
@@ -1139,17 +1176,30 @@ export function ProjectConfig() {
               {userCanModify ? (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  Authorized to Edit & Modify (Table: {selectedProjectId})
+                  Authorized to Edit &amp; Modify ({activeSchema.shortName})
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30">
                   <Lock className="w-3 h-3 text-amber-400" />
-                  Read-Only (Modification Restricted via Administration Table)
+                  {effectiveUser?.focalProject && effectiveUser.focalProject !== "all_projects"
+                    ? `Read-Only — Your account can only edit ${
+                        PROJECTS.find((p) => p.id === effectiveUser.focalProject)?.shortName ||
+                        effectiveUser.focalProject.toUpperCase()
+                      }`
+                    : "Read-Only — Project Not Selected for Your Account"}
                 </span>
               )}
             </div>
             <p className="text-[11px] text-slate-400 mt-0.5">
-              Role permissions from the Turso <code className="text-blue-300 font-mono">administration</code> table dictate which users can edit project modules.
+              {userCanModify ? (
+                <>
+                  Your account is assigned to <strong className="text-emerald-300">{activeSchema.shortName}</strong>. You can create, edit, and import records in this project table.
+                </>
+              ) : (
+                <>
+                  Only the user with <strong className="text-amber-300">{activeSchema.shortName}</strong> selected as their Project Handled in the Administrator module can edit or modify this project.
+                </>
+              )}
             </p>
           </div>
         </div>
@@ -1157,10 +1207,16 @@ export function ProjectConfig() {
         {/* Active Logged-in Personnel Indicator */}
         <div className="flex items-center gap-2 self-stretch sm:self-auto shrink-0">
           <span className="text-xs text-slate-400 font-medium whitespace-nowrap">Active Personnel:</span>
-          <div className="bg-[#141C2E] border border-[#222E4A] rounded-xl px-3 py-1.5 text-xs text-white flex items-center gap-2 max-w-[280px] truncate shadow-sm">
+          <div className="bg-[#141C2E] border border-[#222E4A] rounded-xl px-3 py-1.5 text-xs text-white flex items-center gap-2 max-w-[320px] truncate shadow-sm">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0 animate-pulse" />
             <span className="font-semibold truncate">{effectiveUser?.name || "User"}</span>
-            <span className="text-slate-400 text-[11px] shrink-0">({effectiveUser?.role || "Personnel"})</span>
+            <span className="text-slate-400 text-[11px] shrink-0">
+              ({effectiveUser?.role || "Personnel"}
+              {effectiveUser?.focalProject && effectiveUser.focalProject !== "all_projects"
+                ? ` > ${PROJECTS.find((p) => p.id === effectiveUser.focalProject)?.shortName || effectiveUser.focalProject.toUpperCase()}`
+                : ""}
+              )
+            </span>
             <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded border shrink-0 ${
               userCanModify 
                 ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" 
@@ -1216,6 +1272,7 @@ export function ProjectConfig() {
                 const ProjIcon = ICONS[proj.iconName] || Database;
                 const count = (recordsStore[key] || proj.defaultRecords || []).length;
                 const status = meta?.status || "operational";
+                const canEditTab = canUserEditProject(effectiveUser, key);
 
                 return (
                   <button
@@ -1231,9 +1288,17 @@ export function ProjectConfig() {
                         ? "bg-blue-600 text-white border-blue-500 shadow-md shadow-blue-900/40"
                         : "bg-[#111625] text-slate-300 hover:text-white hover:bg-[#182035] border-[#1C2744]"
                     }`}
+                    title={
+                      canEditTab
+                        ? `${proj.name}: Authorized to Edit & Modify`
+                        : `${proj.name}: Read-Only (Cannot Edit)`
+                    }
                   >
                     <ProjIcon className={`w-4 h-4 ${isSelected ? "text-white" : "text-blue-400"}`} />
                     <span>{proj.shortName || proj.name}</span>
+                    {!canEditTab && (
+                      <Lock className={`w-3 h-3 ${isSelected ? "text-amber-200" : "text-slate-500"}`} />
+                    )}
                     
                     {/* Status indicator dot */}
                     <span
@@ -2053,6 +2118,19 @@ export function ProjectConfig() {
                         );
                       }
 
+                      if (
+                        selectedProjectId === "pnpki" &&
+                        (col.key === "applicantName" || col.key === "fullName" || col.key === "subscriber")
+                      ) {
+                        const rawName = String(val || record.fullName || record.applicantName || "").trim();
+                        const censored = rawName ? rawName.replace(/[A-Za-z0-9]/g, "*") : "********";
+                        return (
+                          <td key={col.key} className="py-3 px-4 font-mono font-bold text-white tracking-wider">
+                            {censored}
+                          </td>
+                        );
+                      }
+
                       return (
                         <td key={col.key} className="py-3 px-4 text-slate-300 font-normal">
                           {typeof val === "number" ? (
@@ -2424,7 +2502,7 @@ export function ProjectConfig() {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-white">Import Data: {activeSchema.name}</h3>
-                  <p className="text-[11px] text-slate-400">Paste CSV/JSON or upload file into active dataset</p>
+                  <p className="text-[11px] text-slate-400">Upload a PDF, CSV, or JSON file or paste records into active dataset</p>
                 </div>
               </div>
 
@@ -2439,19 +2517,19 @@ export function ProjectConfig() {
             <div className="p-6 space-y-4">
               
               {/* Format selection */}
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
                   <span>Format:</span>
                   <button
                     type="button"
-                    onClick={() => setImportFormat("json")}
+                    onClick={() => setImportFormat("pdf")}
                     className={`px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
-                      importFormat === "json"
-                        ? "bg-purple-600 text-white"
+                      importFormat === "pdf"
+                        ? "bg-rose-600 text-white"
                         : "bg-[#141C2E] text-slate-400 hover:text-white"
                     }`}
                   >
-                    JSON
+                    PDF
                   </button>
                   <button
                     type="button"
@@ -2463,6 +2541,17 @@ export function ProjectConfig() {
                     }`}
                   >
                     CSV
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setImportFormat("json")}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
+                      importFormat === "json"
+                        ? "bg-purple-600 text-white"
+                        : "bg-[#141C2E] text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    JSON
                   </button>
                 </div>
 
@@ -2479,11 +2568,11 @@ export function ProjectConfig() {
               {/* File upload trigger */}
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">
-                  Upload file or paste below:
+                  Upload PDF / CSV / JSON file or paste below:
                 </label>
                 <input
                   type="file"
-                  accept=".csv,.json,text/csv,application/json"
+                  accept=".pdf,.csv,.json,application/pdf,text/csv,application/json"
                   onChange={handleFileUpload}
                   className="w-full text-xs text-slate-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-500 cursor-pointer"
                 />
@@ -2495,7 +2584,9 @@ export function ProjectConfig() {
                 value={importRawText}
                 onChange={(e) => setImportRawText(e.target.value)}
                 placeholder={
-                  importFormat === "json"
+                  importFormat === "pdf"
+                    ? `Upload a .pdf file above to automatically extract project records, or paste JSON/CSV rows here...`
+                    : importFormat === "json"
                     ? `[\n  {\n    "siteName": "Daet Tech Center",\n    "province": "Camarines Norte",\n    "status": "Active"\n  }\n]`
                     : `siteName,province,status\n"Daet Tech Center","Camarines Norte","Active"`
                 }
@@ -2556,25 +2647,39 @@ export function ProjectConfig() {
             </div>
 
             <div className="p-6 space-y-3 overflow-y-auto max-h-[70vh] custom-scrollbar text-xs">
-              {Object.entries(viewingRecord).map(([k, v]) => (
-                <div key={k} className="flex justify-between items-start py-2 border-b border-[#18233C]/40">
-                  <span className="font-semibold text-slate-400 capitalize">{k.replace(/([A-Z])/g, " $1")}</span>
-                  <span className="font-medium text-slate-200 text-right max-w-[260px] break-words">
-                    {k === "status" ? renderStatusBadge(String(v)) : String(v || "—")}
-                  </span>
-                </div>
-              ))}
+              {Object.entries(viewingRecord).map(([k, v]) => {
+                const isPnpkiSubscriberField =
+                  selectedProjectId === "pnpki" &&
+                  (k === "applicantName" || k === "fullName" || k === "subscriber");
+                const displayVal = isPnpkiSubscriberField
+                  ? (String(v || "").trim().replace(/[A-Za-z0-9]/g, "*") || "********")
+                  : String(v || "—");
+                return (
+                  <div key={k} className="flex justify-between items-start py-2 border-b border-[#18233C]/40">
+                    <span className="font-semibold text-slate-400 capitalize">{k.replace(/([A-Z])/g, " $1")}</span>
+                    <span className={`font-medium text-slate-200 text-right max-w-[260px] break-words ${isPnpkiSubscriberField ? "font-mono tracking-wider" : ""}`}>
+                      {k === "status" ? renderStatusBadge(String(v)) : displayVal}
+                    </span>
+                  </div>
+                );
+              })}
 
               <div className="pt-3 flex justify-end">
                 <button
+                  disabled={!userCanModify}
                   onClick={() => {
+                    if (!userCanModify) return;
                     setIsViewDetailOpen(false);
                     handleOpenEditModal(viewingRecord);
                   }}
-                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 ${
+                    userCanModify
+                      ? "bg-blue-600 hover:bg-blue-500 text-white cursor-pointer"
+                      : "bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed opacity-60"
+                  }`}
                 >
-                  <Edit className="w-3.5 h-3.5" />
-                  Edit This Record
+                  {userCanModify ? <Edit className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
+                  {userCanModify ? "Edit This Record" : "Read-Only (Cannot Edit)"}
                 </button>
               </div>
             </div>

@@ -1,19 +1,34 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { Menu, ChevronDown, Download, LogOut } from "lucide-react";
+import { Menu, ChevronDown, Download, LogOut, Sun, Moon, Check } from "lucide-react";
 import { getCurrentUser, setCurrentUser, AUTH_EVENT, getAllUsers } from "@/services/authStore";
 import { UserRecord } from "@/data/userStore";
 import { signOutGoogle } from "@/services/firebaseAuth";
+import { getTheme, toggleTheme, syncThemeFromDb, THEME_EVENT, AppTheme } from "@/services/themeStore";
 
 export function Header({ onMenuClick }: { onMenuClick: () => void }) {
   const navigate = useNavigate();
   const [currentUser, setCurrentUserState] = useState<UserRecord | null>(() => getCurrentUser());
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [theme, setThemeState] = useState<AppTheme>(() => getTheme());
+  const [isSavingTheme, setIsSavingTheme] = useState(false);
+  const [themeSavedBadge, setThemeSavedBadge] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    syncThemeFromDb().then((dbTheme) => setThemeState(dbTheme));
+    const handleThemeChange = (e: Event) => {
+      const customEv = e as CustomEvent<AppTheme>;
+      setThemeState(customEv.detail || getTheme());
+    };
+    window.addEventListener(THEME_EVENT, handleThemeChange);
+    return () => window.removeEventListener(THEME_EVENT, handleThemeChange);
+  }, []);
 
   useEffect(() => {
     const handleAuthChange = () => {
       setCurrentUserState(getCurrentUser());
+      syncThemeFromDb().then((dbTheme) => setThemeState(dbTheme));
     };
     window.addEventListener(AUTH_EVENT, handleAuthChange);
     window.addEventListener("dict_users_updated", handleAuthChange);
@@ -22,6 +37,15 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
       window.removeEventListener("dict_users_updated", handleAuthChange);
     };
   }, []);
+
+  const handleToggleTheme = async () => {
+    setIsSavingTheme(true);
+    const { theme: nextTheme } = await toggleTheme();
+    setThemeState(nextTheme);
+    setIsSavingTheme(false);
+    setThemeSavedBadge(true);
+    setTimeout(() => setThemeSavedBadge(false), 2000);
+  };
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -65,7 +89,27 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
         </div>
       </div>
 
-      <div className="flex flex-1 items-center justify-end gap-6 max-w-2xl">
+      <div className="flex flex-1 items-center justify-end gap-3 sm:gap-4 max-w-2xl">
+        {/* Dark / White Theme Toggle Button (Saved to Turso DB) */}
+        <button
+          type="button"
+          onClick={handleToggleTheme}
+          disabled={isSavingTheme}
+          className={`flex items-center justify-center w-9 h-9 rounded-xl border transition-all cursor-pointer ${
+            theme === "light"
+              ? "bg-amber-500/15 border-amber-500/40 text-amber-600 hover:bg-amber-500/25"
+              : "bg-[#111520] border-[#1A2235] text-slate-200 hover:bg-white/5"
+          }`}
+          title={theme === "light" ? "Switch to Dark Theme" : "Switch to White Theme"}
+          aria-label="Toggle Theme"
+        >
+          {theme === "light" ? (
+            <Sun className="w-4 h-4 text-amber-500" />
+          ) : (
+            <Moon className="w-4 h-4 text-blue-400" />
+          )}
+        </button>
+
         <button
           onClick={() => window.print()}
           className="hidden md:flex text-xs items-center gap-2 border border-[#1A2235] bg-[#111520] px-4 py-2 rounded-lg hover:bg-white/5 transition-colors font-medium text-slate-200 cursor-pointer"

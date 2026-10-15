@@ -50,6 +50,7 @@ export interface UserRecord {
   status: "active" | "inactive";
   isFocal: boolean;
   focalProject?: string;
+  pnpkiRole?: "RAO" | "RAA" | string;
   focalProvince?: string;
   phone?: string;
   access: Record<string, boolean>;
@@ -155,6 +156,7 @@ const DEFAULT_USERS: UserRecord[] = [
     email: "renejane.buena@dict.gov.ph",
     role: "Provincial Officer",
     region: "Region V (Bicol)",
+    focalProvince: "Albay",
     status: "active",
     isFocal: false,
     access: PROJECTS.reduce((acc, p) => ({ ...acc, [p.id]: true }), {}),
@@ -179,6 +181,7 @@ const DEFAULT_USERS: UserRecord[] = [
     email: "norly.tabo@dict.gov.ph",
     role: "OIC Chief - Technical Operations Division",
     region: "Region V (Bicol)",
+    focalProvince: "TOD",
     status: "active",
     isFocal: false,
     access: PROJECTS.reduce((acc, p) => ({ ...acc, [p.id]: true }), {}),
@@ -191,6 +194,7 @@ const DEFAULT_USERS: UserRecord[] = [
     email: "christian.melad@dict.gov.ph",
     role: "OIC- Regional Director",
     region: "Region V (Bicol)",
+    focalProvince: "Regional Off",
     status: "active",
     isFocal: false,
     access: PROJECTS.reduce((acc, p) => ({ ...acc, [p.id]: true }), {}),
@@ -198,6 +202,23 @@ const DEFAULT_USERS: UserRecord[] = [
     createdAt: "2024-01-15",
   },
 ];
+
+export function normalizeUserAssignment(u: UserRecord): UserRecord {
+  if (!u) return u;
+  const lowerName = (u.name || "").toLowerCase();
+  const lowerEmail = (u.email || "").toLowerCase();
+  const fp = (u.focalProvince || "").trim();
+
+  if (!fp) {
+    if (lowerName.includes("rene jane") || lowerEmail.includes("renejane.buena")) {
+      return { ...u, focalProvince: "Albay" };
+    }
+    if (lowerName.includes("norly") && lowerName.includes("tabo")) {
+      return { ...u, focalProvince: "TOD" };
+    }
+  }
+  return u;
+}
 
 export function getStoredUsers(): UserRecord[] {
   try {
@@ -207,7 +228,9 @@ export function getStoredUsers(): UserRecord[] {
     }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
-      const cleaned = parsed.filter((u: any) => u && !String(u.id || "").startsWith("g-"));
+      const cleaned = parsed
+        .filter((u: any) => u && !String(u.id || "").startsWith("g-"))
+        .map((u: UserRecord) => normalizeUserAssignment(u));
       if (cleaned.length !== parsed.length) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
       }
@@ -230,3 +253,80 @@ export function saveStoredUsers(users: UserRecord[]): void {
     console.error("Error saving users to storage:", e);
   }
 }
+
+/**
+ * Dynamically resolves the designated DICT Focal Person for a project and optional province
+ * directly from the User Directory (`administration` / `users`), strictly honoring `isFocal === true`
+ * and `focalProvince` scope without falling back to unrelated provinces or hardcoded dummy names.
+ */
+export function resolveProjectFocalPerson(
+  projectId: string,
+  province?: string,
+  usersList?: any[]
+): string {
+  const projId = String(projectId || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^mod[_-]/, "");
+  if (!projId) return "Unassigned";
+
+  const sourceUsers: any[] =
+    Array.isArray(usersList) && usersList.length > 0 ? usersList : getStoredUsers();
+
+  const isTrueFocal = (u: any): boolean => {
+    if (!u || u.status === "inactive") return false;
+    const focalFlag = u.isFocal === true || u.isFocal === 1 || u.isFocal === "1";
+    if (!focalFlag) return false;
+    const uProj = String(u.focalProject || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^mod[_-]/, "");
+    return uProj === projId;
+  };
+
+  const isRegionalScope = (fProvRaw?: string): boolean => {
+    const fp = String(fProvRaw || "").trim().toLowerCase();
+    return (
+      !fp ||
+      fp === "all provinces / regional" ||
+      fp === "all provinces" ||
+      fp === "regional" ||
+      fp === "region v (bicol)" ||
+      fp === "all"
+    );
+  };
+
+  const activeProjectFocals = sourceUsers.filter(isTrueFocal);
+  if (activeProjectFocals.length === 0) {
+    return "Unassigned";
+  }
+
+  const targetProv = String(province || "").trim().toLowerCase();
+  if (targetProv && targetProv !== "all") {
+    // 1. Exact province focal match
+    const provMatches = activeProjectFocals.filter((u) => {
+      const fp = String(u.focalProvince || "").trim().toLowerCase();
+      return fp === targetProv || (fp && !isRegionalScope(fp) && fp.includes(targetProv));
+    });
+    if (provMatches.length > 0) {
+      return Array.from(new Set(provMatches.map((u) => String(u.name).trim()))).join(" / ");
+    }
+
+    // 2. Fallback ONLY to Regional / All-Provinces focal for this project (never another specific province!)
+    const regionalMatches = activeProjectFocals.filter((u) => isRegionalScope(u.focalProvince));
+    if (regionalMatches.length > 0) {
+      return Array.from(new Set(regionalMatches.map((u) => String(u.name).trim()))).join(" / ");
+    }
+
+    return "Unassigned";
+  }
+
+  // No specific province requested: prefer regional focal(s), otherwise list all active focals for this project
+  const regionalMatches = activeProjectFocals.filter((u) => isRegionalScope(u.focalProvince));
+  if (regionalMatches.length > 0) {
+    return Array.from(new Set(regionalMatches.map((u) => String(u.name).trim()))).join(" / ");
+  }
+
+  return Array.from(new Set(activeProjectFocals.map((u) => String(u.name).trim()))).join(" / ");
+}
+

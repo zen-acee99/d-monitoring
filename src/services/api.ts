@@ -445,7 +445,7 @@ export const projectApi = {
       const data = await res.json();
       return data.records || [];
     } catch (err) {
-      console.warn(`Failed to fetch records from table "${table}":`, err);
+      console.warn("Failed to fetch records from table:", table, err);
       return [];
     }
   },
@@ -465,7 +465,7 @@ export const projectApi = {
       const data = await res.json();
       return data.record;
     } catch (err) {
-      console.error(`Failed to create record in table "${table}":`, err);
+      console.error("Failed to create record in table:", table, err);
       return null;
     }
   },
@@ -486,7 +486,7 @@ export const projectApi = {
       const data = await res.json();
       return data.record;
     } catch (err) {
-      console.error(`Failed to update record ${id} in table "${table}":`, err);
+      console.error("Failed to update record in table:", table, id, err);
       return null;
     }
   },
@@ -501,7 +501,7 @@ export const projectApi = {
       const data = await res.json();
       return Boolean(data.success);
     } catch (err) {
-      console.error(`Failed to delete record ${id} from table "${table}":`, err);
+      console.error("Failed to delete record from table:", table, id, err);
       return false;
     }
   },
@@ -522,7 +522,7 @@ export const projectApi = {
       const data = await res.json();
       return { success: true, count: data.importedCount };
     } catch (err) {
-      console.error(`Failed to bulk import into table "${table}":`, err);
+      console.error("Failed to bulk import into table:", table, err);
       return { success: false };
     }
   },
@@ -533,11 +533,13 @@ export interface AdminUser {
   name: string;
   email: string;
   password?: string;
+  hasPassword?: boolean;
   role: string;
   region: string;
   status: "active" | "inactive";
   isFocal: boolean;
   focalProject?: string;
+  pnpkiRole?: "RAO" | "RAA" | string;
   focalProvince?: string;
   phone?: string;
   access: Record<string, boolean>;
@@ -584,12 +586,25 @@ export const administrationApi = {
   // Create new administrator in Turso
   async createAdministrator(user: Partial<AdminUser>): Promise<AdminUser | null> {
     try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (typeof window !== "undefined") {
+        try {
+          const rawUser = window.localStorage.getItem("dict_current_user");
+          if (rawUser) {
+            const parsed = JSON.parse(rawUser);
+            if (parsed?.id) headers["x-user-id"] = String(parsed.id);
+          }
+        } catch {}
+      }
       const res = await apiFetch(`${API_BASE}/administration`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(user),
       });
-      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP error ${res.status}`);
+      }
       const data = await res.json();
       return data.user;
     } catch (err) {
@@ -601,16 +616,29 @@ export const administrationApi = {
   // Update administrator in Turso
   async updateAdministrator(id: string | number, updates: Partial<AdminUser>): Promise<AdminUser | null> {
     try {
-      const res = await apiFetch(`${API_BASE}/administration/${id}`, {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (typeof window !== "undefined") {
+        try {
+          const rawUser = window.localStorage.getItem("dict_current_user");
+          if (rawUser) {
+            const parsed = JSON.parse(rawUser);
+            if (parsed?.id) headers["x-user-id"] = String(parsed.id);
+          }
+        } catch {}
+      }
+      const res = await apiFetch(`${API_BASE}/administration/${encodeURIComponent(String(id))}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(updates),
       });
-      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP error ${res.status}`);
+      }
       const data = await res.json();
       return data.user;
     } catch (err) {
-      console.error(`Failed to update administrator ${id}:`, err);
+      console.error("Failed to update administrator:", id, err);
       return null;
     }
   },
@@ -618,14 +646,25 @@ export const administrationApi = {
   // Delete administrator from Turso
   async deleteAdministrator(id: string | number): Promise<boolean> {
     try {
-      const res = await apiFetch(`${API_BASE}/administration/${id}`, {
+      const headers: Record<string, string> = {};
+      if (typeof window !== "undefined") {
+        try {
+          const rawUser = window.localStorage.getItem("dict_current_user");
+          if (rawUser) {
+            const parsed = JSON.parse(rawUser);
+            if (parsed?.id) headers["x-user-id"] = String(parsed.id);
+          }
+        } catch {}
+      }
+      const res = await apiFetch(`${API_BASE}/administration/${encodeURIComponent(String(id))}`, {
         method: "DELETE",
+        headers,
       });
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       const data = await res.json();
       return Boolean(data.success);
     } catch (err) {
-      console.error(`Failed to delete administrator ${id}:`, err);
+      console.error("Failed to delete administrator:", id, err);
       return false;
     }
   },
@@ -970,6 +1009,7 @@ export const usersApi = {
     email: string;
     name: string;
     avatar_url?: string | null;
+    idToken?: string;
   }): Promise<{ success: boolean; user?: AdminUser; isNewUser?: boolean; error?: string; status?: number }> {
     try {
       const res = await apiFetch(`${API_BASE}/users/google-sync`, {
@@ -998,11 +1038,24 @@ export const usersApi = {
     password: string;
     role?: string;
     region?: string;
+    callerId?: string;
   }): Promise<{ success: boolean; user?: AdminUser; error?: string }> {
     try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (payload.callerId) {
+        headers["x-user-id"] = String(payload.callerId);
+      } else if (typeof window !== "undefined") {
+        try {
+          const rawUser = window.localStorage.getItem("dict_current_user");
+          if (rawUser) {
+            const parsed = JSON.parse(rawUser);
+            if (parsed?.id) headers["x-user-id"] = String(parsed.id);
+          }
+        } catch {}
+      }
       const res = await apiFetch(`${API_BASE}/users/register`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(payload),
       });
       const data = await res.json();
@@ -1170,6 +1223,7 @@ export interface DtrUserSetup {
   otc_username?: string;
   otcPassword?: string;
   otc_password?: string;
+  hasOtcPassword?: boolean;
   createdAt?: string;
   created_at?: string;
   updatedAt?: string;
@@ -1211,7 +1265,17 @@ export const dtrUserSetupApi = {
       if (filters?.user_id) params.set("user_id", filters.user_id);
       if (filters?.employee_name) params.set("employee_name", filters.employee_name);
       const query = params.toString() ? `?${params.toString()}` : "";
-      const res = await apiFetch(`${API_BASE}/dtr-user-setup${query}`);
+      const headers: Record<string, string> = {};
+      if (typeof window !== "undefined") {
+        try {
+          const rawUser = window.localStorage.getItem("dict_current_user");
+          if (rawUser) {
+            const parsed = JSON.parse(rawUser);
+            if (parsed?.id) headers["x-user-id"] = String(parsed.id);
+          }
+        } catch {}
+      }
+      const res = await apiFetch(`${API_BASE}/dtr-user-setup${query}`, { headers });
       if (!res.ok) return [];
       const data = await res.json();
       return data.setups || [];

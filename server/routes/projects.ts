@@ -770,12 +770,53 @@ export async function handleGetSingleRecord(req: Request, res: Response) {
   }
 }
 
+// Helper to check caller permission for mutating project records
+async function checkMutationPermission(
+  req: Request,
+  requireDelete = false
+): Promise<{ allowed: boolean; error?: string }> {
+  const callerId = req.headers["x-user-id"] ? String(req.headers["x-user-id"]).trim() : "";
+  if (!callerId) {
+    return { allowed: true };
+  }
+  try {
+    const userRes = await db.execute({
+      sql: "SELECT role, status, canEdit, canDelete FROM administration WHERE id = ? OR LOWER(email) = LOWER(?) LIMIT 1",
+      args: [callerId, callerId],
+    });
+    if (userRes.rows.length > 0) {
+      const u: any = userRes.rows[0];
+      if (u.status === "inactive") {
+        return { allowed: false, error: "Access Denied: Account is deactivated." };
+      }
+      if (
+        requireDelete &&
+        u.canDelete !== 1 &&
+        u.canDelete !== true &&
+        u.role !== "Super Admin" &&
+        u.role !== "Regional Director"
+      ) {
+        return { allowed: false, error: "Access Denied: You do not have permission to delete records." };
+      }
+      if (!requireDelete && u.canEdit !== 1 && u.canEdit !== true && u.role === "Viewer") {
+        return { allowed: false, error: "Access Denied: Read-only access." };
+      }
+    }
+  } catch {}
+  return { allowed: true };
+}
+
 // Handler for inserting a new record into project table
 export async function handleCreateProjectRecord(req: Request, res: Response) {
   try {
     const table = req.params.table || req.params.project;
     if (!isProjectTable(table)) {
       return res.status(400).json({ success: false, error: `Invalid project table: "${table}"` });
+    }
+
+    const perm = await checkMutationPermission(req, false);
+    if (!perm.allowed) {
+      return res.status(403).json({ success: false, error: perm.error });
     }
 
     const payload = req.body || {};
@@ -801,7 +842,7 @@ export async function handleCreateProjectRecord(req: Request, res: Response) {
     return res.status(201).json({ success: true, record: fullRecord });
   } catch (error: any) {
     console.error("Error creating project record:", error);
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error: "Internal server error" });
   }
 }
 
@@ -813,6 +854,11 @@ export async function handleUpdateProjectRecord(req: Request, res: Response) {
 
     if (!isProjectTable(table)) {
       return res.status(400).json({ success: false, error: `Invalid project table: "${table}"` });
+    }
+
+    const perm = await checkMutationPermission(req, false);
+    if (!perm.allowed) {
+      return res.status(403).json({ success: false, error: perm.error });
     }
 
     const existing = await db.execute({
@@ -839,7 +885,7 @@ export async function handleUpdateProjectRecord(req: Request, res: Response) {
     return res.json({ success: true, record: merged });
   } catch (error: any) {
     console.error("Error updating project record:", error);
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error: "Internal server error" });
   }
 }
 
@@ -853,6 +899,11 @@ export async function handleDeleteProjectRecord(req: Request, res: Response) {
       return res.status(400).json({ success: false, error: `Invalid project table: "${table}"` });
     }
 
+    const perm = await checkMutationPermission(req, true);
+    if (!perm.allowed) {
+      return res.status(403).json({ success: false, error: perm.error });
+    }
+
     const result = await db.execute({
       sql: `DELETE FROM "${table}" WHERE id = ?`,
       args: [id],
@@ -861,7 +912,7 @@ export async function handleDeleteProjectRecord(req: Request, res: Response) {
     return res.json({ success: true, id, rowsAffected: result.rowsAffected });
   } catch (error: any) {
     console.error("Error deleting project record:", error);
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error: "Internal server error" });
   }
 }
 
@@ -873,12 +924,21 @@ export async function handleBulkImportProjectRecords(req: Request, res: Response
       return res.status(400).json({ success: false, error: `Invalid project table: "${table}"` });
     }
 
+    const perm = await checkMutationPermission(req, false);
+    if (!perm.allowed) {
+      return res.status(403).json({ success: false, error: perm.error });
+    }
+
     const { records, replaceAll } = req.body;
     if (!Array.isArray(records)) {
       return res.status(400).json({ success: false, error: "records must be an array" });
     }
 
     if (replaceAll) {
+      const delPerm = await checkMutationPermission(req, true);
+      if (!delPerm.allowed) {
+        return res.status(403).json({ success: false, error: delPerm.error });
+      }
       await db.execute(`DELETE FROM "${table}"`);
     }
 
@@ -898,7 +958,7 @@ export async function handleBulkImportProjectRecords(req: Request, res: Response
     return res.json({ success: true, importedCount: records.length, table });
   } catch (error: any) {
     console.error("Error bulk importing records:", error);
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error: "Internal server error" });
   }
 }
 
