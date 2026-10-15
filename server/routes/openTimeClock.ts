@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import https from "https";
+import crypto from "crypto";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -234,8 +235,6 @@ async function queryOtcTimeCards(
     req.end();
   });
 }
-
-import crypto from "crypto";
 
 /**
  * Strict authentication & verification for Open Time Clock users

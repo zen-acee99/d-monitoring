@@ -128,22 +128,25 @@ function authRateLimiter(req: Request, res: Response, next: express.NextFunction
 let dbInitPromise: Promise<void> | null = null;
 function ensureDbInit() {
   if (!dbInitPromise) {
-    dbInitPromise = initDatabase().catch((e) => {
-      console.warn("DB init warning in serverless environment:", e);
-    });
+    if (isRemoteTurso) {
+      dbInitPromise = initDatabase().catch((e) => {
+        console.warn("DB init warning in serverless environment:", e);
+      });
+    } else {
+      dbInitPromise = Promise.resolve();
+    }
   }
   return dbInitPromise;
 }
 
-app.use(async (_req, _res, next) => {
-  try {
-    await ensureDbInit();
-  } catch {}
+// Non-blocking DB check in background
+app.use((_req, _res, next) => {
+  ensureDbInit();
   next();
 });
 
-// Health check endpoint (sanitized — never exposes raw dbUrl)
-app.get("/api/health", async (_req: Request, res: Response) => {
+// Health check handler (sanitized — never exposes raw dbUrl)
+const healthHandler = async (_req: Request, res: Response) => {
   try {
     const test = await db.execute("SELECT 1 as healthy");
     const tableCounts: Record<string, number> = {};
@@ -171,26 +174,52 @@ app.get("/api/health", async (_req: Request, res: Response) => {
       database: isRemoteTurso ? "Turso Cloud" : "Local SQLite",
     });
   }
-});
+};
+app.get("/api/health", healthHandler);
+app.get("/health", healthHandler);
 
 // Apply rate limiter on sensitive authentication and PDF signing routes
 app.use(
-  ["/api/users/login", "/api/auth/login", "/api/administration/login", "/api/dtr-generator/sign-pdf"],
+  [
+    "/api/users/login",
+    "/api/auth/login",
+    "/api/administration/login",
+    "/api/dtr-generator/sign-pdf",
+    "/users/login",
+    "/auth/login",
+    "/administration/login",
+    "/dtr-generator/sign-pdf",
+  ],
   authRateLimiter
 );
 
-// Mount routers on /api
-app.use("/api/users", usersRouter);
-app.use("/api/auth", usersRouter);
-app.use("/api/administration", administrationRouter);
-app.use("/api/dtr-generator", dtrGeneratorRouter);
-app.use("/api/dtr-user-setup", dtrUserSetupRouter);
-app.use("/api/dtr-schedule-settings", dtrScheduleSettingsRouter);
-app.use("/api/opentimeclock", openTimeClockRouter);
-app.use("/api/dtr-storage", dtrStorageRouter);
-app.use("/api/dtr/storage", dtrStorageRouter);
-app.use("/api/modules", modulesRouter);
-app.use("/api/omada", omadaRouter);
-app.use("/api", projectsRouter);
+// Unified router mounted on both /api and root to handle any Vercel rewrite variation
+const apiRouter = express.Router();
+apiRouter.use("/users", usersRouter);
+apiRouter.use("/auth", usersRouter);
+apiRouter.use("/administration", administrationRouter);
+apiRouter.use("/dtr-generator", dtrGeneratorRouter);
+apiRouter.use("/dtr-user-setup", dtrUserSetupRouter);
+apiRouter.use("/dtr-schedule-settings", dtrScheduleSettingsRouter);
+apiRouter.use("/opentimeclock", openTimeClockRouter);
+apiRouter.use("/dtr-storage", dtrStorageRouter);
+apiRouter.use("/dtr/storage", dtrStorageRouter);
+apiRouter.use("/modules", modulesRouter);
+apiRouter.use("/omada", omadaRouter);
+apiRouter.use("/", projectsRouter);
+
+app.use("/api", apiRouter);
+app.use("/", apiRouter);
+
+// Global unhandled error middleware (prevents FUNCTION_INVOCATION_FAILED crashes on Vercel)
+app.use((err: any, _req: Request, res: Response, _next: express.NextFunction) => {
+  console.error("[Vercel Serverless Error]", err);
+  if (!res.headersSent) {
+    res.status(500).json({
+      success: false,
+      error: err?.message || "Internal server error occurred",
+    });
+  }
+});
 
 export default app;
