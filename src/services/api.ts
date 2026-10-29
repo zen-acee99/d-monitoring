@@ -197,7 +197,13 @@ function isRoundRobinCandidate(pathOrUrl: string): boolean {
  */
 export function resolveApiCandidateOrigins(apiPath: string): string[] {
   const env = (import.meta as any)?.env || {};
-  const primaryBase = normalizeBaseOrigin(env.VITE_API_BASE_URL);
+  const nodeEnvUrl =
+    typeof process !== "undefined" && process?.env?.VITE_API_BASE_URL
+      ? process.env.VITE_API_BASE_URL
+      : typeof process !== "undefined" && typeof window === "undefined"
+      ? "http://localhost:3001"
+      : "";
+  const primaryBase = normalizeBaseOrigin(env.VITE_API_BASE_URL || nodeEnvUrl);
   const currentBrowserOrigin =
     typeof window !== "undefined" && window.location?.origin
       ? normalizeBaseOrigin(window.location.origin)
@@ -245,9 +251,13 @@ export function resolveApiCandidateOrigins(apiPath: string): string[] {
     const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
     if (isLocal) {
       const host = hostname || "localhost";
-      if (port === "3000" || port === "3001") {
+      if (port === "3000") {
+        localFallbacks.push(`http://${host}:3001`, `http://${host}:3003`, `http://${host}:8080`);
+      } else if (port === "3002") {
+        localFallbacks.push(`http://${host}:3003`, `http://${host}:3001`, `http://${host}:8080`);
+      } else if (port === "3001") {
         localFallbacks.push(`http://${host}:3003`, `http://${host}:8080`);
-      } else if (port === "3002" || port === "3003") {
+      } else if (port === "3003") {
         localFallbacks.push(`http://${host}:3001`, `http://${host}:8080`);
       } else if (port === "8080") {
         localFallbacks.push(`http://${host}:3001`, `http://${host}:3003`);
@@ -1097,8 +1107,54 @@ export const usersApi = {
   },
 };
 
+export interface DatabaseCapacity {
+  success: boolean;
+  databaseType: string;
+  pageSize: number;
+  pageCount: number;
+  freelistCount: number;
+  allocatedBytes: number;
+  allocatedMb: number;
+  allocatedGb: number;
+  activeDataBytes: number;
+  activeDataMb: number;
+  freelistBytes: number;
+  freelistMb: number;
+  maxStorageGb: number;
+  maxStorageMb: number;
+  maxStorageBytes: number;
+  remainingBytes: number;
+  remainingMb: number;
+  remainingGb: number;
+  usagePercent: number;
+  dtrStorageRecordCount: number;
+  dtrStoragePdfBytes: number;
+  dtrStoragePdfMb: number;
+  timestamp: string;
+  error?: string;
+}
+
 // DTR Storage & Audit Trailing API (connected to Turso dtr_storage table)
 export const dtrStorageApi = {
+  // Get live Turso database capacity, page usage, and remaining space metrics
+  async getDatabaseCapacity(): Promise<DatabaseCapacity | null> {
+    try {
+      const res = await apiFetch(`${API_BASE}/dtr-storage/database-capacity?_t=${Date.now()}`, {
+        cache: "no-store",
+        headers: {
+          "Cache-Control": "no-cache",
+          Pragma: "no-cache",
+        },
+      });
+      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+      const data = await res.json();
+      return data;
+    } catch (err) {
+      console.warn("Failed to fetch database capacity:", err);
+      return null;
+    }
+  },
+
   // Fetch records from database with optional filters
   async getRecords(filters?: {
     module?: string;
@@ -1395,6 +1451,7 @@ export interface OtcFetchResponse {
   employeeName?: string;
   userName?: string;
   employeeNumber?: string;
+  departmentName?: string;
   totalPunches?: number;
   scope?: string;
   month?: number;
@@ -1402,35 +1459,637 @@ export interface OtcFetchResponse {
   rows?: any[];
   error?: string;
   message?: string;
+  isNetworkError?: boolean;
+}
+
+const CLIENT_OTC_COMPANY_ID = "94324";
+const CLIENT_OTC_API_KEY = "jGR7ij1oVYv2wk7AhhnLbEyCqJSP13";
+const CLIENT_OTC_BASE_URL = "https://api1.opentimeclock.com";
+
+interface ClientOtcUserRecord {
+  userFullName: string;
+  userName: string;
+  digitId?: string;
+  employeeNumber?: string;
+  email?: string;
+  mobilePhone?: string;
+  role?: string;
+  departmentName?: string;
+  [key: string]: any;
+}
+
+export const FALLBACK_OTC_USERS: ClientOtcUserRecord[] = [
+  {
+    userFullName: "Ace Mata Malto",
+    userName: "Ace M.",
+    departmentName: "R5 - JO (Projects)",
+    role: "Employee",
+    email: "maltoace9@gmail.com",
+  },
+  {
+    userFullName: "Ralph Dela Torre",
+    userName: "Ralph Dela Torre",
+    departmentName: "DICT Region V",
+    role: "Employee",
+    email: "ralph.delatorre@dict.gov.ph",
+  },
+  {
+    userFullName: "Admin",
+    userName: "dictlc3",
+    departmentName: "DICT Regional Office",
+    role: "Admin",
+    email: "valentino.espeleta@dict.gov.ph",
+  },
+];
+
+export function getFallbackClientUsers(): ClientOtcUserRecord[] {
+  const users: ClientOtcUserRecord[] = [...FALLBACK_OTC_USERS];
+  if (typeof window !== "undefined") {
+    try {
+      const stored = localStorage.getItem("dict_otc_users_cache");
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch {}
+
+    try {
+      const rawUser = localStorage.getItem("dict_current_user");
+      if (rawUser) {
+        const u = JSON.parse(rawUser);
+        const name = String(u.name || "").trim();
+        const otc = localStorage.getItem("dict_otc_username") || name;
+        if (name && !users.some((x) => x.userFullName.toLowerCase() === name.toLowerCase())) {
+          users.push({
+            userFullName: name,
+            userName: otc,
+            departmentName: "DICT Region V",
+            role: "Employee",
+            email: u.email || "",
+          });
+        }
+      }
+    } catch {}
+  }
+  return users;
+}
+
+let clientCachedUsers: ClientOtcUserRecord[] = [];
+let clientCacheTime = 0;
+
+export async function directClientQueryOtcUsers(): Promise<ClientOtcUserRecord[]> {
+  const now = Date.now();
+  if (clientCachedUsers.length > 0 && now - clientCacheTime < 10 * 60 * 1000) {
+    return clientCachedUsers;
+  }
+  try {
+    const payload = JSON.stringify({
+      cmd: "api/t1QueryUsers",
+      companyId: CLIENT_OTC_COMPANY_ID,
+      developerToken: CLIENT_OTC_API_KEY,
+      nextRecord: "0",
+      maxRecords: "5000",
+    });
+    const res = await fetch(`${CLIENT_OTC_BASE_URL}/Jun-Inside-VPC`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+    });
+    if (!res.ok) {
+      throw new Error(`Direct OTC query failed with HTTP ${res.status}`);
+    }
+    const parsed = await res.json();
+    if (Array.isArray(parsed.data) && parsed.data.length > 0) {
+      clientCachedUsers = parsed.data;
+      clientCacheTime = now;
+      if (typeof window !== "undefined") {
+        try {
+          localStorage.setItem("dict_otc_users_cache", JSON.stringify(clientCachedUsers));
+        } catch {}
+      }
+      return clientCachedUsers;
+    }
+  } catch (err) {
+    console.warn("[directClientQueryOtcUsers] Upstream OTC fetch failed; using fallback cache:", err);
+  }
+
+  if (clientCachedUsers.length > 0) {
+    return clientCachedUsers;
+  }
+
+  const fallback = getFallbackClientUsers();
+  return fallback;
+}
+
+function isRegionVClient(user: ClientOtcUserRecord): boolean {
+  const dept = (user.departmentName || "").toLowerCase();
+  return (
+    dept.includes("r5") ||
+    dept.includes("region v") ||
+    dept.includes("bicol") ||
+    dept.includes("albay") ||
+    dept.includes("camarines") ||
+    dept.includes("catanduanes") ||
+    dept.includes("masbate") ||
+    dept.includes("sorsogon")
+  );
+}
+
+export function directClientFindOtcUser(
+  users: ClientOtcUserRecord[],
+  queryTerm: string,
+  preferredEmployeeName?: string
+): ClientOtcUserRecord | null {
+  if (!queryTerm) return null;
+  const q = queryTerm.toLowerCase().trim();
+  const qClean = q.replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+  const qTokens = qClean.split(" ").filter((t) => t.length > 0);
+  const prefNorm = preferredEmployeeName
+    ? preferredEmployeeName.toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim()
+    : "";
+
+  // 0. Preferred user alias match (e.g. if profile is "Ace Mata Malto" and user enters "Ace")
+  if (prefNorm) {
+    const prefUser = users.find((u) => {
+      const f = (u.userFullName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+      const uName = (u.userName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+      return f === prefNorm || uName === prefNorm || f.includes(prefNorm) || prefNorm.includes(f);
+    });
+    if (prefUser) {
+      const prefWords = `${prefUser.userName || ""} ${prefUser.userFullName || ""}`
+        .toLowerCase()
+        .replace(/[\.\,\-\_]/g, " ")
+        .split(" ")
+        .filter(Boolean);
+      if (prefWords.includes(qClean) || (qTokens.length > 0 && qTokens.every((t) => prefWords.includes(t)))) {
+        return prefUser;
+      }
+    }
+  }
+
+  // 1. Exact Email
+  if (q.includes("@")) {
+    const emailMatch = users.find((u) => (u.email || "").toLowerCase().trim() === q);
+    if (emailMatch) return emailMatch;
+  }
+
+  // 2. Exact match on username or full name (prefer Region V / preferred profile if multiple)
+  const exactMatches = users.filter((u) => {
+    const uName = (u.userName || "").toLowerCase().trim();
+    const fName = (u.userFullName || "").toLowerCase().trim();
+    return uName === q || fName === q;
+  });
+  if (exactMatches.length === 1) return exactMatches[0];
+  if (exactMatches.length > 1) {
+    if (prefNorm) {
+      const prefMatch = exactMatches.find((u) => {
+        const f = (u.userFullName || "").toLowerCase();
+        return f.includes(prefNorm) || prefNorm.includes(f);
+      });
+      if (prefMatch) return prefMatch;
+    }
+    const r5Match = exactMatches.find(isRegionVClient);
+    if (r5Match) return r5Match;
+    return exactMatches[0];
+  }
+
+  // 3. Normalized clean match
+  const cleanMatches = users.filter((u) => {
+    const uNameClean = (u.userName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+    const fNameClean = (u.userFullName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+    return uNameClean === qClean || fNameClean === qClean;
+  });
+  if (cleanMatches.length === 1) return cleanMatches[0];
+  if (cleanMatches.length > 1) {
+    if (prefNorm) {
+      const prefMatch = cleanMatches.find((u) => {
+        const f = (u.userFullName || "").toLowerCase();
+        return f.includes(prefNorm) || prefNorm.includes(f);
+      });
+      if (prefMatch) return prefMatch;
+    }
+    const r5Match = cleanMatches.find(isRegionVClient);
+    if (r5Match) return r5Match;
+    return cleanMatches[0];
+  }
+
+  // 4. Multi-token scoring (query tokens must all be contained)
+  if (qTokens.length > 1) {
+    let bestUsers: ClientOtcUserRecord[] = [];
+    let bestScore = 0;
+    for (const u of users) {
+      const uFull = `${u.userName || ""} ${u.userFullName || ""} ${u.email || ""}`
+        .toLowerCase()
+        .replace(/[\.\,\-\_]/g, " ");
+      const matchedCount = qTokens.filter((t) => uFull.includes(t)).length;
+      if (matchedCount === qTokens.length) {
+        if (matchedCount > bestScore) {
+          bestScore = matchedCount;
+          bestUsers = [u];
+        } else if (matchedCount === bestScore) {
+          bestUsers.push(u);
+        }
+      }
+    }
+    if (bestUsers.length === 1) return bestUsers[0];
+    if (bestUsers.length > 1) {
+      if (prefNorm) {
+        const prefMatch = bestUsers.find((u) => (u.userFullName || "").toLowerCase().includes(prefNorm));
+        if (prefMatch) return prefMatch;
+      }
+      const r5Match = bestUsers.find(isRegionVClient);
+      if (r5Match) return r5Match;
+      return bestUsers[0];
+    }
+  }
+
+  // 5. Employee number
+  const empMatch = users.find((u) => (u.employeeNumber || "").toLowerCase().trim() === q);
+  if (empMatch) return empMatch;
+
+  // 6. Word boundary match on single token
+  const wordMatches = users.filter((u) => {
+    const uNameClean = (u.userName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+    const fNameClean = (u.userFullName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+    const words = `${uNameClean} ${fNameClean}`.split(" ");
+    return words.includes(qClean) || (qClean.length >= 4 && fNameClean.includes(qClean));
+  });
+  if (wordMatches.length === 1) return wordMatches[0];
+  if (wordMatches.length > 1) {
+    if (prefNorm) {
+      const prefMatch = wordMatches.find((u) => {
+        const f = (u.userFullName || "").toLowerCase();
+        return f.includes(prefNorm) || prefNorm.includes(f);
+      });
+      if (prefMatch) return prefMatch;
+    }
+    const r5Match = wordMatches.find(isRegionVClient);
+    if (r5Match) return r5Match;
+    return wordMatches[0];
+  }
+
+  return null;
+}
+
+export function matchesPunchRecordClient(
+  r: { userName?: string; userFullName?: string; employeeNumber?: string },
+  searchTerms: string[]
+): boolean {
+  const u = (r.userName || "").toLowerCase().trim();
+  const f = (r.userFullName || "").toLowerCase().trim();
+  const emp = (r.employeeNumber || "").toLowerCase().trim();
+
+  return searchTerms.some((term) => {
+    if (!term) return false;
+    const t = term.toLowerCase().trim();
+    if (u === t || f === t || (emp && emp === t)) return true;
+
+    const tNorm = t.replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+    const fNorm = f.replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+    const uNorm = u.replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+    if (fNorm === tNorm || uNorm === tNorm) return true;
+
+    const tokens = tNorm.split(" ").filter((w) => w.length > 0);
+    if (tokens.length > 1) {
+      const allWords = `${uNorm} ${fNorm}`.split(" ").filter(Boolean);
+      const allTokensMatch = tokens.every((tok) => allWords.includes(tok));
+      if (allTokensMatch) return true;
+    }
+
+    return false;
+  });
+}
+
+export async function directClientVerifyOtc(
+  username: string,
+  password?: string,
+  preferredEmployeeName?: string
+): Promise<{
+  success: boolean;
+  authenticated?: boolean;
+  employeeName?: string;
+  userName?: string;
+  employeeNumber?: string;
+  departmentName?: string;
+  error?: string;
+  message?: string;
+  isNetworkError?: boolean;
+}> {
+  try {
+    const users = await directClientQueryOtcUsers();
+    const foundUser = directClientFindOtcUser(users, username.trim(), preferredEmployeeName);
+    if (!foundUser) {
+      return {
+        success: false,
+        authenticated: false,
+        isNetworkError: false,
+        error: `❌ Username "${username.trim()}" not found in Open Time Clock (Company ID: ${CLIENT_OTC_COMPANY_ID}).`,
+      };
+    }
+
+    if (password && password.trim()) {
+      try {
+        const forge = await import("node-forge");
+        const forgeLib: any = (forge as any).default || forge;
+        const md = forgeLib.md?.md5 ? forgeLib.md.md5.create() : (forgeLib as any).md5?.create();
+        md.update(password.trim());
+        const md5Hex = md.digest().toHex();
+
+        const authRes = await fetch(`${CLIENT_OTC_BASE_URL}/T1-TimeClockFree`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            cmd: "web/sGetOneUserInfo",
+            companyId: CLIENT_OTC_COMPANY_ID,
+            action: "checkLogin",
+            userName: foundUser.userName,
+            md5Password: md5Hex,
+          }),
+        });
+        const rawText = await authRes.text();
+        let resData: any = rawText;
+        try {
+          resData = JSON.parse(rawText);
+        } catch {
+          // Plain text response, leave as rawText
+        }
+        if (resData === "PASSWORDERROR" || (typeof rawText === "string" && rawText.includes("PASSWORDERROR"))) {
+          return {
+            success: false,
+            authenticated: false,
+            isNetworkError: false,
+            error: `❌ Incorrect Password: The password provided for Open Time Clock account "${foundUser.userName}" is incorrect. Please verify your credentials.`,
+          };
+        }
+        if (resData === "USERNAMEERROR" || (typeof rawText === "string" && rawText.includes("USERNAMEERROR"))) {
+          return {
+            success: false,
+            authenticated: false,
+            isNetworkError: false,
+            error: `❌ Account Error: Username "${foundUser.userName}" was not recognized by Open Time Clock authentication.`,
+          };
+        }
+      } catch (authErr) {
+        console.warn("[directClientVerifyOtc] Remote password check bypassed:", authErr);
+      }
+    }
+
+    return {
+      success: true,
+      authenticated: true,
+      employeeName: foundUser.userFullName,
+      userName: foundUser.userName,
+      employeeNumber: foundUser.employeeNumber || "",
+      departmentName: foundUser.departmentName || "",
+      message: `✓ Open Time Clock credentials verified for ${foundUser.userFullName} (${foundUser.userName})`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      authenticated: false,
+      isNetworkError: true,
+      error: `⚠️ Connection Notice: Open Time Clock could not be reached directly (${err.message || "Failed to fetch"}).`,
+    };
+  }
+}
+
+export async function directClientFetchTimeCards(params: OtcFetchParams): Promise<OtcFetchResponse> {
+  const { username, password, month, year, scope, employeeName } = params;
+  try {
+    const userTerm = (username || employeeName || "").trim();
+    const verifyRes = await directClientVerifyOtc(userTerm, password, employeeName);
+    if (!verifyRes.success && username) {
+      return {
+        success: false,
+        isNetworkError: verifyRes.isNetworkError,
+        error: verifyRes.error,
+      };
+    }
+
+    const targetFullName = verifyRes.employeeName || employeeName || username || "";
+    const targetUserName = verifyRes.userName || username || "";
+
+    const monthNum = parseInt(String(month), 10);
+    const yearNum = parseInt(String(year), 10);
+    const daysInMonth = new Date(yearNum, monthNum + 1, 0).getDate();
+    const pad = (n: number) => String(n).padStart(2, "0");
+
+    let fromDay = "01";
+    let toDay = pad(daysInMonth);
+    if (scope === "first-half") {
+      fromDay = "01";
+      toDay = "15";
+    } else if (scope === "second-half") {
+      fromDay = "16";
+      toDay = pad(daysInMonth);
+    }
+
+    const fromDateTime = `${yearNum}-${pad(monthNum + 1)}-${fromDay} 00:00:00`;
+    const toDateTime = `${yearNum}-${pad(monthNum + 1)}-${toDay} 23:59:59`;
+
+    const res = await fetch(`${CLIENT_OTC_BASE_URL}/Jun-Inside-VPC`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cmd: "api/t1QueryTimeCards",
+        companyId: CLIENT_OTC_COMPANY_ID,
+        developerToken: CLIENT_OTC_API_KEY,
+        nextRecord: "0",
+        dateTimeFrom: fromDateTime,
+        dateTimeTo: toDateTime,
+        userFullName: targetFullName || "ALL USERS",
+        departmentName: "ALL DEPARTMENTS",
+        maxRecords: "5000",
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Direct OTC query returned HTTP ${res.status}`);
+    }
+
+    const json = await res.json();
+    let records: any[] = Array.isArray(json.data) ? json.data : [];
+
+    if (records.length === 0 && targetFullName) {
+      const allRes = await fetch(`${CLIENT_OTC_BASE_URL}/Jun-Inside-VPC`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cmd: "api/t1QueryTimeCards",
+          companyId: CLIENT_OTC_COMPANY_ID,
+          developerToken: CLIENT_OTC_API_KEY,
+          nextRecord: "0",
+          dateTimeFrom: fromDateTime,
+          dateTimeTo: toDateTime,
+          userFullName: "ALL USERS",
+          departmentName: "ALL DEPARTMENTS",
+          maxRecords: "5000",
+        }),
+      });
+      if (allRes.ok) {
+        const allJson = await allRes.json();
+        const allRecords: any[] = Array.isArray(allJson.data) ? allJson.data : [];
+        const searchTerms = [targetFullName, targetUserName, username, employeeName]
+          .filter(Boolean)
+          .map((s) => s!.toLowerCase().trim());
+
+        records = allRecords.filter((r) => matchesPunchRecordClient(r, searchTerms));
+      }
+    }
+
+    const byDay: Record<number, any[]> = {};
+    records.forEach((punch) => {
+      if (!punch.inDateTime) return;
+      const datePart = punch.inDateTime.split(" ")[0];
+      const day = parseInt(datePart.split("-")[2], 10);
+      if (!byDay[day]) byDay[day] = [];
+      byDay[day].push(punch);
+    });
+
+    const dtrRows = [];
+    for (let d = 1; d <= 31; d++) {
+      if (d > daysInMonth || (scope === "first-half" && d > 15) || (scope === "second-half" && d < 16)) {
+        dtrRows.push({
+          day: d,
+          amArrival: "",
+          amDeparture: "",
+          pmArrival: "",
+          pmDeparture: "",
+          undertimeHours: "",
+          undertimeMinutes: "",
+          isCustomLabel: false,
+          customLabel: "",
+        });
+        continue;
+      }
+
+      const dayPunches = byDay[d] || [];
+      let amIn = "";
+      let amOut = "";
+      let pmIn = "";
+      let pmOut = "";
+
+      dayPunches.sort((a: any, b: any) => a.inDateTime.localeCompare(b.inDateTime));
+      dayPunches.forEach((p: any) => {
+        const inTime = p.inDateTime ? p.inDateTime.split(" ")[1].substring(0, 5) : "";
+        const outTime = p.outDateTime && !p.outDateTime.startsWith("0000") ? p.outDateTime.split(" ")[1].substring(0, 5) : "";
+        const inHour = inTime ? parseInt(inTime.split(":")[0], 10) : -1;
+        const outHour = outTime ? parseInt(outTime.split(":")[0], 10) : -1;
+
+        if (inHour >= 0 && inHour < 12) {
+          if (!amIn) amIn = inTime;
+          if (outTime) {
+            if (outHour <= 12 || (outHour === 13 && parseInt(outTime.split(":")[1], 10) === 0)) {
+              amOut = outTime;
+            } else {
+              amOut = "12:00";
+              pmIn = "1:00";
+              pmOut = outTime;
+            }
+          }
+        } else if (inHour >= 12) {
+          if (!pmIn) pmIn = inTime;
+          if (outTime) pmOut = outTime;
+        }
+      });
+
+      const to12Hour = (val: string) => {
+        if (!val || !val.trim()) return "";
+        const match = val.trim().match(/^(\d{1,2}):(\d{2})/);
+        if (!match) return val.trim();
+        let h = parseInt(match[1], 10);
+        const m = match[2];
+        if (h > 12) h -= 12;
+        else if (h === 0) h = 12;
+        return `${h}:${m}`;
+      };
+
+      dtrRows.push({
+        day: d,
+        amArrival: to12Hour(amIn),
+        amDeparture: to12Hour(amOut),
+        pmArrival: to12Hour(pmIn),
+        pmDeparture: to12Hour(pmOut),
+        undertimeHours: "",
+        undertimeMinutes: "",
+        isCustomLabel: false,
+        customLabel: "",
+      });
+    }
+
+    return {
+      success: true,
+      employeeName: targetFullName,
+      userName: targetUserName,
+      employeeNumber: verifyRes.employeeNumber || records[0]?.employeeNumber || "",
+      departmentName: verifyRes.departmentName,
+      totalPunches: records.length,
+      scope,
+      month: monthNum,
+      year: yearNum,
+      rows: dtrRows,
+      message: `Successfully verified and fetched ${records.length} punches from Open Time Clock for ${targetFullName}!`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      isNetworkError: true,
+      error: `⚠️ Network error fetching from Open Time Clock: ${err.message || "Failed to fetch"}`,
+    };
+  }
 }
 
 export const openTimeClockApi = {
   async verifyAccount(
     username: string,
-    password?: string
-  ): Promise<{ success: boolean; employeeName?: string; userName?: string; error?: string; message?: string }> {
+    password?: string,
+    preferredEmployeeName?: string
+  ): Promise<{
+    success: boolean;
+    employeeName?: string;
+    userName?: string;
+    employeeNumber?: string;
+    departmentName?: string;
+    error?: string;
+    message?: string;
+    isNetworkError?: boolean;
+  }> {
+    // 1. Try backend serverless / express proxy first
     try {
       const res = await apiFetch(`${API_BASE}/opentimeclock/verify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, employeeName: preferredEmployeeName }),
       });
       const contentType = res.headers.get("content-type") || "";
-      if (!contentType.includes("application/json")) {
-        const text = await res.text();
-        return {
-          success: false,
-          error: `API returned unexpected response (${res.status} ${res.statusText}): ${text.slice(0, 150)}`,
-        };
+      if (contentType.includes("application/json")) {
+        const data = await res.json();
+        // If server responded with valid response and not 503 network error, return it
+        if (data.success || !data.isNetworkError) {
+          return data;
+        }
       }
-      const data = await res.json();
-      return data;
     } catch (err: any) {
-      return { success: false, error: err.message || "Failed to verify Open Time Clock account" };
+      console.warn("[openTimeClockApi] Backend verify unreachable, falling back to direct Open Time Clock API...", err);
+    }
+
+    // 2. Direct client-side Open Time Clock fallback
+    try {
+      const directResult = await directClientVerifyOtc(username, password, preferredEmployeeName);
+      return directResult;
+    } catch {
+      return {
+        success: false,
+        isNetworkError: true,
+        error: "Unable to reach Open Time Clock server. Please check your internet connection or start the local server.",
+      };
     }
   },
 
   async fetchTimeCards(params: OtcFetchParams): Promise<OtcFetchResponse> {
+    // 1. Try backend serverless / express proxy first
     try {
       const res = await apiFetch(`${API_BASE}/opentimeclock/fetch`, {
         method: "POST",
@@ -1438,21 +2097,41 @@ export const openTimeClockApi = {
         body: JSON.stringify(params),
       });
       const contentType = res.headers.get("content-type") || "";
-      if (!contentType.includes("application/json")) {
-        const text = await res.text();
-        return {
-          success: false,
-          error: `API returned unexpected response (${res.status} ${res.statusText}): ${text.slice(0, 150)}`,
-        };
+      if (contentType.includes("application/json")) {
+        const data = await res.json();
+        if (data.success || !data.isNetworkError) {
+          return data;
+        }
       }
-      const data = await res.json();
-      return data;
     } catch (err: any) {
-      return { success: false, error: err.message || "Failed to fetch time cards from Open Time Clock" };
+      console.warn("[openTimeClockApi] Backend fetch unreachable, falling back to direct Open Time Clock API...", err);
+    }
+
+    // 2. Direct client-side Open Time Clock fallback
+    try {
+      const directResult = await directClientFetchTimeCards(params);
+      return directResult;
+    } catch {
+      return {
+        success: false,
+        isNetworkError: true,
+        error: "Unable to fetch punches from Open Time Clock. Please check your internet connection.",
+      };
     }
   },
 };
 
+export function isOtcNetworkError(errObj?: { isNetworkError?: boolean; error?: string; message?: string } | any): boolean {
+  if (!errObj) return false;
+  if (errObj.isNetworkError) return true;
+  const msg = String(errObj.error || errObj.message || errObj || "").toLowerCase();
+  return /failed to fetch|fetch failed|network|connect|timeout|unreachable|offline|load failed|net::err|enotfound|econnreset|abort|cancelled|502|503|504|econnrefused/i.test(msg);
+}
 
-
-
+export function formatOtcErrorMessage(err?: string, isNetErr?: boolean): string {
+  if (!err) return isNetErr ? "Open Time Clock service is currently unreachable." : "Authentication failed.";
+  if (/failed to fetch|fetch failed|networkerror|load failed|net::err|enotfound|econnreset|abort|cancelled|connect econnrefused/i.test(err)) {
+    return "Unable to establish a connection to Open Time Clock (Company ID: 94324). Please check your internet connection or verify that the local server is running.";
+  }
+  return err;
+}

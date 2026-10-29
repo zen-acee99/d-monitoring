@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   Home, Users, Activity, Download, Calendar, CreditCard, Settings, X, MapPin, Box, Database,
   ShieldAlert, Radio, Server, CheckSquare, FileText, Clock, Link as LinkIcon, Lock, LogOut,
-  Sparkles, Users2, Building2, ChevronDown, ChevronRight, PenLine
+  Sparkles, Users2, Building2, ChevronDown, ChevronRight, PenLine, Ticket
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getCurrentUser, setCurrentUser, hasModuleAccess, AUTH_EVENT, refreshCurrentUser, refreshSystemModules, getCachedSystemModules } from "@/services/authStore";
@@ -55,6 +55,23 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
     tod: 0,
     provincial: 0,
   });
+
+  const userEmail = (currentUser?.email || "").toLowerCase().trim();
+  const isAceUser = userEmail === "ace.malto@dict.gov.ph";
+
+  const effectiveMainNav = isAceUser
+    ? [
+        mainNav[0], // Overview
+        mainNav[1], // DTR Generator
+        {
+          name: "Combined DTR",
+          path: "/dtr-combiner",
+          icon: Sparkles,
+          code: "MOD_ACE_DTR",
+        },
+        mainNav[2], // Signing Workspace
+      ]
+    : mainNav;
 
   const updateDtrCounts = () => {
     try {
@@ -148,10 +165,10 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
 
       <div className="flex-1 overflow-y-auto custom-scrollbar py-3 px-3 space-y-5 min-h-0">
         <div className="space-y-1">
-          {mainNav.map((item) => {
+          {effectiveMainNav.map((item) => {
             const isDtrItem = item.code === "MOD_DTR";
             const isActive = location.pathname === item.path;
-            const hasAccess = hasModuleAccess(currentUser, item.code);
+            const hasAccess = item.code === "MOD_ACE_DTR" ? isAceUser : hasModuleAccess(currentUser, item.code);
 
             if (isDtrItem) {
               return (
@@ -225,6 +242,26 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
                         </div>
                         <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono">
                           Builder
+                        </span>
+                      </Link>
+
+                      {/* Sub-module: Gate Pass Module */}
+                      <Link
+                        to="/dtr?tab=gatepass"
+                        onClick={() => setIsOpen(false)}
+                        className={cn(
+                          "flex items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-all duration-150 select-none",
+                          isActive && currentTab === "gatepass"
+                            ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm"
+                            : "text-slate-400 hover:bg-white/5 hover:text-slate-200 border border-transparent"
+                        )}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Ticket className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                          <span className="truncate">Gate Pass</span>
+                        </div>
+                        <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-mono">
+                          Official
                         </span>
                       </Link>
 
@@ -308,6 +345,28 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
                           {dtrCounts.provincial}
                         </span>
                       </Link>
+
+                      {/* Sub-module 5: Combined DTR (Only for ace.malto@dict.gov.ph) */}
+                      {isAceUser && (
+                        <Link
+                          to="/dtr-combiner"
+                          onClick={() => setIsOpen(false)}
+                          className={cn(
+                            "flex items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-all duration-150 select-none",
+                            location.pathname === "/dtr-combiner"
+                              ? "bg-blue-600/30 text-blue-300 border border-blue-500/50 shadow-sm"
+                              : "text-slate-400 hover:bg-white/5 hover:text-slate-200 border border-transparent"
+                          )}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Sparkles className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                            <span className="truncate">Combined DTR</span>
+                          </div>
+                          <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 font-mono">
+                            1–30
+                          </span>
+                        </Link>
+                      )}
                     </div>
                   )}
                 </div>

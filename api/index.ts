@@ -128,20 +128,17 @@ function authRateLimiter(req: Request, res: Response, next: express.NextFunction
 let dbInitPromise: Promise<void> | null = null;
 function ensureDbInit() {
   if (!dbInitPromise) {
-    if (isRemoteTurso) {
-      dbInitPromise = initDatabase().catch((e) => {
-        console.warn("DB init warning in serverless environment:", e);
-      });
-    } else {
-      dbInitPromise = Promise.resolve();
-    }
+    dbInitPromise = initDatabase().catch((e) => {
+      console.warn("DB init warning in serverless environment:", e);
+    });
   }
   return dbInitPromise;
 }
 
-// Non-blocking DB check in background
-app.use((_req, _res, next) => {
-  ensureDbInit();
+app.use(async (_req, _res, next) => {
+  try {
+    await ensureDbInit();
+  } catch {}
   next();
 });
 

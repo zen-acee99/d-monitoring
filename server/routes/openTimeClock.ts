@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import https from "https";
 import crypto from "crypto";
 import dotenv from "dotenv";
+import { db } from "../db.js";
 
 dotenv.config();
 
@@ -37,6 +38,58 @@ interface OtcUserRecord {
 let cachedOtcUsers: OtcUserRecord[] = [];
 let lastUserCacheTime = 0;
 
+// Known DICT Region V personnel presets for seamless offline and network fallback
+const FALLBACK_OTC_USERS: OtcUserRecord[] = [
+  {
+    userFullName: "Ace Mata Malto",
+    userName: "Ace M.",
+    departmentName: "R5 - JO (Projects)",
+    role: "Employee",
+    email: "maltoace9@gmail.com",
+  },
+  {
+    userFullName: "Ralph Dela Torre",
+    userName: "Ralph Dela Torre",
+    departmentName: "DICT Region V",
+    role: "Employee",
+    email: "ralph.delatorre@dict.gov.ph",
+  },
+  {
+    userFullName: "Admin",
+    userName: "dictlc3",
+    departmentName: "DICT Regional Office",
+    role: "Admin",
+    email: "valentino.espeleta@dict.gov.ph",
+  },
+];
+
+async function getFallbackUsers(): Promise<OtcUserRecord[]> {
+  const users: OtcUserRecord[] = [...FALLBACK_OTC_USERS];
+  try {
+    const res = await db.execute("SELECT employee_name, otc_username FROM dtr_user_setup");
+    if (res && Array.isArray(res.rows)) {
+      for (const row of res.rows) {
+        const empName = String(row.employee_name || "").trim();
+        const otcName = String(row.otc_username || "").trim();
+        if (empName || otcName) {
+          const matchKey = (otcName || empName).toLowerCase();
+          if (!users.some((u) => u.userName.toLowerCase() === matchKey || u.userFullName.toLowerCase() === matchKey)) {
+            users.push({
+              userFullName: empName || otcName,
+              userName: otcName || empName,
+              role: "Employee",
+              departmentName: "DICT Region V",
+            });
+          }
+        }
+      }
+    }
+  } catch {
+    // Local DB not initialized or offline; fall back to static list
+  }
+  return users;
+}
+
 /**
  * Fetch all registered users from Open Time Clock (companyId: 94324)
  */
@@ -61,6 +114,7 @@ async function queryOtcUsers(): Promise<OtcUserRecord[]> {
         url,
         {
           method: "POST",
+          agent: false,
           headers: {
             "Content-Type": "application/json",
             "Content-Length": Buffer.byteLength(payload),
@@ -78,6 +132,9 @@ async function queryOtcUsers(): Promise<OtcUserRecord[]> {
           });
         }
       );
+      req.setTimeout(10000, () => {
+        req.destroy(new Error("Open Time Clock API timeout after 10s"));
+      });
       req.on("error", (err) => reject(err));
       req.write(payload);
       req.end();
@@ -98,31 +155,76 @@ async function queryOtcUsers(): Promise<OtcUserRecord[]> {
   return allUsers;
 }
 
-async function getCachedOtcUsers(): Promise<OtcUserRecord[]> {
+async function getCachedOtcUsers(): Promise<{ users: OtcUserRecord[]; isLive: boolean }> {
   const now = Date.now();
   if (cachedOtcUsers.length > 0 && now - lastUserCacheTime < 10 * 60 * 1000) {
-    return cachedOtcUsers;
+    return { users: cachedOtcUsers, isLive: true };
   }
   try {
     const fetched = await queryOtcUsers();
     if (fetched.length > 0) {
       cachedOtcUsers = fetched;
       lastUserCacheTime = now;
+      return { users: cachedOtcUsers, isLive: true };
     }
   } catch (err) {
     console.warn("Could not refresh OTC users cache:", err);
   }
-  return cachedOtcUsers;
+  if (cachedOtcUsers.length > 0) {
+    return { users: cachedOtcUsers, isLive: true };
+  }
+  const fallback = await getFallbackUsers();
+  return { users: fallback, isLive: false };
+}
+
+function isRegionV(user: OtcUserRecord): boolean {
+  const dept = (user.departmentName || "").toLowerCase();
+  return (
+    dept.includes("r5") ||
+    dept.includes("region v") ||
+    dept.includes("bicol") ||
+    dept.includes("albay") ||
+    dept.includes("camarines") ||
+    dept.includes("catanduanes") ||
+    dept.includes("masbate") ||
+    dept.includes("sorsogon")
+  );
 }
 
 /**
- * Robust user matcher for OTC accounts
+ * Robust user matcher for OTC accounts with preferred employee name and Region V disambiguation
  */
-function findOtcUser(users: OtcUserRecord[], queryTerm: string): OtcUserRecord | null {
+function findOtcUser(
+  users: OtcUserRecord[],
+  queryTerm: string,
+  preferredEmployeeName?: string
+): OtcUserRecord | null {
   if (!queryTerm) return null;
   const q = queryTerm.toLowerCase().trim();
   const qClean = q.replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
   const qTokens = qClean.split(" ").filter((t) => t.length > 0);
+  const prefNorm = preferredEmployeeName
+    ? preferredEmployeeName.toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim()
+    : "";
+
+  // 0. Preferred user alias match (e.g. if profile is "Ace Mata Malto" and user enters "Ace")
+  if (prefNorm) {
+    const prefUser = users.find((u) => {
+      const f = (u.userFullName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+      const uName = (u.userName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+      return f === prefNorm || uName === prefNorm || f.includes(prefNorm) || prefNorm.includes(f);
+    });
+    if (prefUser) {
+      const prefWords = `${prefUser.userName || ""} ${prefUser.userFullName || ""}`
+        .toLowerCase()
+        .replace(/[\.\,\-\_]/g, " ")
+        .split(" ")
+        .filter(Boolean);
+      if (prefWords.includes(qClean) || (qTokens.length > 0 && qTokens.every((t) => prefWords.includes(t)))) {
+        return prefUser;
+      }
+    }
+  }
 
   // 1. Exact Email match (highest priority if query is an email address)
   if (q.includes("@")) {
@@ -130,25 +232,49 @@ function findOtcUser(users: OtcUserRecord[], queryTerm: string): OtcUserRecord |
     if (emailMatch) return emailMatch;
   }
 
-  // 2. Exact match on username or full name
-  const exact = users.find((u) => {
+  // 2. Exact match on username or full name (prefer Region V / preferred profile if multiple)
+  const exactMatches = users.filter((u) => {
     const uName = (u.userName || "").toLowerCase().trim();
     const fName = (u.userFullName || "").toLowerCase().trim();
     return uName === q || fName === q;
   });
-  if (exact) return exact;
+  if (exactMatches.length === 1) return exactMatches[0];
+  if (exactMatches.length > 1) {
+    if (prefNorm) {
+      const prefMatch = exactMatches.find((u) => {
+        const f = (u.userFullName || "").toLowerCase();
+        return f.includes(prefNorm) || prefNorm.includes(f);
+      });
+      if (prefMatch) return prefMatch;
+    }
+    const r5Match = exactMatches.find(isRegionV);
+    if (r5Match) return r5Match;
+    return exactMatches[0];
+  }
 
   // 3. Normalized clean match (ignoring dots, dashes, punctuation)
-  const cleanMatch = users.find((u) => {
+  const cleanMatches = users.filter((u) => {
     const uNameClean = (u.userName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
     const fNameClean = (u.userFullName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
     return uNameClean === qClean || fNameClean === qClean;
   });
-  if (cleanMatch) return cleanMatch;
+  if (cleanMatches.length === 1) return cleanMatches[0];
+  if (cleanMatches.length > 1) {
+    if (prefNorm) {
+      const prefMatch = cleanMatches.find((u) => {
+        const f = (u.userFullName || "").toLowerCase();
+        return f.includes(prefNorm) || prefNorm.includes(f);
+      });
+      if (prefMatch) return prefMatch;
+    }
+    const r5Match = cleanMatches.find(isRegionV);
+    if (r5Match) return r5Match;
+    return cleanMatches[0];
+  }
 
   // 4. Multi-token scoring (e.g. "Ace Malto" matches "Ace Mata Malto" because it contains all tokens)
   if (qTokens.length > 1) {
-    let bestUser: OtcUserRecord | null = null;
+    let bestUsers: OtcUserRecord[] = [];
     let bestScore = 0;
 
     for (const u of users) {
@@ -156,27 +282,53 @@ function findOtcUser(users: OtcUserRecord[], queryTerm: string): OtcUserRecord |
         .toLowerCase()
         .replace(/[\.\,\-\_]/g, " ");
       const matchedCount = qTokens.filter((t) => uFull.includes(t)).length;
-      if (matchedCount === qTokens.length && matchedCount > bestScore) {
-        bestScore = matchedCount;
-        bestUser = u;
+      if (matchedCount === qTokens.length) {
+        if (matchedCount > bestScore) {
+          bestScore = matchedCount;
+          bestUsers = [u];
+        } else if (matchedCount === bestScore) {
+          bestUsers.push(u);
+        }
       }
     }
-    if (bestUser) return bestUser;
+    if (bestUsers.length === 1) return bestUsers[0];
+    if (bestUsers.length > 1) {
+      if (prefNorm) {
+        const prefMatch = bestUsers.find((u) => (u.userFullName || "").toLowerCase().includes(prefNorm));
+        if (prefMatch) return prefMatch;
+      }
+      const r5Match = bestUsers.find(isRegionV);
+      if (r5Match) return r5Match;
+      return bestUsers[0];
+    }
   }
 
   // 5. Employee number exact match
   const empMatch = users.find((u) => (u.employeeNumber || "").toLowerCase().trim() === q);
   if (empMatch) return empMatch;
 
-  // 6. Word boundary match on first name or last name
-  const wordMatch = users.find((u) => {
+  // 6. Word boundary match on single token
+  const wordMatches = users.filter((u) => {
     const uNameClean = (u.userName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
     const fNameClean = (u.userFullName || "").toLowerCase().replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
     const words = `${uNameClean} ${fNameClean}`.split(" ");
     return words.includes(qClean) || (qClean.length >= 4 && fNameClean.includes(qClean));
   });
+  if (wordMatches.length === 1) return wordMatches[0];
+  if (wordMatches.length > 1) {
+    if (prefNorm) {
+      const prefMatch = wordMatches.find((u) => {
+        const f = (u.userFullName || "").toLowerCase();
+        return f.includes(prefNorm) || prefNorm.includes(f);
+      });
+      if (prefMatch) return prefMatch;
+    }
+    const r5Match = wordMatches.find(isRegionV);
+    if (r5Match) return r5Match;
+    return wordMatches[0];
+  }
 
-  return wordMatch || null;
+  return null;
 }
 
 /**
@@ -205,6 +357,7 @@ async function queryOtcTimeCards(
       url,
       {
         method: "POST",
+        agent: false,
         headers: {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(payload),
@@ -230,9 +383,45 @@ async function queryOtcTimeCards(
       }
     );
 
+    req.setTimeout(12000, () => {
+      req.destroy(new Error("Open Time Clock time cards query timed out (12s)"));
+    });
     req.on("error", (err) => reject(err));
     req.write(payload);
     req.end();
+  });
+}
+
+/**
+ * Strict whole-word and normalized punch record matcher
+ * Prevents naive substring matches (e.g. "Ace" falsely matching "Aceveda" or "Grace")
+ */
+function matchesPunchRecord(
+  r: { userName?: string; userFullName?: string; employeeNumber?: string },
+  searchTerms: string[]
+): boolean {
+  const u = (r.userName || "").toLowerCase().trim();
+  const f = (r.userFullName || "").toLowerCase().trim();
+  const emp = (r.employeeNumber || "").toLowerCase().trim();
+
+  return searchTerms.some((term) => {
+    if (!term) return false;
+    const t = term.toLowerCase().trim();
+    if (u === t || f === t || (emp && emp === t)) return true;
+
+    const tNorm = t.replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+    const fNorm = f.replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+    const uNorm = u.replace(/[\.\,\-\_]/g, " ").replace(/\s+/g, " ").trim();
+    if (fNorm === tNorm || uNorm === tNorm) return true;
+
+    const tokens = tNorm.split(" ").filter((w) => w.length > 0);
+    if (tokens.length > 1) {
+      const allWords = `${uNorm} ${fNorm}`.split(" ").filter(Boolean);
+      const allTokensMatch = tokens.every((tok) => allWords.includes(tok));
+      if (allTokensMatch) return true;
+    }
+
+    return false;
   });
 }
 
@@ -241,24 +430,35 @@ async function queryOtcTimeCards(
  */
 async function verifyOtcUserAuth(
   username: string,
-  password?: string
+  password?: string,
+  preferredEmployeeName?: string
 ): Promise<{
   success: boolean;
   authenticated: boolean;
   user?: OtcUserRecord;
   error?: string;
+  isNetworkError?: boolean;
 }> {
   if (!username || !username.trim()) {
-    return { success: false, authenticated: false, error: "Username is required." };
+    return { success: false, authenticated: false, isNetworkError: false, error: "Username is required." };
   }
 
-  const allUsers = await getCachedOtcUsers();
-  const foundUser = findOtcUser(allUsers, username.trim());
+  const { users: allUsers, isLive } = await getCachedOtcUsers();
+  const foundUser = findOtcUser(allUsers, username.trim(), preferredEmployeeName);
 
   if (!foundUser) {
+    if (!isLive) {
+      return {
+        success: false,
+        authenticated: false,
+        isNetworkError: true,
+        error: `⚠️ Network Connection Error: Unable to reach Open Time Clock server (Company ID 94324) and username "${username.trim()}" is not in local cache.`,
+      };
+    }
     return {
       success: false,
       authenticated: false,
+      isNetworkError: false,
       error: `❌ Invalid Open Time Clock Account: Username "${username.trim()}" was not found in Company ID 94324. Please check your username.`,
     };
   }
@@ -282,6 +482,7 @@ async function verifyOtcUserAuth(
           "https://api1.opentimeclock.com/T1-TimeClockFree",
           {
             method: "POST",
+            agent: false,
             headers: {
               "Content-Type": "application/json",
               "Content-Length": Buffer.byteLength(payload),
@@ -299,6 +500,9 @@ async function verifyOtcUserAuth(
             });
           }
         );
+        req.setTimeout(8000, () => {
+          req.destroy(new Error("Open Time Clock auth timeout after 8s"));
+        });
         req.on("error", (err) => reject(err));
         req.write(payload);
         req.end();
@@ -308,6 +512,7 @@ async function verifyOtcUserAuth(
         return {
           success: false,
           authenticated: false,
+          isNetworkError: false,
           error: `❌ Incorrect Password: The password provided for Open Time Clock account "${foundUser.userName}" is incorrect. Please verify your credentials.`,
         };
       }
@@ -316,6 +521,7 @@ async function verifyOtcUserAuth(
         return {
           success: false,
           authenticated: false,
+          isNetworkError: false,
           error: `❌ Account Error: Username "${foundUser.userName}" was not recognized by Open Time Clock authentication.`,
         };
       }
@@ -337,17 +543,19 @@ async function verifyOtcUserAuth(
  */
 openTimeClockRouter.post("/verify", async (req: Request, res: Response) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, employeeName } = req.body;
     if (!username || !username.trim()) {
       return res.status(400).json({ success: false, error: "Username is required." });
     }
 
-    const authResult = await verifyOtcUserAuth(username, password);
+    const authResult = await verifyOtcUserAuth(username, password, employeeName);
 
     if (!authResult.success || !authResult.user) {
-      return res.status(401).json({
+      const statusCode = authResult.isNetworkError ? 503 : 401;
+      return res.status(statusCode).json({
         success: false,
         authenticated: false,
+        isNetworkError: Boolean(authResult.isNetworkError),
         error: authResult.error || "Authentication failed with Open Time Clock.",
       });
     }
@@ -365,7 +573,11 @@ openTimeClockRouter.post("/verify", async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error("OTC verify error:", error);
-    res.status(500).json({ success: false, error: error.message || "Failed to verify with Open Time Clock" });
+    res.status(503).json({
+      success: false,
+      isNetworkError: true,
+      error: error.message || "Failed to verify with Open Time Clock",
+    });
   }
 });
 
@@ -382,11 +594,13 @@ openTimeClockRouter.post("/fetch", async (req: Request, res: Response) => {
     }
 
     const userTerm = (username || employeeName || "").trim();
-    const authResult = await verifyOtcUserAuth(userTerm, password);
+    const authResult = await verifyOtcUserAuth(userTerm, password, employeeName);
 
     if (!authResult.success && username) {
-      return res.status(401).json({
+      const statusCode = authResult.isNetworkError ? 503 : 401;
+      return res.status(statusCode).json({
         success: false,
+        isNetworkError: Boolean(authResult.isNetworkError),
         error: authResult.error || `❌ Open Time Clock authentication failed for "${username}". Please check your credentials.`,
       });
     }
@@ -417,23 +631,14 @@ openTimeClockRouter.post("/fetch", async (req: Request, res: Response) => {
     // First attempt: Direct query with exact user full name for best speed
     let records = await queryOtcTimeCards(fromDateTime, toDateTime, targetFullName);
 
-    // If direct query returned 0, fallback to querying ALL USERS and filtering
+    // If direct query returned 0, fallback to querying ALL USERS and filtering with strict token matching
     if (records.length === 0) {
       const allRecords = await queryOtcTimeCards(fromDateTime, toDateTime, "ALL USERS");
       const searchTerms = [targetFullName, targetUserName, username, employeeName]
         .filter(Boolean)
         .map((s: string) => s.toLowerCase().trim());
 
-      records = allRecords.filter((r) => {
-        const u = (r.userName || "").toLowerCase().trim();
-        const f = (r.userFullName || "").toLowerCase().trim();
-        const emp = (r.employeeNumber || "").toLowerCase().trim();
-
-        return searchTerms.some((term) => {
-          if (!term) return false;
-          return u === term || f === term || f.includes(term) || term.includes(f) || (emp && emp === term);
-        });
-      });
+      records = allRecords.filter((r) => matchesPunchRecord(r, searchTerms));
     }
 
     // Group punches by day of the month
@@ -570,6 +775,10 @@ openTimeClockRouter.post("/fetch", async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error("OTC fetch error:", error);
-    res.status(500).json({ success: false, error: error.message || "Failed to fetch timecards from Open Time Clock" });
+    res.status(503).json({
+      success: false,
+      isNetworkError: true,
+      error: error.message || "Failed to fetch timecards from Open Time Clock",
+    });
   }
 });

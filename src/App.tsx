@@ -9,6 +9,7 @@ import { Login } from "./pages/Login";
 import { RegionalCalendar } from "./pages/RegionalCalendar";
 import { DtrGenerator } from "./pages/DtrGenerator";
 import { SigningWorkspace } from "./pages/SigningWorkspace";
+import { AceDtrCombiner } from "./pages/AceDtrCombiner";
 
 import { ProjectConfig } from "./pages/settings/ProjectConfig";
 import { UserAccess } from "./pages/settings/UserAccess";
@@ -43,6 +44,10 @@ function App() {
           }
         />
         <Route
+          path="/gatepass"
+          element={<Navigate to="/dtr?tab=gatepass" replace />}
+        />
+        <Route
           path="/calendar"
           element={
             <Shell>
@@ -59,6 +64,14 @@ function App() {
               <ModuleGuard moduleCode="MOD_SIGNING" moduleName="Signing Workspace">
                 <SigningWorkspace />
               </ModuleGuard>
+            </Shell>
+          }
+        />
+        <Route
+          path="/dtr-combiner"
+          element={
+            <Shell>
+              <AceDtrCombiner />
             </Shell>
           }
         />

@@ -350,6 +350,25 @@ export function autoFillWeekendsAndHolidays(
       };
     }
 
+    // Preserve approved Gate Pass entries (e.g. GP-POV 2026-10-0015)
+    const isGatePass = Boolean(
+      baseRow.isCustomLabel &&
+      baseRow.customLabel &&
+      (baseRow.customLabel.startsWith("GP-") || baseRow.customLabel.includes("GP-"))
+    );
+    if (isGatePass) {
+      return {
+        ...baseRow,
+        isCustomLabel: true,
+        amArrival: "",
+        amDeparture: "",
+        pmArrival: "",
+        pmDeparture: "",
+        undertimeHours: "",
+        undertimeMinutes: "",
+      };
+    }
+
     const date = new Date(year, monthIndex, day);
     const dayOfWeek = date.getDay(); // 0 = Sun, 6 = Sat
     const dayName = DAY_NAMES_OF_WEEK[dayOfWeek];

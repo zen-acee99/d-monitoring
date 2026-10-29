@@ -36,7 +36,10 @@ import {
   BookmarkCheck,
   Cloud,
   Loader2,
-  X
+  X,
+  Ticket,
+  Zap,
+  WifiOff
 } from "lucide-react";
 import {
   dtrGeneratorApi,
@@ -77,8 +80,31 @@ import {
 import { DtrPdfModal } from "@/components/dtr/DtrPdfModal";
 import { DtrSignatureValidationModal } from "@/components/dtr/DtrSignatureValidationModal";
 import { subscribeToDtrRealtime } from "@/services/dtrRealtime";
+import { GatePassModule } from "@/components/gatepass/GatePassModule";
+import {
+  getGatePassRegistry,
+  findMatchingGatePasses,
+  mergeGatePassIntoDtrRows,
+  mergeAllGatePassesIntoDtrRows,
+  GatePassRecord,
+} from "@/utils/gatePassStorage";
 
-type ActiveSubModule = "generator" | "hrm" | "tod" | "provincial";
+type ActiveSubModule = "generator" | "hrm" | "tod" | "provincial" | "gatepass";
+
+export function isOtcNetworkError(errObj?: { isNetworkError?: boolean; error?: string; message?: string } | any): boolean {
+  if (!errObj) return false;
+  if (errObj.isNetworkError) return true;
+  const msg = String(errObj.error || errObj.message || errObj || "").toLowerCase();
+  return /failed to fetch|fetch failed|network|connect|timeout|unreachable|offline|load failed|net::err|enotfound|econnreset|abort|cancelled|502|503|504|econnrefused/i.test(msg);
+}
+
+export function formatOtcErrorMessage(err?: string, isNetErr?: boolean): string {
+  if (!err) return isNetErr ? "Open Time Clock service is currently unreachable." : "Authentication failed.";
+  if (/failed to fetch|fetch failed|networkerror|load failed|net::err|enotfound|econnreset|abort|cancelled|connect econnrefused/i.test(err)) {
+    return "Unable to establish a connection to Open Time Clock (Company ID: 94324). Please check your internet connection or verify that the local server is running.";
+  }
+  return err;
+}
 
 export function DtrGenerator() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -86,12 +112,16 @@ export function DtrGenerator() {
 
   // Sub-module navigation state (synced with URL tab parameter)
   const [activeSubModule, setActiveSubModule] = useState<ActiveSubModule>(() => {
-    if (tabParam && ["generator", "hrm", "tod", "provincial"].includes(tabParam)) {
+    if (tabParam && ["generator", "hrm", "tod", "provincial", "gatepass"].includes(tabParam)) {
       return tabParam;
     }
     return "generator";
   });
   const [activeProvinceTab, setActiveProvinceTab] = useState<ProvincialTab>(() => {
+    const provParam = searchParams.get("province");
+    if (provParam && PROVINCIAL_TABS.includes(provParam as ProvincialTab)) {
+      return provParam as ProvincialTab;
+    }
     const u = getCurrentUser();
     if (u) {
       const norm = normalizeUserAssignment(u);
@@ -104,16 +134,20 @@ export function DtrGenerator() {
     return "Regional Off";
   });
 
-  // Keep activeSubModule synchronized when URL query param changes
+  // Keep activeSubModule and activeProvinceTab synchronized when URL query param changes
   useEffect(() => {
-    if (tabParam && ["generator", "hrm", "tod", "provincial"].includes(tabParam)) {
+    if (tabParam && ["generator", "hrm", "tod", "provincial", "gatepass"].includes(tabParam)) {
       setActiveSubModule(tabParam);
     }
-  }, [tabParam]);
+    const provParam = searchParams.get("province");
+    if (provParam && PROVINCIAL_TABS.includes(provParam as ProvincialTab)) {
+      setActiveProvinceTab(provParam as ProvincialTab);
+    }
+  }, [tabParam, searchParams]);
 
   const handleSubModuleChange = (sub: ActiveSubModule) => {
     setActiveSubModule(sub);
-    setSearchParams({ tab: sub });
+    setSearchParams(sub === "provincial" ? { tab: sub, province: activeProvinceTab } : { tab: sub });
   };
 
   // Saved Personnel Setups from Turso Database (dtr_user_setup table)
@@ -262,6 +296,10 @@ export function DtrGenerator() {
     }));
   }, [includeDateTime]);
 
+  // Gate Pass active matching detection for active month/year
+  const matchingGatePasses = findMatchingGatePasses(config.month, config.year, config.employeeName);
+  const activeGatePass = matchingGatePasses[0] || getGatePassRegistry()[0] || null;
+
   // Digital Signer Identity strictly derived from P12 certificate
 
   const [p12SignerIdentity, setP12SignerIdentity] = useState<{
@@ -295,6 +333,7 @@ export function DtrGenerator() {
     scope: string;
     message: string;
     error?: string;
+    isNetworkError?: boolean;
   } | null>(null);
 
   // Active user session & authentication provider
@@ -579,23 +618,27 @@ export function DtrGenerator() {
     try {
       // If Open Time Clock username is provided, verify credentials first before saving to Turso
       if (otcUsername.trim()) {
-        const verifyRes = await openTimeClockApi.verifyAccount(otcUsername.trim(), otcPassword);
-        if (!verifyRes.success) {
+        const verifyRes = await openTimeClockApi.verifyAccount(otcUsername.trim(), otcPassword, employeeName);
+        const isNetErr = Boolean(isOtcNetworkError(verifyRes));
+        if (!verifyRes.success && !isNetErr) {
           setIsOtcConnected(false);
           setIsOtcHidden(false); // Keep credentials fields visible for user to edit
           setOtcDialogData({
             success: false,
+            isNetworkError: false,
             employeeName: employeeName,
             userName: otcUsername.trim(),
             totalPunches: 0,
             scope: "",
-            message: verifyRes.error || `Invalid credentials for Open Time Clock account "${otcUsername.trim()}".`,
-            error: verifyRes.error || "Incorrect username or password. Please verify your Open Time Clock credentials.",
+            message: formatOtcErrorMessage(verifyRes.error || `Invalid credentials for Open Time Clock account "${otcUsername.trim()}".`, false),
+            error: formatOtcErrorMessage(verifyRes.error || "Incorrect username or password. Please verify your Open Time Clock credentials.", false),
           });
           setShowOtcDialog(true);
           showNotification(verifyRes.error || "❌ Incorrect Open Time Clock credentials. Setup was NOT saved to Turso.");
           setIsSavingUserSetup(false);
           return; // STOP! DO NOT PROCEED TO SAVE TO TURSO!
+        } else if (!verifyRes.success && isNetErr) {
+          showNotification("⚠️ Network offline: Profile saved, Open Time Clock verification deferred.");
         }
       }
 
@@ -1199,23 +1242,25 @@ export function DtrGenerator() {
     setIsOtcFetching(true);
     try {
       // Step 1: Verify username / account against Open Time Clock
-      const verifyRes = await openTimeClockApi.verifyAccount(userQuery, otcPassword);
+      const verifyRes = await openTimeClockApi.verifyAccount(userQuery, otcPassword, config.employeeName.trim() || undefined);
 
       if (!verifyRes.success) {
+        const isNetErr = Boolean(isOtcNetworkError(verifyRes));
         setIsOtcConnected(false);
         setOtcDialogData({
           success: false,
+          isNetworkError: isNetErr,
           employeeName: userQuery,
           userName: userQuery,
           totalPunches: 0,
           scope: "",
-          message: verifyRes.error || `Invalid account "${userQuery}". Please check your Open Time Clock username.`,
-          error: verifyRes.error || "User account not found in Open Time Clock (Company ID: 94324).",
+          message: formatOtcErrorMessage(verifyRes.error || (isNetErr ? "Unable to connect to Open Time Clock synchronization service." : `Invalid account "${userQuery}". Please check your Open Time Clock username.`), isNetErr),
+          error: formatOtcErrorMessage(verifyRes.error || (isNetErr ? "Connection to Open Time Clock timed out or could not be established." : "User account not found in Open Time Clock (Company ID: 94324)."), isNetErr),
         });
         if (!silentModal) {
           setShowOtcDialog(true);
         }
-        showNotification(verifyRes.error || "❌ Invalid Open Time Clock username or credentials.");
+        showNotification(formatOtcErrorMessage(verifyRes.error || (isNetErr ? "⚠️ Could not connect to Open Time Clock service." : "❌ Invalid Open Time Clock username or credentials."), isNetErr));
         return;
       }
 
@@ -1296,7 +1341,7 @@ export function DtrGenerator() {
         showNotification(
           `✅ Open Time Clock: Synced ${res.totalPunches || 0} time punches for ${effectiveEmpName} (${scopeLabel})!`
         );
-      } else {
+      } else if (res.success) {
         const effectiveEmpName = verifyRes.employeeName || userQuery;
         const effectiveUserName = verifyRes.userName || userQuery;
         const scopeLabel =
@@ -1324,9 +1369,42 @@ export function DtrGenerator() {
         showNotification(
           `✓ Connected to Open Time Clock (${effectiveEmpName}), but 0 punch logs recorded for ${MONTH_NAMES[activeMonth]} ${activeYear}.`
         );
+      } else {
+        const isNetErr = Boolean(isOtcNetworkError(res));
+        const formattedErr = formatOtcErrorMessage(res.error, isNetErr);
+        setOtcDialogData({
+          success: false,
+          isNetworkError: isNetErr,
+          employeeName: userQuery,
+          userName: userQuery,
+          totalPunches: 0,
+          scope: "",
+          message: formattedErr || (isNetErr ? "Unable to connect to Open Time Clock synchronization service." : "Failed to fetch punches."),
+          error: formattedErr || "Unable to fetch punches from Open Time Clock.",
+        });
+        if (!silentModal) {
+          setShowOtcDialog(true);
+        }
+        showNotification(formattedErr || (isNetErr ? "⚠️ Could not connect to Open Time Clock service." : "❌ Failed to fetch punches from Open Time Clock."));
+        return;
       }
     } catch (err: any) {
-      showNotification(`❌ Failed to connect to Open Time Clock: ${err.message || "Error"}`);
+      const isNetErr = Boolean(isOtcNetworkError(err));
+      const formattedErr = formatOtcErrorMessage(err?.message, isNetErr);
+      if (!silentModal) {
+        setOtcDialogData({
+          success: false,
+          isNetworkError: isNetErr,
+          employeeName: userQuery,
+          userName: userQuery,
+          totalPunches: 0,
+          scope: "",
+          message: formattedErr || (isNetErr ? "Unable to connect to Open Time Clock synchronization service." : "Failed to connect to Open Time Clock."),
+          error: formattedErr || "Open Time Clock service unreachable.",
+        });
+        setShowOtcDialog(true);
+      }
+      showNotification(`⚠️ Failed to connect to Open Time Clock: ${formattedErr}`);
     } finally {
       setIsOtcFetching(false);
     }
@@ -1442,6 +1520,152 @@ export function DtrGenerator() {
       return copy;
     });
   };
+
+  // Merge a Gate Pass record into CS Form 48
+  const handleMergeGatePassToCs48 = (passRecord: GatePassRecord) => {
+    const { year, monthIndex, days, controlNo } = passRecord;
+
+    const daysInM = new Date(year, monthIndex + 1, 0).getDate();
+    const hasFirstHalf = days.some((d) => d <= 15);
+    const hasSecondHalf = days.some((d) => d > 15);
+    const resolvedScope: "full" | "first-half" | "second-half" =
+      hasFirstHalf && hasSecondHalf ? "full" : hasFirstHalf ? "first-half" : "second-half";
+    const periodText =
+      resolvedScope === "first-half"
+        ? `${MONTH_NAMES[monthIndex].toUpperCase()} 01-15, ${year}`
+        : `${MONTH_NAMES[monthIndex].toUpperCase()} 16-${daysInM}, ${year}`;
+
+    setConfig((prev) => ({
+      ...prev,
+      month: monthIndex,
+      year,
+      scope: resolvedScope,
+      periodText,
+    }));
+
+    setRows((prev) => {
+      let base = prev;
+      if (config.month !== monthIndex || config.year !== year) {
+        base = autoFillWeekendsAndHolidays(
+          createEmptyDtrRows(),
+          monthIndex,
+          year,
+          resolvedScope,
+          scheduleSetting || undefined
+        );
+      }
+      const { updatedRows } = mergeGatePassIntoDtrRows(base, { controlNo, days });
+      return updatedRows;
+    });
+
+    handleSubModuleChange("generator");
+    const dayText = days.length > 1 ? `Days ${days.join(", ")}` : `Day ${days[0]}`;
+    showNotification(
+      `✓ Gate Pass ${controlNo} automatically merged into CS Form 48 for ${MONTH_NAMES[monthIndex]} ${year} (${dayText})!`
+    );
+  };
+
+  // Merge multiple Gate Pass records into CS Form 48 simultaneously
+  const handleMergeAllGatePassesToCs48 = (passesToMerge?: GatePassRecord[]) => {
+    const list = passesToMerge || getGatePassRegistry();
+    if (!list || list.length === 0) {
+      showNotification("No Gate Passes found in storage to merge.");
+      return;
+    }
+
+    const matching = list.filter((p) => p.monthIndex === config.month && p.year === config.year);
+    const targetPasses = matching.length > 0 ? matching : list;
+
+    const allDays = Array.from(new Set(targetPasses.flatMap((p) => p.days))).sort((a, b) => a - b);
+    const hasFirstHalf = allDays.some((d) => d <= 15);
+    const hasSecondHalf = allDays.some((d) => d > 15);
+    const resolvedScope: "full" | "first-half" | "second-half" =
+      hasFirstHalf && hasSecondHalf ? "full" : hasFirstHalf ? "first-half" : "second-half";
+
+    const firstPass = targetPasses[0];
+    if (config.month !== firstPass.monthIndex || config.year !== firstPass.year) {
+      const daysInM = new Date(firstPass.year, firstPass.monthIndex + 1, 0).getDate();
+      const periodText =
+        resolvedScope === "first-half"
+          ? `${MONTH_NAMES[firstPass.monthIndex].toUpperCase()} 01-15, ${firstPass.year}`
+          : `${MONTH_NAMES[firstPass.monthIndex].toUpperCase()} 16-${daysInM}, ${firstPass.year}`;
+
+      setConfig((prev) => ({
+        ...prev,
+        month: firstPass.monthIndex,
+        year: firstPass.year,
+        scope: resolvedScope,
+        periodText,
+      }));
+    }
+
+    setRows((prev) => {
+      let base = prev;
+      if (config.month !== firstPass.monthIndex || config.year !== firstPass.year) {
+        base = autoFillWeekendsAndHolidays(
+          createEmptyDtrRows(),
+          firstPass.monthIndex,
+          firstPass.year,
+          resolvedScope,
+          scheduleSetting || undefined
+        );
+      }
+      const { updatedRows } = mergeAllGatePassesIntoDtrRows(base, targetPasses);
+      return updatedRows;
+    });
+
+    handleSubModuleChange("generator");
+    showNotification(
+      `✓ Successfully merged all ${targetPasses.length} Gate Pass(es) (Days: ${allDays.join(", ")}) into CS Form 48!`
+    );
+  };
+
+  // Automatically check for pending Gate Pass merges or listen to gate pass updates
+  useEffect(() => {
+    try {
+      const allPendingRaw = localStorage.getItem("dict_auto_merge_all_pending");
+      if (allPendingRaw) {
+        localStorage.removeItem("dict_auto_merge_all_pending");
+        const pendingList: GatePassRecord[] = JSON.parse(allPendingRaw);
+        if (Array.isArray(pendingList) && pendingList.length > 0) {
+          handleMergeAllGatePassesToCs48(pendingList);
+          return;
+        }
+      }
+
+      const pendingRaw = localStorage.getItem("dict_auto_merge_pending");
+      if (pendingRaw) {
+        localStorage.removeItem("dict_auto_merge_pending");
+        const pendingPass: GatePassRecord = JSON.parse(pendingRaw);
+        if (pendingPass && pendingPass.controlNo && pendingPass.days) {
+          handleMergeGatePassToCs48(pendingPass);
+          return;
+        }
+      }
+    } catch {}
+
+    const handleGatePassEvent = (e: any) => {
+      const detail: GatePassRecord = e.detail;
+      if (detail && detail.controlNo && detail.days) {
+        // If it matches currently active month and year, auto-merge live!
+        if (detail.monthIndex === config.month && detail.year === config.year) {
+          setRows((prev) => {
+            const { updatedRows } = mergeGatePassIntoDtrRows(prev, {
+              controlNo: detail.controlNo,
+              days: detail.days,
+            });
+            return updatedRows;
+          });
+          showNotification(`✓ Live synced Gate Pass ${detail.controlNo} into CS Form 48!`);
+        }
+      }
+    };
+
+    window.addEventListener("dict_gatepass_updated", handleGatePassEvent);
+    return () => {
+      window.removeEventListener("dict_gatepass_updated", handleGatePassEvent);
+    };
+  }, [config.month, config.year, activeSubModule]);
 
   // Move current generated DTR to Provincial Office (PO) Archive
   const handleMoveToPo = async () => {
@@ -1749,8 +1973,9 @@ export function DtrGenerator() {
     // Also persist personnel setup and Open Time Clock credentials to Turso dtr_user_setup
     if (resolvedUserId && (otcUsername.trim() || safeName)) {
       if (otcUsername.trim()) {
-        openTimeClockApi.verifyAccount(otcUsername.trim(), otcPassword).then((verifyRes) => {
-          if (verifyRes.success) {
+        openTimeClockApi.verifyAccount(otcUsername.trim(), otcPassword, safeName).then((verifyRes) => {
+          const isNetErr = Boolean(isOtcNetworkError(verifyRes));
+          if (verifyRes.success || isNetErr) {
             dtrUserSetupApi.saveSetup({
               userId: resolvedUserId,
               employeeName: safeName,
@@ -1764,25 +1989,16 @@ export function DtrGenerator() {
               otcUsername: otcUsername.trim(),
               otcPassword: otcPassword.trim() || undefined,
             }).then(() => {
-              setIsOtcHidden(true);
-              localStorage.setItem("dict_otc_hidden", "true");
-              setIsOtcConnected(true);
+              if (verifyRes.success) {
+                setIsOtcHidden(true);
+                localStorage.setItem("dict_otc_hidden", "true");
+                setIsOtcConnected(true);
+              }
             }).catch((e) => console.warn("Failed to sync setup on Save Record:", e));
           } else {
-            // Do NOT save incorrect credentials to Turso!
             setIsOtcHidden(false);
             setIsOtcConnected(false);
-            setOtcDialogData({
-              success: false,
-              employeeName: safeName,
-              userName: otcUsername.trim(),
-              totalPunches: 0,
-              scope: "",
-              message: verifyRes.error || `Incorrect credentials for Open Time Clock account "${otcUsername.trim()}".`,
-              error: verifyRes.error || "Incorrect Open Time Clock credentials. The incorrect username/password were NOT saved to Turso.",
-            });
-            setShowOtcDialog(true);
-            showNotification("⚠️ Notice: DTR saved to archive, but incorrect Open Time Clock credentials were NOT saved to Turso.");
+            showNotification("⚠️ Notice: DTR saved to archive, but Open Time Clock credentials could not be verified.");
           }
         }).catch((err) => console.warn("Could not verify OTC during save record:", err));
       } else {
@@ -1853,47 +2069,89 @@ export function DtrGenerator() {
           )}
         </div>
 
-        {/* Active Selected Sub-Module Indicator (Only displays the active module) */}
+        {/* Sub-Module Navigation Bar */}
         <div className="flex flex-wrap items-center gap-2 pt-1">
-          {activeSubModule === "generator" && (
-            <div className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-emerald-600 text-white shadow-lg shadow-emerald-900/40 border border-emerald-500/50">
-              <Sparkles className="w-4 h-4" />
-              <span>DTR Generator (CS Form 48)</span>
+          <button
+            type="button"
+            onClick={() => handleSubModuleChange("generator")}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+              activeSubModule === "generator"
+                ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/40 border-emerald-500/50"
+                : "bg-[#111728] text-slate-300 border-[#1C2844] hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            <Sparkles className="w-4 h-4 text-emerald-400" />
+            <span>CS Form 48 Builder</span>
+            {activeSubModule === "generator" && (
               <span className="text-[10px] px-2 py-0.5 rounded bg-white/20 text-white font-mono uppercase tracking-wider">
-                Active Builder
+                Active
               </span>
-            </div>
-          )}
+            )}
+          </button>
 
-          {activeSubModule === "hrm" && (
-            <div className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-blue-600 text-white shadow-lg shadow-blue-900/40 border border-blue-500/50">
-              <Users2 className="w-4 h-4" />
-              <span>HRM - module</span>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-white/20 text-white">
-                {storageCounts.hrm} Records
-              </span>
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={() => handleSubModuleChange("gatepass")}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+              activeSubModule === "gatepass"
+                ? "bg-cyan-600 text-white shadow-lg shadow-cyan-900/40 border-cyan-500/50"
+                : "bg-[#111728] text-slate-300 border-[#1C2844] hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            <Ticket className="w-4 h-4 text-cyan-400" />
+            <span>Gate Pass Module</span>
+            <span className="text-[10px] px-2 py-0.5 rounded-full font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-bold">
+              Official Pass
+            </span>
+          </button>
 
-          {activeSubModule === "tod" && (
-            <div className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-purple-600 text-white shadow-lg shadow-purple-900/40 border border-purple-500/50">
-              <Building2 className="w-4 h-4" />
-              <span>TOD - module</span>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-white/20 text-white">
-                {storageCounts.tod} Records
-              </span>
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={() => handleSubModuleChange("hrm")}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+              activeSubModule === "hrm"
+                ? "bg-blue-600 text-white shadow-lg shadow-blue-900/40 border-blue-500/50"
+                : "bg-[#111728] text-slate-300 border-[#1C2844] hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            <Users2 className="w-4 h-4 text-blue-400" />
+            <span>HRM Module</span>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-blue-500/20 text-blue-300 border border-blue-500/30 font-bold">
+              {storageCounts.hrm}
+            </span>
+          </button>
 
-          {activeSubModule === "provincial" && (
-            <div className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-amber-600 text-white shadow-lg shadow-amber-900/40 border border-amber-500/50">
-              <MapPin className="w-4 h-4" />
-              <span>Provincial - module</span>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-white/20 text-white">
-                {totalProvincialCount} Records
-              </span>
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={() => handleSubModuleChange("tod")}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+              activeSubModule === "tod"
+                ? "bg-purple-600 text-white shadow-lg shadow-purple-900/40 border-purple-500/50"
+                : "bg-[#111728] text-slate-300 border-[#1C2844] hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            <Building2 className="w-4 h-4 text-purple-400" />
+            <span>TOD Module</span>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-purple-500/20 text-purple-300 border border-purple-500/30 font-bold">
+              {storageCounts.tod}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleSubModuleChange("provincial")}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+              activeSubModule === "provincial"
+                ? "bg-amber-600 text-white shadow-lg shadow-amber-900/40 border-amber-500/50"
+                : "bg-[#111728] text-slate-300 border-[#1C2844] hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            <MapPin className="w-4 h-4 text-amber-400" />
+            <span>Provincial Offices</span>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold">
+              {totalProvincialCount}
+            </span>
+          </button>
         </div>
 
         {/* Nested Tabs inside Provincial - module */}
@@ -1909,7 +2167,10 @@ export function DtrGenerator() {
                 <button
                   key={p}
                   type="button"
-                  onClick={() => setActiveProvinceTab(p)}
+                  onClick={() => {
+                    setActiveProvinceTab(p);
+                    setSearchParams({ tab: "provincial", province: p });
+                  }}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer border ${isActive
                       ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-md shadow-amber-950/40"
                       : "bg-[#111728] border-[#1C2844] text-slate-400 hover:text-white hover:border-slate-700"
@@ -1971,7 +2232,17 @@ export function DtrGenerator() {
       )}
 
       {/* ========================================================================= */}
-      {/* SUB-MODULE VIEW 4: DTR GENERATOR (INTERACTIVE CS FORM 48 BUILDER)         */}
+      {/* SUB-MODULE VIEW 4: GATE PASS MODULE (OFFICIAL DICT FORM & PO INTEGRATION) */}
+      {/* ========================================================================= */}
+      {activeSubModule === "gatepass" && (
+        <GatePassModule
+          onMergeToCs48={handleMergeGatePassToCs48}
+          onMergeAllToCs48={handleMergeAllGatePassesToCs48}
+        />
+      )}
+
+      {/* ========================================================================= */}
+      {/* SUB-MODULE VIEW 5: DTR GENERATOR (INTERACTIVE CS FORM 48 BUILDER)         */}
       {/* ========================================================================= */}
       {activeSubModule === "generator" && (
         <div className="flex-1 flex flex-col lg:flex-row overflow-x-auto">
@@ -2447,6 +2718,55 @@ export function DtrGenerator() {
                   Clear Entries
                 </button>
               </div>
+
+              {/* Gate Pass Auto-Merge Quick Action */}
+              {matchingGatePasses.length > 1 ? (
+                <div className="space-y-1.5 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => handleMergeAllGatePassesToCs48(matchingGatePasses)}
+                    className="w-full py-2 px-2.5 rounded-lg bg-gradient-to-r from-indigo-600/30 via-blue-600/30 to-cyan-600/30 hover:from-indigo-600/40 hover:to-cyan-600/40 border border-blue-500/50 text-white font-bold text-[11px] flex items-center justify-between transition-all cursor-pointer shadow-sm group"
+                    title={`Merge all ${matchingGatePasses.length} Gate Passes into CS Form 48 for this month`}
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <Zap className="w-3.5 h-3.5 text-amber-300 shrink-0 group-hover:scale-110 transition-transform" />
+                      <span className="truncate">Merge All Gate Passes ({matchingGatePasses.length})</span>
+                    </div>
+                    <span className="font-mono text-[9px] bg-blue-500/30 text-blue-200 px-1.5 py-0.5 rounded border border-blue-500/40 shrink-0">
+                      Days {Array.from(new Set(matchingGatePasses.flatMap(p => p.days))).sort((a,b)=>a-b).join(", ")}
+                    </span>
+                  </button>
+
+                  {activeGatePass && (
+                    <button
+                      type="button"
+                      onClick={() => handleMergeGatePassToCs48(activeGatePass)}
+                      className="w-full py-1.5 px-2.5 rounded-lg bg-blue-600/15 hover:bg-blue-600/25 border border-blue-500/30 text-blue-300 font-semibold text-[10.5px] flex items-center justify-between transition-all cursor-pointer"
+                      title={`Merge current active Gate Pass ${activeGatePass.controlNo}`}
+                    >
+                      <span className="truncate">Merge Single: {activeGatePass.controlNo.split(" ")[0]}</span>
+                      <span className="font-mono text-[9px] text-blue-300">
+                        Day {activeGatePass.days.join(", ")}
+                      </span>
+                    </button>
+                  )}
+                </div>
+              ) : activeGatePass ? (
+                <button
+                  type="button"
+                  onClick={() => handleMergeGatePassToCs48(activeGatePass)}
+                  className="w-full py-2 px-2.5 rounded-lg bg-gradient-to-r from-blue-600/20 to-indigo-600/20 hover:from-blue-600/30 hover:to-indigo-600/30 border border-blue-500/40 text-blue-300 font-bold text-[11px] flex items-center justify-between transition-all cursor-pointer shadow-sm group"
+                  title={`Auto-merge ${activeGatePass.controlNo} into CS Form 48 for ${MONTH_NAMES[activeGatePass.monthIndex]} ${activeGatePass.year} on Day(s) ${activeGatePass.days.join(", ")}`}
+                >
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Sparkles className="w-3.5 h-3.5 text-blue-400 shrink-0 group-hover:rotate-12 transition-transform" />
+                    <span className="truncate">Auto-Merge Gate Pass</span>
+                  </div>
+                  <span className="font-mono text-[9.5px] bg-blue-500/25 text-blue-200 px-1.5 py-0.5 rounded border border-blue-500/30 shrink-0">
+                    {activeGatePass.controlNo.split(" ")[0]} • Day {activeGatePass.days.join(", ")}
+                  </span>
+                </button>
+              ) : null}
             </div>
 
             {/* Section 4: PNPKI DIGITAL SIGNATURE & .P12 KEYSTORE */}
@@ -2929,6 +3249,72 @@ export function DtrGenerator() {
                   </button>
                 </div>
               </>
+            ) : isOtcNetworkError(otcDialogData) ? (
+              <>
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shadow-md shrink-0">
+                      <WifiOff className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-white uppercase tracking-wide">
+                        Connection Notice
+                      </h3>
+                      <p className="text-[11px] text-amber-400 font-semibold mt-0.5">
+                        Open Time Clock service unreachable
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowOtcDialog(false)}
+                    className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="bg-[#191411] border border-amber-500/30 p-4 rounded-xl space-y-2.5 text-xs text-slate-300">
+                  <p className="text-amber-200 font-medium">
+                    {formatOtcErrorMessage(otcDialogData.error || otcDialogData.message, true)}
+                  </p>
+                  <ul className="list-disc list-inside text-[11px] text-slate-400 space-y-1 pt-1 border-t border-amber-500/20">
+                    <li>Your Open Time Clock credentials may be valid, but the system could not reach the synchronization server.</li>
+                    <li>If testing locally, ensure the backend server is running (<code>npm run server</code> or <code>npm run dev</code>).</li>
+                    <li>You can continue editing, reviewing, and exporting your DTR in manual mode at any time.</li>
+                  </ul>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#1E293B]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowOtcDialog(false);
+                      handleOtcLoginAndFetch();
+                    }}
+                    className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold transition-all shadow-md shadow-amber-900/40 cursor-pointer"
+                  >
+                    Retry Connection
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowOtcDialog(false);
+                      setIsOtcHidden(false);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold transition-all cursor-pointer"
+                  >
+                    Edit Credentials
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowOtcDialog(false)}
+                    className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all shadow-md cursor-pointer"
+                  >
+                    Manual Mode
+                  </button>
+                </div>
+              </>
             ) : (
               <>
                 <div className="flex items-start justify-between">
@@ -2956,7 +3342,7 @@ export function DtrGenerator() {
 
                 <div className="bg-[#181119] border border-red-500/30 p-4 rounded-xl space-y-2.5 text-xs text-slate-300">
                   <p className="text-red-200 font-medium">
-                    {otcDialogData.error || otcDialogData.message}
+                    {formatOtcErrorMessage(otcDialogData.error || otcDialogData.message, false)}
                   </p>
                   <ul className="list-disc list-inside text-[11px] text-slate-400 space-y-1 pt-1 border-t border-red-500/20">
                     <li>Verify your Open Time Clock account username (e.g. <code>Ace M.</code> or full name).</li>
@@ -2972,9 +3358,16 @@ export function DtrGenerator() {
                       setShowOtcDialog(false);
                       setIsOtcHidden(false);
                     }}
-                    className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-all shadow-md shadow-red-900/40 cursor-pointer"
+                    className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-all shadow-md shadow-red-900/40 cursor-pointer"
                   >
                     Re-enter Credentials
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowOtcDialog(false)}
+                    className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold transition-all cursor-pointer"
+                  >
+                    Continue in Manual Mode
                   </button>
                 </div>
               </>
@@ -3251,17 +3644,25 @@ function DtrFormCopy({
                         isNoWork ? "italic font-semibold text-gray-400" : "font-bold text-black"
                       }`}
                     >
-                      <input
-                        type="text"
-                        value={row.customLabel || ""}
-                        onChange={(e) => onCellChange(idx, "customLabel", e.target.value)}
-                        placeholder="SATURDAY / SUNDAY / HOLIDAY"
-                        className={`w-full text-center bg-transparent focus:bg-white focus:outline-none uppercase tracking-wider placeholder:text-slate-400 py-0 ${
-                          isNoWork
-                            ? "italic font-semibold text-gray-400 text-[8px]"
-                            : "font-bold text-[8.5px] text-black"
-                        }`}
-                      />
+                      <div className="flex items-center justify-center gap-1 w-full">
+                        {labelUpper.startsWith("GP-") && (
+                          <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-[7.5px] font-mono font-bold bg-blue-100 text-blue-800 border border-blue-300 print:hidden shrink-0 select-none">
+                            <Ticket className="w-2 h-2 text-blue-600" />
+                            GATE PASS
+                          </span>
+                        )}
+                        <input
+                          type="text"
+                          value={row.customLabel || ""}
+                          onChange={(e) => onCellChange(idx, "customLabel", e.target.value)}
+                          placeholder="SATURDAY / SUNDAY / HOLIDAY"
+                          className={`w-full text-center bg-transparent focus:bg-white focus:outline-none uppercase tracking-wider placeholder:text-slate-400 py-0 ${
+                            isNoWork
+                              ? "italic font-semibold text-gray-400 text-[8px]"
+                              : "font-bold text-[8.5px] text-black"
+                          }`}
+                        />
+                      </div>
                     </td>
                   </tr>
                 );

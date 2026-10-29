@@ -79,6 +79,7 @@ export interface WorkspaceDocument {
   fileObj?: File;
   scannedInfo?: ScanPdfResult;
   isPendingSync?: boolean;
+  province?: string;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -107,6 +108,112 @@ function normalizeName(name?: string): string {
   return (name || "").trim().toLowerCase();
 }
 
+export function isUserSuperAdmin(user: any): boolean {
+  if (!user || user.status === "inactive") return false;
+  const role = (user.role || "").trim().toLowerCase();
+  const position = ((user as any).position || "").trim().toLowerCase();
+  const designation = ((user as any).designation || "").trim().toLowerCase();
+  const name = (user.name || "").trim().toLowerCase();
+  const email = (user.email || "").trim().toLowerCase();
+
+  return (
+    role.includes("super admin") ||
+    role.includes("superadmin") ||
+    role.includes("super administrator") ||
+    role.includes("superadministrator") ||
+    role === "admin" ||
+    role === "administrator" ||
+    role.startsWith("admin ") ||
+    role.endsWith(" admin") ||
+    role.includes("system administrator") ||
+    role.includes("sysadmin") ||
+    position.includes("super admin") ||
+    position.includes("super administrator") ||
+    position.includes("superadministrator") ||
+    position === "admin" ||
+    position === "administrator" ||
+    position.includes("system administrator") ||
+    designation.includes("super admin") ||
+    designation.includes("super administrator") ||
+    designation.includes("superadministrator") ||
+    designation === "admin" ||
+    designation === "administrator" ||
+    designation.includes("system administrator") ||
+    (user as any).isSuperAdmin === true ||
+    email.startsWith("admin@") ||
+    name === "super admin" ||
+    name === "super administrator" ||
+    name === "admin" ||
+    name === "administrator"
+  );
+}
+
+export function isUserProvincialOfficer(user: any): boolean {
+  if (!user || user.status === "inactive") return false;
+  const role = (user.role || "").trim().toLowerCase();
+  const position = ((user as any).position || "").trim().toLowerCase();
+  const designation = ((user as any).designation || "").trim().toLowerCase();
+  const name = (user.name || "").trim().toLowerCase();
+  const email = (user.email || "").trim().toLowerCase();
+
+  const isPoRole =
+    role.includes("provincial officer") ||
+    role === "po" ||
+    role.startsWith("po ") ||
+    role.endsWith(" po") ||
+    role.includes(" po ") ||
+    role.includes("(po)") ||
+    role.startsWith("po-") ||
+    role.includes("po -") ||
+    position.includes("provincial officer") ||
+    position === "po" ||
+    position.startsWith("po ") ||
+    position.endsWith(" po") ||
+    position.includes(" po ") ||
+    position.includes("(po)") ||
+    designation.includes("provincial officer") ||
+    designation === "po" ||
+    designation.includes("(po)");
+
+  const isPoByName =
+    name.includes("rene jane") ||
+    name.includes("buena") ||
+    email.includes("renejane.buena") ||
+    (name.includes("antonio") && name.includes("reyes")) ||
+    email.includes("antonio.reyes") ||
+    (name.includes("maria elena") && name.includes("santos")) ||
+    email.includes("maria.santos") ||
+    (name.includes("carlo") && name.includes("romero")) ||
+    email.includes("carlo.romero") ||
+    (name.includes("ramon") && name.includes("fernandez")) ||
+    email.includes("ramon.fernandez") ||
+    (name.includes("cynthia") && name.includes("morales")) ||
+    email.includes("cynthia.morales");
+
+  const isProvincialHead =
+    (role.includes("provincial") || designation.includes("provincial") || position.includes("provincial")) &&
+    (role.includes("head") || role.includes("lead") || role.includes("officer") || role.includes("director"));
+
+  return isPoRole || isPoByName || isProvincialHead;
+}
+
+export function getUserDesignatedProvince(user: any): string {
+  if (!user) return "";
+  const rawScope = ((user.focalProvince || user.province || "")).trim().toLowerCase();
+  if (rawScope && rawScope !== "regional off" && !rawScope.includes("regional")) {
+    return rawScope;
+  }
+  const name = (user.name || "").toLowerCase();
+  const email = (user.email || "").toLowerCase();
+  if (name.includes("rene jane") || name.includes("buena") || email.includes("renejane.buena")) return "albay";
+  if ((name.includes("antonio") && name.includes("reyes")) || email.includes("antonio.reyes")) return "camarines sur";
+  if ((name.includes("maria elena") && name.includes("santos")) || email.includes("maria.santos")) return "camarines norte";
+  if ((name.includes("carlo") && name.includes("romero")) || email.includes("carlo.romero")) return "catanduanes";
+  if ((name.includes("ramon") && name.includes("fernandez")) || email.includes("ramon.fernandez")) return "masbate";
+  if ((name.includes("cynthia") && name.includes("morales")) || email.includes("cynthia.morales")) return "sorsogon";
+  return "";
+}
+
 function isUserInRequiredSigners(
   doc: WorkspaceDocument,
   userName?: string,
@@ -115,6 +222,27 @@ function isUserInRequiredSigners(
   if (!userName && !userRole) return false;
   const target = normalizeName(userName);
   const targetRole = (userRole || "").trim().toUpperCase();
+
+  // SuperAdmin has universal signing authority across workspace documents
+  const isSuperAdminRole =
+    targetRole.includes("SUPER ADMIN") ||
+    targetRole.includes("SUPERADMIN") ||
+    targetRole.includes("SUPER ADMINISTRATOR") ||
+    targetRole.includes("SUPERADMINISTRATOR") ||
+    targetRole === "ADMIN" ||
+    targetRole === "ADMINISTRATOR" ||
+    targetRole.startsWith("ADMIN ") ||
+    targetRole.endsWith(" ADMIN") ||
+    targetRole.includes("SYSTEM ADMINISTRATOR") ||
+    targetRole.includes("SYSADMIN") ||
+    target === "super admin" ||
+    target === "super administrator" ||
+    target === "admin" ||
+    target === "administrator";
+
+  if (isSuperAdminRole) {
+    return true;
+  }
 
   // 1. Direct name match in requiredSigners
   const inReq = doc.requiredSigners.some(
@@ -128,29 +256,97 @@ function isUserInRequiredSigners(
   );
   if (inSignersName) return true;
 
-  // 3. Role-based match if user holds an executive or DICT signatory role (TOD, Regional Director, Asst. Director, Provincial Officer)
+  // 3. Role-based match in requiredSigners or doc.signers (name or role)
   if (targetRole) {
-    const isRoleMatch = doc.signers.some((s) => {
-      const sRole = (s.role || "").toUpperCase();
+    const isPoRoleMatch =
+      targetRole.includes("PROVINCIAL OFFICER") ||
+      targetRole === "PO" ||
+      targetRole.startsWith("PO ") ||
+      targetRole.includes(" PO ") ||
+      targetRole.endsWith(" PO");
+
+    const isRdRoleMatch =
+      targetRole.includes("REGIONAL DIRECTOR") ||
+      targetRole === "RD" ||
+      targetRole.startsWith("RD ") ||
+      targetRole.endsWith(" RD");
+
+    const isArdRoleMatch =
+      targetRole.includes("ASST") ||
+      targetRole.includes("ASSISTANT") ||
+      targetRole.includes("ARD");
+
+    const isTodRoleMatch =
+      targetRole.includes("TECHNICAL OPERATIONS") ||
+      targetRole.includes("TOD");
+
+    // Check requiredSigners list for role headers/titles
+    const matchesReq = doc.requiredSigners.some((req) => {
+      const r = req.toUpperCase();
       if (
-        (targetRole.includes("REGIONAL DIRECTOR") || targetRole === "RD") &&
-        (sRole.includes("REGIONAL DIRECTOR") || sRole.includes("APPROVED BY"))
-      ) return true;
-      if (
-        (targetRole.includes("ASST") || targetRole.includes("ASSISTANT") || targetRole.includes("ARD")) &&
-        (sRole.includes("ASST") || sRole.includes("ASSISTANT") || sRole.includes("ARD") || sRole.includes("RECOMMENDING"))
-      ) return true;
-      if (
-        (targetRole.includes("TECHNICAL OPERATIONS") || targetRole.includes("TOD")) &&
-        (sRole.includes("TECHNICAL OPERATIONS") || sRole.includes("TOD") || sRole.includes("NOTED BY"))
-      ) return true;
-      if (
-        targetRole.includes("PROVINCIAL OFFICER") &&
-        (sRole.includes("PROVINCIAL OFFICER") || sRole.includes("REVIEWED BY"))
-      ) return true;
+        isPoRoleMatch &&
+        (r.includes("PROVINCIAL OFFICER") ||
+          r === "PO" ||
+          r.startsWith("PO ") ||
+          r.includes(" PO ") ||
+          r.endsWith(" PO") ||
+          r.includes("REVIEWED BY"))
+      )
+        return true;
+      if (isRdRoleMatch && (r.includes("REGIONAL DIRECTOR") || r === "RD" || r.includes("APPROVED BY"))) return true;
+      if (isArdRoleMatch && (r.includes("ASST") || r.includes("ASSISTANT") || r.includes("ARD") || r.includes("RECOMMENDING"))) return true;
+      if (isTodRoleMatch && (r.includes("TECHNICAL OPERATIONS") || r.includes("TOD") || r.includes("NOTED BY"))) return true;
       return false;
     });
-    if (isRoleMatch) return true;
+    if (matchesReq) return true;
+
+    // Check doc.signers for role or name containing the role title
+    const matchesSigner = doc.signers.some((s) => {
+      const sRole = (s.role || "").toUpperCase();
+      const sName = (s.name || "").toUpperCase();
+      if (
+        isPoRoleMatch &&
+        (sRole.includes("PROVINCIAL OFFICER") ||
+          sRole.includes("REVIEWED BY") ||
+          sName.includes("PROVINCIAL OFFICER") ||
+          sName === "PO" ||
+          sName.startsWith("PO "))
+      )
+        return true;
+      if (isRdRoleMatch && (sRole.includes("REGIONAL DIRECTOR") || sRole.includes("APPROVED BY") || sName.includes("REGIONAL DIRECTOR") || sName === "RD")) return true;
+      if (isArdRoleMatch && (sRole.includes("ASST") || sRole.includes("ASSISTANT") || sRole.includes("ARD") || sRole.includes("RECOMMENDING") || sName.includes("ARD") || sName.includes("ASSISTANT REGIONAL DIRECTOR"))) return true;
+      if (isTodRoleMatch && (sRole.includes("TECHNICAL OPERATIONS") || sRole.includes("TOD") || sRole.includes("NOTED BY") || sName.includes("TOD") || sName.includes("TECHNICAL OPERATIONS"))) return true;
+      return false;
+    });
+    if (matchesSigner) return true;
+  }
+
+  return false;
+}
+
+export function isUserAuthorizedToSignDoc(doc: WorkspaceDocument, user: any): boolean {
+  if (!user || user.status === "inactive") return false;
+  if (isUserSuperAdmin(user)) return true;
+
+  // 1. Direct name match or role match in required signers
+  if (isUserInRequiredSigners(doc, user.name, user.role)) {
+    return true;
+  }
+
+  // 2. If user is a Provincial Officer (PO), check if document belongs to designated provincial office
+  if (isUserProvincialOfficer(user)) {
+    const userProv = getUserDesignatedProvince(user);
+    if (userProv) {
+      const docProv = (doc.province || "").toLowerCase();
+      if (docProv && (docProv === userProv || docProv.includes(userProv) || userProv.includes(docProv))) {
+        return true;
+      }
+      // Also check notes, fileName, or targetPersonnel for province match
+      const text = `${doc.fileName} ${doc.notes || ""} ${doc.targetPersonnel}`.toLowerCase();
+      if (text.includes(userProv)) {
+        return true;
+      }
+    }
   }
 
   return false;
@@ -1242,6 +1438,7 @@ function mapDtrRecordToWorkspaceDoc(record: any): WorkspaceDocument {
     notes: remarksData.notes || record.remarks,
     pdfDataUrl: record.pdfDataUrl,
     scannedInfo: remarksData.scannedInfo || undefined,
+    province: record.province || remarksData.province || "",
   };
 }
 
@@ -1756,6 +1953,13 @@ export function SigningWorkspace() {
   const [counterSignPositionChoice, setCounterSignPositionChoice] = useState<CounterSignPosition>("right");
   const [isSingleCounterSigning, setIsSingleCounterSigning] = useState(false);
 
+  // Bulk signing is strictly applicable ONLY if the user is:
+  // 1. SuperAdmin (universal authority across all workspace documents)
+  // 2. Provincial Officer - PO
+  const isBulkSigningAuthorized = useMemo(() => {
+    return isUserSuperAdmin(currentUser) || isUserProvincialOfficer(currentUser);
+  }, [currentUser]);
+
 
   // Compute list of unique personnel uploaded in the active documents queue
   const availablePersonnel = useMemo(() => {
@@ -2071,7 +2275,7 @@ export function SigningWorkspace() {
     try {
       const liveUser = getCurrentUser() || currentUser;
       const currentUserName = (liveUser?.name || "").trim();
-      const isReq = isUserInRequiredSigners(doc, currentUserName, liveUser?.role);
+      const isReq = isUserAuthorizedToSignDoc(doc, liveUser || currentUser);
       const isCounter = options?.isCounterSign !== undefined ? options.isCounterSign : !isReq;
       const counterPos = options?.counterSignPosition || "auto";
 
@@ -2384,22 +2588,28 @@ export function SigningWorkspace() {
 
 
 
+  const isCurrentUserSuperAdmin = useMemo(() => isUserSuperAdmin(currentUser), [currentUser]);
+
   const selectedDocs = documents.filter((d) => d.selected);
 
   const userRequiredDocs = documents.filter(
-    (d) => isUserInRequiredSigners(d, currentUser?.name, currentUser?.role) && !hasUserAlreadySigned(d, currentUser?.name)
+    (d) => isUserAuthorizedToSignDoc(d, currentUser) && !hasUserAlreadySigned(d, currentUser?.name)
   );
 
   const userCounterDocs = documents.filter(
-    (d) => !isUserInRequiredSigners(d, currentUser?.name, currentUser?.role) && !hasUserAlreadySigned(d, currentUser?.name)
+    (d) =>
+      (isCurrentUserSuperAdmin || !isUserAuthorizedToSignDoc(d, currentUser)) &&
+      !hasUserAlreadySigned(d, currentUser?.name)
   );
 
   const selectedUserRequiredDocs = selectedDocs.filter(
-    (d) => isUserInRequiredSigners(d, currentUser?.name, currentUser?.role) && !hasUserAlreadySigned(d, currentUser?.name)
+    (d) => isUserAuthorizedToSignDoc(d, currentUser) && !hasUserAlreadySigned(d, currentUser?.name)
   );
 
   const selectedUserCounterDocs = selectedDocs.filter(
-    (d) => !isUserInRequiredSigners(d, currentUser?.name, currentUser?.role) && !hasUserAlreadySigned(d, currentUser?.name)
+    (d) =>
+      (isCurrentUserSuperAdmin || !isUserAuthorizedToSignDoc(d, currentUser)) &&
+      !hasUserAlreadySigned(d, currentUser?.name)
   );
 
   const toggleSelect = (id: string) => {
@@ -2478,6 +2688,7 @@ export function SigningWorkspace() {
         scannedInfo: scan || undefined,
         notes: `Scanned from document: ${required.join(", ")}`,
         isPendingSync: true,
+        province: (activeUser as any)?.focalProvince || activeUser?.province || "Regional Office",
       };
 
       newDocs.push(newDoc);
@@ -2489,7 +2700,7 @@ export function SigningWorkspace() {
         employeeName: newDoc.targetPersonnel,
         employeeId: String(activeUser?.employeeId || "EMP-001"),
         module: "SIGNING_WORKSPACE",
-        province: activeUser?.province || "Regional Office",
+        province: newDoc.province || activeUser?.province || "Regional Office",
         sectionDivision: "Regional Office V",
         periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
         month: new Date().getMonth() + 1,
@@ -2537,6 +2748,11 @@ export function SigningWorkspace() {
   // ─── Bulk Sign (Required Signers -> Placed ABOVE Name) ──────────────────────
 
   const handleBulkSign = async () => {
+    if (!isBulkSigningAuthorized) {
+      showNotif("⚠️ Bulk signing is restricted: Exclusively authorized for SuperAdmin and Provincial Officers (PO).");
+      return;
+    }
+
     const toSign =
       selectedUserRequiredDocs.length > 0 ? selectedUserRequiredDocs : userRequiredDocs;
 
@@ -2562,6 +2778,11 @@ export function SigningWorkspace() {
   // ─── Bulk Counter-Sign (Shows Modal with Uploaded Personnel Selection) ──────
 
   const handleBulkCounterSign = () => {
+    if (!isBulkSigningAuthorized) {
+      showNotif("⚠️ Bulk counter-signing is restricted: Exclusively authorized for SuperAdmin and Provincial Officers (PO).");
+      return;
+    }
+
     const toCounter =
       selectedUserCounterDocs.length > 0 ? selectedUserCounterDocs : userCounterDocs;
 
@@ -2699,52 +2920,57 @@ export function SigningWorkspace() {
               </div>
             )}
 
-            {/* Bulk Sign Button */}
-            <button
-              type="button"
-              onClick={handleBulkSign}
-              disabled={isBulkSigning || (selectedUserRequiredDocs.length === 0 && userRequiredDocs.length === 0)}
-              className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-bold text-xs shadow-lg shadow-violet-950/50 transition-all cursor-pointer active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Bulk signs documents where you are listed as a required signer. Places digital signature ABOVE personnel name."
-            >
-              {isBulkSigning ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <PenLine className="w-3.5 h-3.5 shrink-0" />
-              )}
-              <span>
-                {isBulkSigning
-                  ? "Signing…"
-                  : selectedUserRequiredDocs.length > 0
-                  ? `Bulk Sign (${selectedUserRequiredDocs.length})`
-                  : `Bulk Sign (${userRequiredDocs.length})`}
-              </span>
-            </button>
+            {/* Bulk Actions (Exclusively for SuperAdmin and Provincial Officers - PO) */}
+            {isBulkSigningAuthorized && (
+              <>
+                {/* Bulk Sign Button */}
+                <button
+                  type="button"
+                  onClick={handleBulkSign}
+                  disabled={isBulkSigning || (selectedUserRequiredDocs.length === 0 && userRequiredDocs.length === 0)}
+                  className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-bold text-xs shadow-lg shadow-violet-950/50 transition-all cursor-pointer active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Bulk signs documents where you are listed as a required signer. Places digital signature ABOVE personnel name."
+                >
+                  {isBulkSigning ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <PenLine className="w-3.5 h-3.5 shrink-0" />
+                  )}
+                  <span>
+                    {isBulkSigning
+                      ? "Signing…"
+                      : selectedUserRequiredDocs.length > 0
+                      ? `Bulk Sign (${selectedUserRequiredDocs.length})`
+                      : `Bulk Sign (${userRequiredDocs.length})`}
+                  </span>
+                </button>
 
-            {/* Bulk Counter-Sign Button */}
-            <button
-              type="button"
-              onClick={handleBulkCounterSign}
-              disabled={
-                isBulkCounterSigning ||
-                (selectedUserCounterDocs.length === 0 && userCounterDocs.length === 0)
-              }
-              className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white font-bold text-xs shadow-lg shadow-blue-950/50 transition-all cursor-pointer active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Bulk counter-signs documents where you are not in the required signers list. Places digital signature stamp BESIDE personnel name."
-            >
-              {isBulkCounterSigning ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
-              )}
-              <span>
-                {isBulkCounterSigning
-                  ? "Counter-Signing…"
-                  : selectedUserCounterDocs.length > 0
-                  ? `Counter-Sign (${selectedUserCounterDocs.length})`
-                  : `Counter-Sign (${userCounterDocs.length})`}
-              </span>
-            </button>
+                {/* Bulk Counter-Sign Button */}
+                <button
+                  type="button"
+                  onClick={handleBulkCounterSign}
+                  disabled={
+                    isBulkCounterSigning ||
+                    (selectedUserCounterDocs.length === 0 && userCounterDocs.length === 0)
+                  }
+                  className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white font-bold text-xs shadow-lg shadow-blue-950/50 transition-all cursor-pointer active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Bulk counter-signs documents where you are not in the required signers list. Places digital signature stamp BESIDE personnel name."
+                >
+                  {isBulkCounterSigning ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                  )}
+                  <span>
+                    {isBulkCounterSigning
+                      ? "Counter-Signing…"
+                      : selectedUserCounterDocs.length > 0
+                      ? `Counter-Sign (${selectedUserCounterDocs.length})`
+                      : `Counter-Sign (${userCounterDocs.length})`}
+                  </span>
+                </button>
+              </>
+            )}
 
             {/* Upload File Button */}
             <button
@@ -2907,24 +3133,26 @@ export function SigningWorkspace() {
                 }`}
               >
                 {/* Select All Bar in Mobile Card View */}
-                <div className="px-4 py-2.5 bg-[#080B13] border-b border-[#1A2235] flex items-center justify-between text-xs text-slate-400">
-                  <label className="flex items-center gap-2 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={documents.length > 0 && documents.every((d) => d.selected)}
-                      onChange={toggleSelectAll}
-                      className="rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer"
-                    />
-                    <span className="font-semibold text-slate-300 text-[11px]">Select All ({documents.length})</span>
-                  </label>
-                  <span className="text-[10px] text-slate-500 font-mono">
-                    {filtered.filter((d) => d.selected).length} selected
-                  </span>
-                </div>
+                {isBulkSigningAuthorized && (
+                  <div className="px-4 py-2.5 bg-[#080B13] border-b border-[#1A2235] flex items-center justify-between text-xs text-slate-400">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={documents.length > 0 && documents.every((d) => d.selected)}
+                        onChange={toggleSelectAll}
+                        className="rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer"
+                      />
+                      <span className="font-semibold text-slate-300 text-[11px]">Select All ({documents.length})</span>
+                    </label>
+                    <span className="text-[10px] text-slate-500 font-mono">
+                      {filtered.filter((d) => d.selected).length} selected
+                    </span>
+                  </div>
+                )}
 
                 {filtered.map((doc) => {
                   const sc = statusConfig[doc.status];
-                  const userIsReq = isUserInRequiredSigners(doc, currentUser?.name, currentUser?.role);
+                  const userIsReq = isUserAuthorizedToSignDoc(doc, currentUser);
                   const userSigned = hasUserAlreadySigned(doc, currentUser?.name);
                   const completedSignersCount = doc.signers.filter(
                     (s) => s.status === "signed"
@@ -2940,12 +3168,14 @@ export function SigningWorkspace() {
                       {/* Header: Checkbox + File Info + Status */}
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex items-start gap-2.5 min-w-0 flex-1">
-                          <input
-                            type="checkbox"
-                            checked={!!doc.selected}
-                            onChange={() => toggleSelect(doc.id)}
-                            className="mt-1 rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer shrink-0"
-                          />
+                          {isBulkSigningAuthorized && (
+                            <input
+                              type="checkbox"
+                              checked={!!doc.selected}
+                              onChange={() => toggleSelect(doc.id)}
+                              className="mt-1 rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer shrink-0"
+                            />
+                          )}
                           <div className="w-8 h-8 rounded-lg bg-[#111728] border border-[#1C2844] flex items-center justify-center shrink-0 mt-0.5">
                             <FileKey className="w-4 h-4 text-violet-400" />
                           </div>
@@ -3118,15 +3348,17 @@ export function SigningWorkspace() {
                 <table className="w-full text-xs text-left">
                   <thead>
                     <tr className="border-b border-[#1A2235] bg-[#080B13] text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-                      <th className="px-4 py-3 w-8">
-                        <input
-                          type="checkbox"
-                          checked={documents.length > 0 && documents.every((d) => d.selected)}
-                          onChange={toggleSelectAll}
-                          className="rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer"
-                          title="Select all"
-                        />
-                      </th>
+                      {isBulkSigningAuthorized && (
+                        <th className="px-4 py-3 w-8">
+                          <input
+                            type="checkbox"
+                            checked={documents.length > 0 && documents.every((d) => d.selected)}
+                            onChange={toggleSelectAll}
+                            className="rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer"
+                            title="Select all"
+                          />
+                        </th>
+                      )}
                       <th className="px-4 py-3 min-w-[200px]">Document / Personnel</th>
                       <th className="px-4 py-3 w-24">Size</th>
                       <th className="px-4 py-3 w-32">Uploaded By</th>
@@ -3141,7 +3373,7 @@ export function SigningWorkspace() {
                   <tbody className="divide-y divide-[#111728]">
                     {filtered.map((doc) => {
                     const sc = statusConfig[doc.status];
-                    const userIsReq = isUserInRequiredSigners(doc, currentUser?.name, currentUser?.role);
+                    const userIsReq = isUserAuthorizedToSignDoc(doc, currentUser);
                     const userSigned = hasUserAlreadySigned(doc, currentUser?.name);
 
                     const completedSignersCount = doc.signers.filter(
@@ -3156,14 +3388,16 @@ export function SigningWorkspace() {
                         }`}
                       >
                         {/* Checkbox */}
-                        <td className="px-4 py-3">
-                          <input
-                            type="checkbox"
-                            checked={!!doc.selected}
-                            onChange={() => toggleSelect(doc.id)}
-                            className="rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer"
-                          />
-                        </td>
+                        {isBulkSigningAuthorized && (
+                          <td className="px-4 py-3">
+                            <input
+                              type="checkbox"
+                              checked={!!doc.selected}
+                              onChange={() => toggleSelect(doc.id)}
+                              className="rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer"
+                            />
+                          </td>
+                        )}
 
                         {/* File Name & Primary Personnel */}
                         <td className="px-4 py-3">

@@ -167,6 +167,68 @@ dtrStorageRouter.get("/", async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/dtr-storage/database-capacity - Live storage metrics, page usage, and capacity quota
+dtrStorageRouter.get("/database-capacity", async (_req: Request, res: Response) => {
+  try {
+    const pcRes = await db.execute("PRAGMA page_count;");
+    const psRes = await db.execute("PRAGMA page_size;");
+    const flRes = await db.execute("PRAGMA freelist_count;");
+
+    const pageCount = Number(pcRes.rows[0]?.page_count) || 0;
+    const pageSize = Number(psRes.rows[0]?.page_size) || 4096;
+    const freelistCount = Number(flRes.rows[0]?.freelist_count) || 0;
+
+    const allocatedBytes = pageCount * pageSize;
+    const freelistBytes = freelistCount * pageSize;
+    const activeDataBytes = Math.max(0, (pageCount - freelistCount) * pageSize);
+
+    // Turso Starter Allowance is 9.0 GB (9,663,676,416 bytes)
+    const maxStorageGb = Number(process.env.TURSO_MAX_STORAGE_GB) || 9.0;
+    const maxStorageBytes = maxStorageGb * 1024 * 1024 * 1024;
+    const remainingBytes = Math.max(0, maxStorageBytes - allocatedBytes);
+    const usagePercent = Number(((allocatedBytes / maxStorageBytes) * 100).toFixed(2));
+
+    let dtrStorageRecordCount = 0;
+    let dtrStoragePdfBytes = 0;
+    try {
+      const dtrStat = await db.execute(
+        "SELECT COUNT(*) as count, COALESCE(SUM(length(pdf_data)), 0) as total_pdf_bytes FROM dtr_storage"
+      );
+      dtrStorageRecordCount = Number(dtrStat.rows[0]?.count) || 0;
+      dtrStoragePdfBytes = Number(dtrStat.rows[0]?.total_pdf_bytes) || 0;
+    } catch {}
+
+    return res.json({
+      success: true,
+      databaseType: "Turso Cloud (libSQL / SQLite)",
+      pageSize,
+      pageCount,
+      freelistCount,
+      allocatedBytes,
+      allocatedMb: Number((allocatedBytes / (1024 * 1024)).toFixed(2)),
+      allocatedGb: Number((allocatedBytes / (1024 * 1024 * 1024)).toFixed(4)),
+      activeDataBytes,
+      activeDataMb: Number((activeDataBytes / (1024 * 1024)).toFixed(2)),
+      freelistBytes,
+      freelistMb: Number((freelistBytes / (1024 * 1024)).toFixed(2)),
+      maxStorageGb,
+      maxStorageMb: Number((maxStorageGb * 1024).toFixed(2)),
+      maxStorageBytes,
+      remainingBytes,
+      remainingMb: Number((remainingBytes / (1024 * 1024)).toFixed(2)),
+      remainingGb: Number((remainingBytes / (1024 * 1024 * 1024)).toFixed(3)),
+      usagePercent,
+      dtrStorageRecordCount,
+      dtrStoragePdfBytes,
+      dtrStoragePdfMb: Number((dtrStoragePdfBytes / (1024 * 1024)).toFixed(2)),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    console.error("Error computing database capacity:", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // GET /api/dtr-storage/:id - Get single record
 dtrStorageRouter.get("/:id", async (req: Request, res: Response) => {
   try {

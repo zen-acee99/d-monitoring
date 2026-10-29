@@ -201,6 +201,71 @@ const DEFAULT_USERS: UserRecord[] = [
     lastLogin: "1 day ago",
     createdAt: "2024-01-15",
   },
+  {
+    id: 12,
+    name: "Engr. Antonio Reyes",
+    email: "antonio.reyes@dict.gov.ph",
+    role: "Provincial Officer",
+    region: "Region V (Bicol)",
+    focalProvince: "Camarines Sur",
+    status: "active",
+    isFocal: false,
+    access: PROJECTS.reduce((acc, p) => ({ ...acc, [p.id]: true }), {}),
+    lastLogin: "1 hr ago",
+    createdAt: "2024-01-15",
+  },
+  {
+    id: 13,
+    name: "Maria Elena D. Santos",
+    email: "maria.santos@dict.gov.ph",
+    role: "Provincial Officer",
+    region: "Region V (Bicol)",
+    focalProvince: "Camarines Norte",
+    status: "active",
+    isFocal: false,
+    access: PROJECTS.reduce((acc, p) => ({ ...acc, [p.id]: true }), {}),
+    lastLogin: "2 hrs ago",
+    createdAt: "2024-01-15",
+  },
+  {
+    id: 14,
+    name: "Engr. Carlo V. Romero",
+    email: "carlo.romero@dict.gov.ph",
+    role: "Provincial Officer",
+    region: "Region V (Bicol)",
+    focalProvince: "Catanduanes",
+    status: "active",
+    isFocal: false,
+    access: PROJECTS.reduce((acc, p) => ({ ...acc, [p.id]: true }), {}),
+    lastLogin: "3 hrs ago",
+    createdAt: "2024-01-15",
+  },
+  {
+    id: 15,
+    name: "Ramon T. Fernandez",
+    email: "ramon.fernandez@dict.gov.ph",
+    role: "Provincial Officer",
+    region: "Region V (Bicol)",
+    focalProvince: "Masbate",
+    status: "active",
+    isFocal: false,
+    access: PROJECTS.reduce((acc, p) => ({ ...acc, [p.id]: true }), {}),
+    lastLogin: "4 hrs ago",
+    createdAt: "2024-01-15",
+  },
+  {
+    id: 16,
+    name: "Cynthia P. Morales",
+    email: "cynthia.morales@dict.gov.ph",
+    role: "Provincial Officer",
+    region: "Region V (Bicol)",
+    focalProvince: "Sorsogon",
+    status: "active",
+    isFocal: false,
+    access: PROJECTS.reduce((acc, p) => ({ ...acc, [p.id]: true }), {}),
+    lastLogin: "1 day ago",
+    createdAt: "2024-01-15",
+  },
 ];
 
 export function normalizeUserAssignment(u: UserRecord): UserRecord {
@@ -213,8 +278,26 @@ export function normalizeUserAssignment(u: UserRecord): UserRecord {
     if (lowerName.includes("rene jane") || lowerEmail.includes("renejane.buena")) {
       return { ...u, focalProvince: "Albay" };
     }
+    if (lowerName.includes("antonio") && lowerName.includes("reyes")) {
+      return { ...u, focalProvince: "Camarines Sur" };
+    }
+    if ((lowerName.includes("maria elena") && lowerName.includes("santos")) || lowerEmail.includes("maria.santos")) {
+      return { ...u, focalProvince: "Camarines Norte" };
+    }
+    if ((lowerName.includes("carlo") && lowerName.includes("romero")) || lowerEmail.includes("carlo.romero")) {
+      return { ...u, focalProvince: "Catanduanes" };
+    }
+    if ((lowerName.includes("ramon") && lowerName.includes("fernandez")) || lowerEmail.includes("ramon.fernandez")) {
+      return { ...u, focalProvince: "Masbate" };
+    }
+    if ((lowerName.includes("cynthia") && lowerName.includes("morales")) || lowerEmail.includes("cynthia.morales")) {
+      return { ...u, focalProvince: "Sorsogon" };
+    }
     if (lowerName.includes("norly") && lowerName.includes("tabo")) {
       return { ...u, focalProvince: "TOD" };
+    }
+    if (lowerName.includes("calimpong") || lowerName.includes("melad")) {
+      return { ...u, focalProvince: "Regional Off" };
     }
   }
   return u;

@@ -1149,7 +1149,7 @@ export function normalizeNameForMatch(str: string): string {
     .toUpperCase();
 }
 
-interface PdfTextItem {
+export interface PdfTextItem {
   text: string;
   x: number;
   y: number;
