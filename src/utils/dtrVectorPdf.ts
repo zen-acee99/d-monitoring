@@ -656,7 +656,11 @@ export function generateDtrVectorPdf(
       const textX = supSignatureImg ? boxX + 48 : boxX + boxW / 2;
       const textAlign = supSignatureImg ? "left" : "center";
 
-      if (config.includeDateTime) {
+      const isReneJaneSup =
+        supSigner.toLowerCase().includes("buena") ||
+        supSigner.toLowerCase().includes("rene jane");
+
+      if (config.includeDateTime && !isReneJaneSup) {
         doc.text("Digitally signed", textX, boxY + 7.5, { align: textAlign });
         doc.text(`by ${supSigner}`, textX, boxY + 14.5, { align: textAlign });
         setSansNormal();
@@ -669,8 +673,13 @@ export function generateDtrVectorPdf(
           { align: textAlign }
         );
       } else {
-        doc.text("Digitally signed", textX, boxY + 9, { align: textAlign });
-        doc.text(`by ${supSigner}`, textX, boxY + 16.5, { align: textAlign });
+        if (isReneJaneSup) {
+          doc.text("Digitally signed by", textX, boxY + 9, { align: textAlign });
+          doc.text("Buena Rene Jane Rosendo", textX, boxY + 16.5, { align: textAlign });
+        } else {
+          doc.text("Digitally signed", textX, boxY + 9, { align: textAlign });
+          doc.text(`by ${supSigner}`, textX, boxY + 16.5, { align: textAlign });
+        }
       }
     }
 
@@ -1802,7 +1811,11 @@ export async function signUploadedArPdfBytes(
     const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
     const textX = signatureImage ? boxX + 48 : boxX + 4;
 
-    targetPage.drawText("Digitally signed", {
+    const isReneJaneAr =
+      resolvedSignerName.toLowerCase().includes("buena") ||
+      resolvedSignerName.toLowerCase().includes("rene jane");
+
+    targetPage.drawText(isReneJaneAr ? "Digitally signed by" : "Digitally signed", {
       x: textX,
       y: boxY + 13,
       size: 6.8,
@@ -1810,7 +1823,7 @@ export async function signUploadedArPdfBytes(
       color: rgb(0, 0, 0),
     });
 
-    targetPage.drawText(`by ${resolvedSignerName}`, {
+    targetPage.drawText(isReneJaneAr ? "Buena Rene Jane Rosendo" : `by ${resolvedSignerName}`, {
       x: textX,
       y: boxY + 5,
       size: 6.8,
@@ -2429,30 +2442,51 @@ export async function signUploadedPersonnelPdfBytes(
       const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
       const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
       const textX = hasDrawnImage ? boxX + 44 : boxX + 5;
+      const isReneJane =
+        resolvedSignerName.toLowerCase().includes("buena") ||
+        resolvedSignerName.toLowerCase().includes("rene jane");
 
-      targetPage.drawText("Digitally signed", {
-        x: textX,
-        y: boxY + 18,
-        size: 6.5,
-        font: helveticaBold,
-        color: rgb(0.08, 0.20, 0.50),
-      });
+      if (isReneJane) {
+        targetPage.drawText("Digitally signed by", {
+          x: textX,
+          y: boxY + 14,
+          size: 6.5,
+          font: helveticaBold,
+          color: rgb(0.0, 0.0, 0.0),
+        });
 
-      targetPage.drawText(`by ${resolvedSignerName}`, {
-        x: textX,
-        y: boxY + 10.5,
-        size: 6.5,
-        font: helveticaBold,
-        color: rgb(0.0, 0.0, 0.0),
-      });
+        targetPage.drawText("Buena Rene Jane Rosendo", {
+          x: textX,
+          y: boxY + 6.5,
+          size: 6.2,
+          font: helveticaBold,
+          color: rgb(0.0, 0.0, 0.0),
+        });
+      } else {
+        targetPage.drawText("Digitally signed", {
+          x: textX,
+          y: boxY + 18,
+          size: 6.5,
+          font: helveticaBold,
+          color: rgb(0.08, 0.20, 0.50),
+        });
 
-      targetPage.drawText(`Date: ${formatPnpkiDate()}`, {
-        x: textX,
-        y: boxY + 3.5,
-        size: 5.2,
-        font: helvetica,
-        color: rgb(0.25, 0.30, 0.40),
-      });
+        targetPage.drawText(`by ${resolvedSignerName}`, {
+          x: textX,
+          y: boxY + 10.5,
+          size: 6.5,
+          font: helveticaBold,
+          color: rgb(0.0, 0.0, 0.0),
+        });
+
+        targetPage.drawText(`Date: ${formatPnpkiDate()}`, {
+          x: textX,
+          y: boxY + 3.5,
+          size: 5.2,
+          font: helvetica,
+          color: rgb(0.25, 0.30, 0.40),
+        });
+      }
     } catch (err) {
       console.warn("Could not draw digital signature typography:", err);
     }

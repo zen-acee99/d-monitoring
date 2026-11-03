@@ -332,17 +332,13 @@ usersRouter.post("/google-sync", async (req: Request, res: Response) => {
     if (adminRes.rows.length > 0) {
       userRecord = adminRes.rows[0];
     } else {
-      // Only fall back to users table if administration table is completely empty
-      const countRes = await db.execute("SELECT COUNT(*) as cnt FROM administration");
-      const adminCount = Number((countRes.rows[0] as any)?.cnt || 0);
-      if (adminCount === 0) {
-        const userRes = await db.execute({
-          sql: "SELECT * FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(?)) LIMIT 1",
-          args: [cleanEmail],
-        });
-        if (userRes.rows.length > 0) {
-          userRecord = userRes.rows[0];
-        }
+      // Check users table as well
+      const userRes = await db.execute({
+        sql: "SELECT * FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(?)) LIMIT 1",
+        args: [cleanEmail],
+      });
+      if (userRes.rows.length > 0) {
+        userRecord = userRes.rows[0];
       }
     }
 

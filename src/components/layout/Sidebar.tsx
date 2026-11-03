@@ -57,7 +57,7 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
   });
 
   const userEmail = (currentUser?.email || "").toLowerCase().trim();
-  const isAceUser = userEmail === "ace.malto@dict.gov.ph";
+  const isAceUser = userEmail === "ace.malto@dict.gov.ph" || userEmail === "acemm.1599@gmail.com";
 
   const effectiveMainNav = isAceUser
     ? [

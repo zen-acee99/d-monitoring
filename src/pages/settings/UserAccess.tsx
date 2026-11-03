@@ -75,9 +75,10 @@ export function UserAccess() {
     currentUser?.role === "Asst. Regional Director" ||
     currentUser?.role === "Assistant Regional Director" ||
     currentUser?.role === "OIC Chief - Technical Operations Division";
-  // Exclusively accessible to ace.malto@dict.gov.ph - all other users (even Super Admin, Admin) cannot access
+  // Exclusively accessible to Ace Malto
   const canSimulateSwitchUser =
-    currentUser?.email?.toLowerCase().trim() === "ace.malto@dict.gov.ph";
+    currentUser?.email?.toLowerCase().trim() === "ace.malto@dict.gov.ph" ||
+    currentUser?.email?.toLowerCase().trim() === "acemm.1599@gmail.com";
   const canGlobalEditUsers = isSuperAdminOrDirector || (currentUser?.canEdit && hasModuleAccess(currentUser, "MOD_ADMIN"));
 
   const handleSaveUser = async (userData: UserRecord) => {

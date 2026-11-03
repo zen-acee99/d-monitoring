@@ -1,8 +1,11 @@
 import { ProvincialTab } from "@/data/dtrStorage";
 import { DtrRow } from "@/utils/dtrUtils";
+import { getCurrentUser } from "@/services/authStore";
 
 export interface GatePassRecord {
   id: string; // Unique record ID (timestamp or control number)
+  userId?: string;
+  userEmail?: string;
   controlNo: string; // e.g. "GP-POV 2026-10-0015"
   filingDate: string; // e.g. "October 7, 2026"
   filingDateIso: string; // e.g. "2026-10-07"
@@ -76,8 +79,26 @@ export const MONTH_NAMES_LIST = [
   "December",
 ];
 
-const REGISTRY_STORAGE_KEY = "dict_gatepass_registry";
-const ACTIVE_PASS_STORAGE_KEY = "dict_gatepass_active";
+export const REGISTRY_STORAGE_KEY = "dict_gatepass_registry";
+export const ACTIVE_PASS_STORAGE_KEY = "dict_gatepass_active";
+
+export function getUserRegistryKey(userEmail?: string): string {
+  const email = (userEmail || getCurrentUser()?.email || "").toLowerCase().trim();
+  if (email) {
+    const clean = email.replace(/[^a-z0-9]/g, "_");
+    return `dict_gatepass_registry_${clean}`;
+  }
+  return REGISTRY_STORAGE_KEY;
+}
+
+export function getUserActivePassKey(userEmail?: string): string {
+  const email = (userEmail || getCurrentUser()?.email || "").toLowerCase().trim();
+  if (email) {
+    const clean = email.replace(/[^a-z0-9]/g, "_");
+    return `dict_gatepass_active_${clean}`;
+  }
+  return ACTIVE_PASS_STORAGE_KEY;
+}
 
 /**
  * Increment a Control Number's numeric sequence (e.g. "GP-POV 2026-10-0015" -> "GP-POV 2026-10-0016")
@@ -182,14 +203,50 @@ export function parseInclusivePassDates(
 }
 
 /**
- * Retrieve all registered Gate Passes from localStorage
+ * Retrieve registered Gate Passes for the active or specified user from localStorage
  */
-export function getGatePassRegistry(): GatePassRecord[] {
+export function getGatePassRegistry(userEmail?: string): GatePassRecord[] {
   try {
-    const raw = localStorage.getItem(REGISTRY_STORAGE_KEY);
-    if (!raw) return [];
-    const list = JSON.parse(raw);
-    return Array.isArray(list) ? list : [];
+    const userKey = getUserRegistryKey(userEmail);
+    const raw = localStorage.getItem(userKey);
+    if (raw) {
+      const list = JSON.parse(raw);
+      if (Array.isArray(list)) return list;
+    }
+
+    // Migration fallback:
+    // If the scoped userKey does not exist yet in localStorage, inspect the legacy global key.
+    const legacyRaw = localStorage.getItem(REGISTRY_STORAGE_KEY);
+    if (legacyRaw) {
+      const legacyList = JSON.parse(legacyRaw);
+      if (Array.isArray(legacyList) && legacyList.length > 0) {
+        const curUser = getCurrentUser();
+        const effectiveEmail = (userEmail || curUser?.email || "").toLowerCase().trim();
+        const effectiveName = (curUser?.name || "").toLowerCase().trim();
+
+        // Migrate records that belong to this user
+        const matching = legacyList.filter((item: GatePassRecord) => {
+          if (effectiveEmail && item.userEmail && item.userEmail.toLowerCase().trim() === effectiveEmail) {
+            return true;
+          }
+          if (effectiveName && item.requestedByName) {
+            const req = item.requestedByName.toLowerCase();
+            const curTokens = effectiveName.split(/\s+/).filter((t) => t.length > 2);
+            if (curTokens.length > 0 && curTokens.some((tok) => req.includes(tok))) {
+              return true;
+            }
+          }
+          return false;
+        });
+
+        if (matching.length > 0) {
+          localStorage.setItem(userKey, JSON.stringify(matching));
+          return matching;
+        }
+      }
+    }
+
+    return [];
   } catch (e) {
     console.warn("Failed to load gatepass registry:", e);
     return [];
@@ -197,9 +254,13 @@ export function getGatePassRegistry(): GatePassRecord[] {
 }
 
 /**
- * Save / Upsert a Gate Pass to the registry
+ * Save / Upsert a Gate Pass to the registry (isolated per user)
  */
-export function saveGatePassToRegistry(rawPass: any, isExplicitNew = false): GatePassRecord {
+export function saveGatePassToRegistry(
+  rawPass: any,
+  isExplicitNew = false,
+  userEmail?: string
+): GatePassRecord {
   const parsed = parseInclusivePassDates(
     rawPass.activityDates,
     rawPass.activityDateIso
@@ -208,8 +269,15 @@ export function saveGatePassToRegistry(rawPass: any, isExplicitNew = false): Gat
   const cleanControl = (rawPass.controlNo || "GP-POV 2026-10-0015").trim();
   const id = isExplicitNew ? `gp-${Date.now()}` : cleanControl;
 
+  const curUser = getCurrentUser();
+  const effectiveEmail = (userEmail || curUser?.email || "").toLowerCase().trim();
+  const userKey = getUserRegistryKey(effectiveEmail);
+  const activeKey = getUserActivePassKey(effectiveEmail);
+
   const record: GatePassRecord = {
     id,
+    userId: curUser?.id ? String(curUser.id) : undefined,
+    userEmail: effectiveEmail || undefined,
     controlNo: cleanControl,
     filingDate: rawPass.filingDate || "",
     filingDateIso: rawPass.filingDateIso || "",
@@ -233,8 +301,8 @@ export function saveGatePassToRegistry(rawPass: any, isExplicitNew = false): Gat
       "Official Business / Field Activity",
     venue: rawPass.venue || "",
     startTime: rawPass.startTime || "",
-    requestedByName: (rawPass.requestedByName || "PERSONNEL").trim(),
-    requestedByTitle: rawPass.requestedByTitle || "",
+    requestedByName: (rawPass.requestedByName || curUser?.name || "PERSONNEL").trim(),
+    requestedByTitle: rawPass.requestedByTitle || (typeof curUser?.role === "string" ? curUser.role : "") || "",
     selectedPO: rawPass.selectedPO || "Albay",
     approvedByName: rawPass.approvedByName || "RENE JANE R. BUENA",
     approvedByTitle: rawPass.approvedByTitle || "",
@@ -244,17 +312,17 @@ export function saveGatePassToRegistry(rawPass: any, isExplicitNew = false): Gat
   };
 
   try {
-    const registry = getGatePassRegistry();
+    const registry = getGatePassRegistry(effectiveEmail);
     const existingIdx = registry.findIndex((r) => r.id === id || r.controlNo === cleanControl);
     if (existingIdx >= 0) {
       registry[existingIdx] = record;
     } else {
       registry.unshift(record);
     }
-    localStorage.setItem(REGISTRY_STORAGE_KEY, JSON.stringify(registry));
+    localStorage.setItem(userKey, JSON.stringify(registry));
 
-    // Also persist as active gate pass
-    localStorage.setItem(ACTIVE_PASS_STORAGE_KEY, JSON.stringify(rawPass));
+    // Also persist as active gate pass for this user
+    localStorage.setItem(activeKey, JSON.stringify(rawPass));
 
     // Dispatch global event for live synchronization across components
     if (typeof window !== "undefined") {
@@ -270,15 +338,19 @@ export function saveGatePassToRegistry(rawPass: any, isExplicitNew = false): Gat
 }
 
 /**
- * Delete a Gate Pass from the registry
+ * Delete a Gate Pass from the user's registry
  */
-export function deleteGatePassFromRegistry(idOrControlNo: string): GatePassRecord[] {
+export function deleteGatePassFromRegistry(
+  idOrControlNo: string,
+  userEmail?: string
+): GatePassRecord[] {
   try {
-    const registry = getGatePassRegistry();
+    const userKey = getUserRegistryKey(userEmail);
+    const registry = getGatePassRegistry(userEmail);
     const updated = registry.filter(
       (r) => r.id !== idOrControlNo && r.controlNo !== idOrControlNo
     );
-    localStorage.setItem(REGISTRY_STORAGE_KEY, JSON.stringify(updated));
+    localStorage.setItem(userKey, JSON.stringify(updated));
 
     if (typeof window !== "undefined") {
       window.dispatchEvent(
@@ -288,16 +360,17 @@ export function deleteGatePassFromRegistry(idOrControlNo: string): GatePassRecor
     return updated;
   } catch (e) {
     console.warn("Failed to delete gatepass from registry:", e);
-    return getGatePassRegistry();
+    return getGatePassRegistry(userEmail);
   }
 }
 
 /**
- * Clear all Gate Passes from the registry
+ * Clear all Gate Passes from the user's registry
  */
-export function clearGatePassRegistry(): void {
+export function clearGatePassRegistry(userEmail?: string): void {
   try {
-    localStorage.removeItem(REGISTRY_STORAGE_KEY);
+    const userKey = getUserRegistryKey(userEmail);
+    localStorage.removeItem(userKey);
     if (typeof window !== "undefined") {
       window.dispatchEvent(
         new CustomEvent("dict_gatepass_updated", { detail: { cleared: true } })
@@ -314,9 +387,10 @@ export function clearGatePassRegistry(): void {
 export function findMatchingGatePasses(
   monthIndex: number,
   year: number,
-  employeeName?: string
+  employeeName?: string,
+  userEmail?: string
 ): GatePassRecord[] {
-  const registry = getGatePassRegistry();
+  const registry = getGatePassRegistry(userEmail);
   const norm = (str: string) => str.toLowerCase().replace(/[^a-z0-9]/g, "");
   const targetEmp = employeeName ? norm(employeeName) : "";
 

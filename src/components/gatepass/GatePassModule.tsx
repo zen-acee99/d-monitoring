@@ -44,6 +44,8 @@ import {
   incrementGatePassSeq,
   mergeAllGatePassesIntoDtrRows,
   GatePassRecord,
+  getUserActivePassKey,
+  getUserRegistryKey,
 } from "@/utils/gatePassStorage";
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
@@ -224,16 +226,30 @@ export function GatePassModule({ onMergeToCs48, onMergeAllToCs48 }: GatePassModu
 
   const [data, setData] = useState<GatePassData>(() => {
     try {
-      const saved = localStorage.getItem("dict_gatepass_active");
+      const activeKey = getUserActivePassKey();
+      const saved = localStorage.getItem(activeKey);
       if (saved) return { ...DEFAULT_GATEPASS, ...JSON.parse(saved) };
     } catch {}
-    return DEFAULT_GATEPASS;
+    const cur = getCurrentUser();
+    return {
+      ...DEFAULT_GATEPASS,
+      requestedByName: cur?.name ? cur.name.toUpperCase() : DEFAULT_GATEPASS.requestedByName,
+      requestedByTitle: (typeof cur?.role === "string" ? cur.role : "") || DEFAULT_GATEPASS.requestedByTitle,
+      requestedBySigner: cur?.name || DEFAULT_GATEPASS.requestedBySigner,
+    };
   });
 
   const [savedGatePasses, setSavedGatePasses] = useState<GatePassRecord[]>(() => {
     const list = getGatePassRegistry();
     if (list.length === 0) {
-      const initial = saveGatePassToRegistry(DEFAULT_GATEPASS);
+      const cur = getCurrentUser();
+      const initialTemplate: GatePassData = {
+        ...DEFAULT_GATEPASS,
+        requestedByName: cur?.name ? cur.name.toUpperCase() : "PERSONNEL",
+        requestedByTitle: (typeof cur?.role === "string" ? cur.role : "") || "Personnel",
+        requestedBySigner: cur?.name || "Personnel",
+      };
+      const initial = saveGatePassToRegistry(initialTemplate);
       return [initial];
     }
     return list;
@@ -257,28 +273,41 @@ export function GatePassModule({ onMergeToCs48, onMergeAllToCs48 }: GatePassModu
   };
 
   const refreshStorageList = () => {
-    setSavedGatePasses(getGatePassRegistry());
+    setSavedGatePasses(getGatePassRegistry(currentUser?.email));
   };
 
-  // Sync state to local storage and update gate pass registry
+  // Sync state to local storage and update gate pass registry (strictly scoped per user)
   useEffect(() => {
     try {
-      localStorage.setItem("dict_gatepass_active", JSON.stringify(data));
-      saveGatePassToRegistry(data);
+      localStorage.setItem(getUserActivePassKey(currentUser?.email), JSON.stringify(data));
+      saveGatePassToRegistry(data, false, currentUser?.email);
       refreshStorageList();
     } catch {}
-  }, [data]);
+  }, [data, currentUser?.email]);
+
+  // Listen for user account changes and sync storage registry immediately
+  useEffect(() => {
+    const handleAuthChanged = () => {
+      const user = getCurrentUser();
+      setCurrentUser(user);
+      setSavedGatePasses(getGatePassRegistry(user?.email));
+    };
+    window.addEventListener("dict_auth_changed", handleAuthChanged);
+    return () => {
+      window.removeEventListener("dict_auth_changed", handleAuthChanged);
+    };
+  }, []);
 
   // Save current gate pass explicitly into storage
   const handleSaveToStorage = () => {
-    const record = saveGatePassToRegistry(data);
+    const record = saveGatePassToRegistry(data, false, currentUser?.email);
     refreshStorageList();
     showToast(`✓ Gate Pass ${record.controlNo} saved to Storage queue!`);
   };
 
   // Create a brand new Gate Pass with the next sequential Control Number
   const handleCreateNewGatePass = () => {
-    saveGatePassToRegistry(data);
+    saveGatePassToRegistry(data, false, currentUser?.email);
     const nextControl = incrementGatePassSeq(data.controlNo);
     const todayIso = new Date().toISOString().split("T")[0];
     const todayEnglish = formatIsoToEnglishDate(todayIso);
@@ -308,7 +337,7 @@ export function GatePassModule({ onMergeToCs48, onMergeAllToCs48 }: GatePassModu
     };
 
     setData(newPass);
-    saveGatePassToRegistry(newPass, true);
+    saveGatePassToRegistry(newPass, true, currentUser?.email);
     refreshStorageList();
     setIsStorageOpen(false);
     showToast(`✓ Created new Gate Pass draft: ${nextControl}`);
@@ -339,14 +368,14 @@ export function GatePassModule({ onMergeToCs48, onMergeAllToCs48 }: GatePassModu
   // Delete a saved Gate Pass from storage
   const handleDeleteFromStorage = (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    const updated = deleteGatePassFromRegistry(id);
+    const updated = deleteGatePassFromRegistry(id, currentUser?.email);
     setSavedGatePasses(updated);
     showToast(`Gate Pass removed from storage.`);
   };
 
   // Handler for merging single Gate Pass into CS Form 48
   const handleAutoMergeToCs48 = () => {
-    const record = saveGatePassToRegistry(data);
+    const record = saveGatePassToRegistry(data, false, currentUser?.email);
     refreshStorageList();
     const dayStr = record.days.length > 1 ? `Days ${record.days.join(", ")}` : `Day ${record.days[0]}`;
     showToast(
@@ -402,6 +431,22 @@ export function GatePassModule({ onMergeToCs48, onMergeAllToCs48 }: GatePassModu
     }
 
     setIsLoadingProfile(true);
+    setSavedGatePasses(getGatePassRegistry(user.email));
+
+    // Dynamic fallback: If pass requestedByName is still the default ACE MATA MALTO and logged in user is someone else
+    if (user.name) {
+      setData((prev) => {
+        if (prev.requestedByName === "ACE MATA MALTO" && !user.name.toUpperCase().includes("ACE")) {
+          return {
+            ...prev,
+            requestedByName: user.name.toUpperCase(),
+            requestedBySigner: user.name,
+            requestedByTitle: (typeof user.role === "string" ? user.role : "") || "Personnel",
+          };
+        }
+        return prev;
+      });
+    }
 
     // 1. Check user setups for employee name, designation, province
     const setupPromise = dtrUserSetupApi.getSetup(String(user.id))
@@ -414,6 +459,7 @@ export function GatePassModule({ onMergeToCs48, onMergeAllToCs48 }: GatePassModu
               ...prev,
               requestedByName: officialName.toUpperCase(),
               requestedBySigner: officialName,
+              requestedByTitle: (typeof user.role === "string" ? user.role : "") || prev.requestedByTitle,
             }));
           }
         }

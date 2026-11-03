@@ -296,9 +296,9 @@ export function DtrGenerator() {
     }));
   }, [includeDateTime]);
 
-  // Gate Pass active matching detection for active month/year
+  // Gate Pass active matching detection for active month/year and employee
   const matchingGatePasses = findMatchingGatePasses(config.month, config.year, config.employeeName);
-  const activeGatePass = matchingGatePasses[0] || getGatePassRegistry()[0] || null;
+  const activeGatePass = matchingGatePasses[0] || null;
 
   // Digital Signer Identity strictly derived from P12 certificate
 
@@ -1647,16 +1647,21 @@ export function DtrGenerator() {
     const handleGatePassEvent = (e: any) => {
       const detail: GatePassRecord = e.detail;
       if (detail && detail.controlNo && detail.days) {
-        // If it matches currently active month and year, auto-merge live!
+        // If it matches currently active month, year, and target employee, auto-merge live!
         if (detail.monthIndex === config.month && detail.year === config.year) {
-          setRows((prev) => {
-            const { updatedRows } = mergeGatePassIntoDtrRows(prev, {
-              controlNo: detail.controlNo,
-              days: detail.days,
+          const norm = (str: string) => str.toLowerCase().replace(/[^a-z0-9]/g, "");
+          const targetEmp = config.employeeName ? norm(config.employeeName) : "";
+          const passEmp = detail.requestedByName ? norm(detail.requestedByName) : "";
+          if (!targetEmp || !passEmp || passEmp.includes(targetEmp) || targetEmp.includes(passEmp)) {
+            setRows((prev) => {
+              const { updatedRows } = mergeGatePassIntoDtrRows(prev, {
+                controlNo: detail.controlNo,
+                days: detail.days,
+              });
+              return updatedRows;
             });
-            return updatedRows;
-          });
-          showNotification(`✓ Live synced Gate Pass ${detail.controlNo} into CS Form 48!`);
+            showNotification(`✓ Live synced Gate Pass ${detail.controlNo} into CS Form 48!`);
+          }
         }
       }
     };

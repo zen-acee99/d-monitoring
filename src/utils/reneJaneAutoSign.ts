@@ -56,7 +56,10 @@ export interface ReneJaneAutoSignResult {
  * Civil Service Form No. 48 (DTR), an Accomplishment Report (AR), an Official Gate Pass, or general official document,
  * and pinpoints optimal signature coordinates for Supervisor Rene Jane R. Buena.
  */
-export function detectSignatureCoordinatesForReneJane(pdfDoc: PDFDocument): {
+export function detectSignatureCoordinatesForReneJane(
+  pdfDoc: PDFDocument,
+  filename = ""
+): {
   docType: "DTR" | "AR" | "GATE_PASS" | "GENERAL_DOCUMENT";
   targetPageIndex: number;
   sigRects: Array<[number, number, number, number]>;
@@ -72,25 +75,44 @@ export function detectSignatureCoordinatesForReneJane(pdfDoc: PDFDocument): {
     };
   }
 
+  const lowerName = (filename || "").toLowerCase();
+  const isDtrName =
+    lowerName.includes("dtr") ||
+    lowerName.includes("form 48") ||
+    lowerName.includes("form48") ||
+    lowerName.includes("form_48") ||
+    lowerName.includes("daily time record") ||
+    lowerName.includes("daily_time_record") ||
+    lowerName.includes("timesheet");
+  const isArName =
+    lowerName.includes("ar_") ||
+    lowerName.includes("_ar") ||
+    lowerName.includes("accomplishment") ||
+    lowerName.includes("deliverable");
+  const isGatePassName =
+    lowerName.includes("gate") ||
+    lowerName.includes("gatepass") ||
+    lowerName.includes("gp-pov") ||
+    lowerName.includes("gp_pov");
+
   // 1. Scan pages for Civil Service Form No. 48 / DTR
   for (let pIdx = 0; pIdx < pageCount; pIdx++) {
     const page = pdfDoc.getPage(pIdx);
     const { width, height } = page.getSize();
     const sBytes = extractPageContentStreamBytes(pdfDoc, page);
-    if (sBytes.length === 0) continue;
     const fontCMaps = loadPageFontCMaps(pdfDoc, page);
-    const textItems = extractTextItemsFromContentStream(sBytes, fontCMaps);
+    const textItems = sBytes.length > 0 ? extractTextItemsFromContentStream(sBytes, fontCMaps) : [];
+    const fullPageText = textItems.map((it) => it.text).join(" ").toUpperCase();
 
-    const hasDtrHeader = textItems.some((it) => {
-      const u = it.text.toUpperCase();
-      return (
-        u.includes("CIVIL SERVICE FORM") ||
-        u.includes("DAILY TIME RECORD") ||
-        u.includes("FORM NO. 48") ||
-        u.includes("CS FORM 48") ||
-        u.includes("VERIFIED AS TO THE PRESCRIBED")
-      );
-    });
+    const hasDtrHeader =
+      fullPageText.includes("CIVIL SERVICE FORM") ||
+      fullPageText.includes("DAILY TIME RECORD") ||
+      fullPageText.includes("FORM NO. 48") ||
+      fullPageText.includes("CS FORM 48") ||
+      fullPageText.includes("FORM 48") ||
+      fullPageText.includes("VERIFIED AS TO THE PRESCRIBED") ||
+      fullPageText.includes("IN CHARGE") ||
+      (isDtrName && pIdx === 0);
 
     if (hasDtrHeader) {
       const leftItems = textItems.filter((it) => it.x < width * 0.5);
@@ -106,21 +128,33 @@ export function detectSignatureCoordinatesForReneJane(pdfDoc: PDFDocument): {
           return u.includes("DAILY TIME RECORD") || u.includes("CIVIL SERVICE") || u.includes("VERIFIED");
         });
 
-      const isDual = width >= 500 && (hasDualHeaders || rightItems.length > 20);
+      // Standard CS Form 48 is dual-copy (width >= 500, or right items present)
+      const isDual = width >= 500 && (hasDualHeaders || rightItems.length > 15 || width >= 580);
 
       const inChargeMatches = textItems.filter((it) => {
         const u = it.text.toUpperCase();
-        return u.includes("IN CHARGE") || u.includes("VERIFIED") || u.includes("OFFICE HOURS");
+        return (
+          u.includes("IN CHARGE") ||
+          u.includes("IN-CHARGE") ||
+          u.includes("VERIFIED") ||
+          u.includes("OFFICE HOURS") ||
+          (u.includes("BUENA") && (u.includes("RENE") || u.includes("JANE")))
+        );
       });
 
-      let detectedY = 52; // Default fallback for letter CS Form 48
+      // Form 48 supervisor line sits at ~22.5% of height (~178 on letter 792pt, ~190 on A4 842pt)
+      let detectedY = Math.round(height * 0.225);
       if (inChargeMatches.length > 0) {
-        inChargeMatches.sort((a, b) => a.y - b.y);
-        const refItem = inChargeMatches[0];
-        if (refItem.text.toUpperCase().includes("IN CHARGE")) {
-          detectedY = Math.round(refItem.y + 10);
-        } else {
-          detectedY = Math.max(30, Math.round(refItem.y - 38));
+        // Look for signature reference line in the bottom half of the page
+        const lowerMatches = inChargeMatches.filter((it) => it.y <= height * 0.45 && it.y >= 30);
+        if (lowerMatches.length > 0) {
+          lowerMatches.sort((a, b) => a.y - b.y);
+          const refItem = lowerMatches[0];
+          if (refItem.text.toUpperCase().includes("IN CHARGE") || refItem.text.toUpperCase().includes("BUENA")) {
+            detectedY = Math.round(refItem.y + 10);
+          } else {
+            detectedY = Math.max(30, Math.round(refItem.y - 38));
+          }
         }
       }
 
@@ -138,7 +172,7 @@ export function detectSignatureCoordinatesForReneJane(pdfDoc: PDFDocument): {
             [boxX1, detectedY, boxW, boxH],
             [boxX2, detectedY, boxW, boxH],
           ],
-          detectedReason: "Civil Service Form No. 48 detected on page " + (pIdx + 1) + " — dual supervisor signature applied (Copy 1 & Copy 2)",
+          detectedReason: "Civil Service Form No. 48 detected on page " + (pIdx + 1) + " — dual supervisor signature applied above In Charge (Copy 1 & Copy 2)",
         };
       } else {
         const boxX = Math.round((width - boxW) / 2);
@@ -155,20 +189,18 @@ export function detectSignatureCoordinatesForReneJane(pdfDoc: PDFDocument): {
   // 2. Scan for Accomplishment Report (AR)
   for (let pIdx = pageCount - 1; pIdx >= 0; pIdx--) {
     const page = pdfDoc.getPage(pIdx);
+    const { width, height } = page.getSize();
     const sBytes = extractPageContentStreamBytes(pdfDoc, page);
-    if (sBytes.length === 0) continue;
     const fontCMaps = loadPageFontCMaps(pdfDoc, page);
-    const textItems = extractTextItemsFromContentStream(sBytes, fontCMaps);
+    const textItems = sBytes.length > 0 ? extractTextItemsFromContentStream(sBytes, fontCMaps) : [];
+    const fullPageText = textItems.map((it) => it.text).join(" ").toUpperCase();
 
-    const hasArHeader = textItems.some((it) => {
-      const u = it.text.toUpperCase();
-      return (
-        u.includes("ACCOMPLISHMENT REPORT") ||
-        u.includes("MONTHLY ACCOMPLISHMENT") ||
-        u.includes("DELIVERABLES") ||
-        u.includes("INDIVIDUAL ACCOMPLISHMENT")
-      );
-    });
+    const hasArHeader =
+      fullPageText.includes("ACCOMPLISHMENT REPORT") ||
+      fullPageText.includes("MONTHLY ACCOMPLISHMENT") ||
+      fullPageText.includes("DELIVERABLES") ||
+      fullPageText.includes("INDIVIDUAL ACCOMPLISHMENT") ||
+      (isArName && (pIdx === pageCount - 1 || pageCount === 1));
 
     if (hasArHeader) {
       const arLoc = findApprovalSectionCoordinates(pdfDoc, "RENE JANE R. BUENA");
@@ -361,7 +393,7 @@ export async function autoSignPdfWithReneJane(
     }
 
     // 3. Detect placement
-    const { docType, targetPageIndex, sigRects, detectedReason } = detectSignatureCoordinatesForReneJane(pdfDoc);
+    const { docType, targetPageIndex, sigRects, detectedReason } = detectSignatureCoordinatesForReneJane(pdfDoc, filename);
     const targetPage = pdfDoc.getPage(targetPageIndex);
 
     // 4. Embed Rene Jane's visual signature image with foolproof fallback
@@ -382,13 +414,12 @@ export async function autoSignPdfWithReneJane(
     }
 
     const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-    const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, "0");
     const formattedTimestamp = `${now.getFullYear()}.${pad(now.getMonth() + 1)}.${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())} +08'00'`;
 
-    // Draw on all detected rectangles
+    // Draw on all detected rectangles (Visual stroke + official badge text without Date/Time)
     sigRects.forEach(([rx, ry, rw, rh]) => {
       targetPage.drawImage(embeddedPng, {
         x: rx + 2,
@@ -398,28 +429,20 @@ export async function autoSignPdfWithReneJane(
       });
 
       const textX = rx + 44;
-      targetPage.drawText("Digitally signed", {
+      targetPage.drawText("Digitally signed by", {
         x: textX,
-        y: ry + 14.5,
-        size: 5.8,
-        font: helveticaBold,
-        color: rgb(0.08, 0.20, 0.50),
-      });
-
-      targetPage.drawText("by Buena Rene Jane Rosendo", {
-        x: textX,
-        y: ry + 8,
-        size: 5.5,
+        y: ry + 13.5,
+        size: 6.2,
         font: helveticaBold,
         color: rgb(0.0, 0.0, 0.0),
       });
 
-      targetPage.drawText("Date: " + formattedTimestamp, {
+      targetPage.drawText("Buena Rene Jane Rosendo", {
         x: textX,
-        y: ry + 2,
-        size: 4.8,
-        font: helvetica,
-        color: rgb(0.25, 0.30, 0.40),
+        y: ry + 6,
+        size: 5.8,
+        font: helveticaBold,
+        color: rgb(0.0, 0.0, 0.0),
       });
     });
 
