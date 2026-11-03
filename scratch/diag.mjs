@@ -1,0 +1,14 @@
+console.log("Step 1: start");
+import { jsPDF } from "jspdf";
+console.log("Step 2: jspdf loaded");
+import { PDFDocument } from "pdf-lib";
+console.log("Step 3: pdf-lib loaded");
+import { createClient } from "@libsql/client";
+console.log("Step 4: libsql loaded");
+import { decryptP12Password, getSignerIdentityFromP12, signPdfBuffer } from "./pnpkiSigningService.mjs";
+console.log("Step 5: pnpki loaded");
+import fs from "fs";
+console.log("Step 6: fs loaded");
+import dotenv from "dotenv";
+dotenv.config();
+console.log("Step 7: dotenv loaded");
