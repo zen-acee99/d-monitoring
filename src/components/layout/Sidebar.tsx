@@ -57,7 +57,9 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
   });
 
   const userEmail = (currentUser?.email || "").toLowerCase().trim();
-  const isAceUser = userEmail === "ace.malto@dict.gov.ph" || userEmail === "acemm.1599@gmail.com";
+  const isAceUser = Boolean(
+    userEmail && (userEmail === "ace.malto@dict.gov.ph" || userEmail === "acemm.1599@gmail.com")
+  );
 
   const effectiveMainNav = isAceUser
     ? [
@@ -346,7 +348,7 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
                         </span>
                       </Link>
 
-                      {/* Sub-module 5: Combined DTR (Only for ace.malto@dict.gov.ph) */}
+                      {/* Sub-module: Combined DTR (Exclusively for ace.malto@dict.gov.ph and acemm.1599@gmail.com) */}
                       {isAceUser && (
                         <Link
                           to="/dtr-combiner"

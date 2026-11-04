@@ -343,6 +343,8 @@ export async function initDatabase() {
       isFocal INTEGER DEFAULT 0,
       focalProject TEXT,
       focalProvince TEXT,
+      pnpkiRole TEXT,
+      theme TEXT DEFAULT 'dark',
       phone TEXT,
       access TEXT NOT NULL,
       canEdit INTEGER DEFAULT 1,
@@ -356,13 +358,22 @@ export async function initDatabase() {
     );
   `);
 
-  // Ensure extra columns exist on administration table if created previously
+  // Ensure extra columns exist on administration and users tables if created previously
   for (const col of [
     "ALTER TABLE administration ADD COLUMN password TEXT;",
     "ALTER TABLE administration ADD COLUMN focalProvince TEXT;",
+    "ALTER TABLE administration ADD COLUMN pnpkiRole TEXT;",
+    "ALTER TABLE administration ADD COLUMN theme TEXT DEFAULT 'dark';",
     "ALTER TABLE administration ADD COLUMN auth_provider TEXT DEFAULT 'local';",
     "ALTER TABLE administration ADD COLUMN google_id TEXT;",
     "ALTER TABLE administration ADD COLUMN avatar_url TEXT;",
+    "ALTER TABLE users ADD COLUMN password TEXT;",
+    "ALTER TABLE users ADD COLUMN focalProvince TEXT;",
+    "ALTER TABLE users ADD COLUMN pnpkiRole TEXT;",
+    "ALTER TABLE users ADD COLUMN theme TEXT DEFAULT 'dark';",
+    "ALTER TABLE users ADD COLUMN auth_provider TEXT DEFAULT 'local';",
+    "ALTER TABLE users ADD COLUMN google_id TEXT;",
+    "ALTER TABLE users ADD COLUMN avatar_url TEXT;",
   ]) {
     try {
       await db.execute(col);
@@ -385,6 +396,8 @@ export async function initDatabase() {
       isFocal INTEGER DEFAULT 0,
       focalProject TEXT,
       focalProvince TEXT,
+      pnpkiRole TEXT,
+      theme TEXT DEFAULT 'dark',
       phone TEXT,
       access TEXT NOT NULL,
       canEdit INTEGER DEFAULT 1,

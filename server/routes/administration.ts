@@ -6,12 +6,26 @@ import { hashPassword, verifyPassword, validatePasswordStrength } from "../servi
 export const administrationRouter = Router();
 
 // Ensure focalProvince, pnpkiRole, and theme columns exist in administration and users tables
-db.execute("ALTER TABLE administration ADD COLUMN focalProvince TEXT").catch(() => {});
-db.execute("ALTER TABLE users ADD COLUMN focalProvince TEXT").catch(() => {});
-db.execute("ALTER TABLE administration ADD COLUMN pnpkiRole TEXT").catch(() => {});
-db.execute("ALTER TABLE users ADD COLUMN pnpkiRole TEXT").catch(() => {});
-db.execute("ALTER TABLE administration ADD COLUMN theme TEXT DEFAULT 'dark'").catch(() => {});
-db.execute("ALTER TABLE users ADD COLUMN theme TEXT DEFAULT 'dark'").catch(() => {});
+export async function ensureAdminColumns() {
+  const migrations = [
+    "ALTER TABLE administration ADD COLUMN focalProvince TEXT",
+    "ALTER TABLE users ADD COLUMN focalProvince TEXT",
+    "ALTER TABLE administration ADD COLUMN pnpkiRole TEXT",
+    "ALTER TABLE users ADD COLUMN pnpkiRole TEXT",
+    "ALTER TABLE administration ADD COLUMN theme TEXT DEFAULT 'dark'",
+    "ALTER TABLE users ADD COLUMN theme TEXT DEFAULT 'dark'",
+    "ALTER TABLE administration ADD COLUMN auth_provider TEXT DEFAULT 'local'",
+    "ALTER TABLE users ADD COLUMN auth_provider TEXT DEFAULT 'local'",
+    "ALTER TABLE administration ADD COLUMN google_id TEXT",
+    "ALTER TABLE users ADD COLUMN google_id TEXT",
+    "ALTER TABLE administration ADD COLUMN avatar_url TEXT",
+    "ALTER TABLE users ADD COLUMN avatar_url TEXT",
+  ];
+  for (const m of migrations) {
+    await db.execute(m).catch(() => {});
+  }
+}
+ensureAdminColumns().catch(() => {});
 db.execute(
   "CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)"
 ).catch(() => {});
@@ -297,27 +311,76 @@ administrationRouter.post("/", async (req: Request, res: Response) => {
 
     if (existingEmail.rows.length > 0) {
       const existingId = existingEmail.rows[0].id as string;
-      await db.execute({
-        sql: `UPDATE administration 
-              SET name = ?, password = COALESCE(NULLIF(?, ''), password), role = ?, region = ?, status = ?, isFocal = ?, focalProject = ?, pnpkiRole = ?, focalProvince = ?, phone = ?, access = ?, canEdit = ?, canDelete = ?, updatedAt = CURRENT_TIMESTAMP
-              WHERE id = ?`,
-        args: [
-          name,
-          password,
-          role,
-          region,
-          status,
-          isFocal,
-          focalProject,
-          pnpkiRole,
-          focalProvince,
-          phone,
-          access,
-          canEdit,
-          canDelete,
-          existingId,
-        ],
-      });
+      try {
+        await db.execute({
+          sql: `UPDATE administration 
+                SET name = ?, password = COALESCE(NULLIF(?, ''), password), role = ?, region = ?, status = ?, isFocal = ?, focalProject = ?, pnpkiRole = ?, focalProvince = ?, phone = ?, access = ?, canEdit = ?, canDelete = ?, updatedAt = CURRENT_TIMESTAMP
+                WHERE id = ?`,
+          args: [
+            name,
+            password,
+            role,
+            region,
+            status,
+            isFocal,
+            focalProject,
+            pnpkiRole,
+            focalProvince,
+            phone,
+            access,
+            canEdit,
+            canDelete,
+            existingId,
+          ],
+        });
+      } catch (updErr: any) {
+        console.warn("[Admin API] Update failed, ensuring columns & retrying:", updErr.message);
+        await ensureAdminColumns();
+        try {
+          await db.execute({
+            sql: `UPDATE administration 
+                  SET name = ?, password = COALESCE(NULLIF(?, ''), password), role = ?, region = ?, status = ?, isFocal = ?, focalProject = ?, pnpkiRole = ?, focalProvince = ?, phone = ?, access = ?, canEdit = ?, canDelete = ?, updatedAt = CURRENT_TIMESTAMP
+                  WHERE id = ?`,
+            args: [
+              name,
+              password,
+              role,
+              region,
+              status,
+              isFocal,
+              focalProject,
+              pnpkiRole,
+              focalProvince,
+              phone,
+              access,
+              canEdit,
+              canDelete,
+              existingId,
+            ],
+          });
+        } catch {
+          await db.execute({
+            sql: `UPDATE administration 
+                  SET name = ?, password = COALESCE(NULLIF(?, ''), password), role = ?, region = ?, status = ?, isFocal = ?, focalProject = ?, focalProvince = ?, phone = ?, access = ?, canEdit = ?, canDelete = ?, updatedAt = CURRENT_TIMESTAMP
+                  WHERE id = ?`,
+            args: [
+              name,
+              password,
+              role,
+              region,
+              status,
+              isFocal,
+              focalProject,
+              focalProvince,
+              phone,
+              access,
+              canEdit,
+              canDelete,
+              existingId,
+            ],
+          });
+        }
+      }
 
       await db.execute({
         sql: `UPDATE users 
@@ -350,55 +413,135 @@ administrationRouter.post("/", async (req: Request, res: Response) => {
       return res.status(200).json({ success: true, user: formatAdminRow(updated.rows[0]) });
     }
 
-    await db.execute({
-      sql: `INSERT INTO administration 
-            (id, name, email, password, role, region, status, isFocal, focalProject, pnpkiRole, focalProvince, phone, access, canEdit, canDelete, lastLogin, createdAt, updatedAt)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-      args: [
-        id,
-        name,
-        email,
-        password,
-        role,
-        region,
-        status,
-        isFocal,
-        focalProject,
-        pnpkiRole,
-        focalProvince,
-        phone,
-        access,
-        canEdit,
-        canDelete,
-        lastLogin,
-      ],
-    });
+    try {
+      await db.execute({
+        sql: `INSERT INTO administration 
+              (id, name, email, password, role, region, status, isFocal, focalProject, pnpkiRole, focalProvince, phone, access, canEdit, canDelete, lastLogin, createdAt, updatedAt)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        args: [
+          id,
+          name,
+          email,
+          password,
+          role,
+          region,
+          status,
+          isFocal,
+          focalProject,
+          pnpkiRole,
+          focalProvince,
+          phone,
+          access,
+          canEdit,
+          canDelete,
+          lastLogin,
+        ],
+      });
+    } catch (insertErr: any) {
+      console.warn("[Admin API] Insert failed, ensuring columns & retrying:", insertErr.message);
+      await ensureAdminColumns();
+      try {
+        await db.execute({
+          sql: `INSERT INTO administration 
+                (id, name, email, password, role, region, status, isFocal, focalProject, pnpkiRole, focalProvince, phone, access, canEdit, canDelete, lastLogin, createdAt, updatedAt)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+          args: [
+            id,
+            name,
+            email,
+            password,
+            role,
+            region,
+            status,
+            isFocal,
+            focalProject,
+            pnpkiRole,
+            focalProvince,
+            phone,
+            access,
+            canEdit,
+            canDelete,
+            lastLogin,
+          ],
+        });
+      } catch (fallbackErr: any) {
+        console.warn("[Admin API] Fallback inserting without pnpkiRole:", fallbackErr.message);
+        await db.execute({
+          sql: `INSERT INTO administration 
+                (id, name, email, password, role, region, status, isFocal, focalProject, focalProvince, phone, access, canEdit, canDelete, lastLogin, createdAt, updatedAt)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+          args: [
+            id,
+            name,
+            email,
+            password,
+            role,
+            region,
+            status,
+            isFocal,
+            focalProject,
+            focalProvince,
+            phone,
+            access,
+            canEdit,
+            canDelete,
+            lastLogin,
+          ],
+        });
+      }
+    }
 
     // Mirror to users table as well
-    await db.execute({
-      sql: `INSERT OR REPLACE INTO users 
-            (id, name, email, password, auth_provider, role, region, status, isFocal, focalProject, pnpkiRole, focalProvince, phone, access, canEdit, canDelete, lastLogin, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-      args: [
-        id,
-        name,
-        email,
-        password,
-        password ? "local" : "google",
-        role,
-        region,
-        status,
-        isFocal,
-        focalProject,
-        pnpkiRole,
-        focalProvince,
-        phone,
-        access,
-        canEdit,
-        canDelete,
-        lastLogin,
-      ],
-    }).catch(() => {});
+    try {
+      await db.execute({
+        sql: `INSERT OR REPLACE INTO users 
+              (id, name, email, password, auth_provider, role, region, status, isFocal, focalProject, pnpkiRole, focalProvince, phone, access, canEdit, canDelete, lastLogin, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        args: [
+          id,
+          name,
+          email,
+          password,
+          password ? "local" : "google",
+          role,
+          region,
+          status,
+          isFocal,
+          focalProject,
+          pnpkiRole,
+          focalProvince,
+          phone,
+          access,
+          canEdit,
+          canDelete,
+          lastLogin,
+        ],
+      });
+    } catch {
+      await db.execute({
+        sql: `INSERT OR REPLACE INTO users 
+              (id, name, email, password, auth_provider, role, region, status, isFocal, focalProject, focalProvince, phone, access, canEdit, canDelete, lastLogin, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        args: [
+          id,
+          name,
+          email,
+          password,
+          password ? "local" : "google",
+          role,
+          region,
+          status,
+          isFocal,
+          focalProject,
+          focalProvince,
+          phone,
+          access,
+          canEdit,
+          canDelete,
+          lastLogin,
+        ],
+      }).catch(() => {});
+    }
 
     const created = await db.execute({
       sql: "SELECT * FROM administration WHERE id = ?",
@@ -539,28 +682,78 @@ administrationRouter.put("/:id", async (req: Request, res: Response) => {
     const canEdit = body.canEdit !== undefined ? (body.canEdit ? 1 : 0) : current.canEdit;
     const canDelete = body.canDelete !== undefined ? (body.canDelete ? 1 : 0) : current.canDelete;
 
-    await db.execute({
-      sql: `UPDATE administration 
-            SET name = ?, email = ?, password = COALESCE(NULLIF(?, ''), password), role = ?, region = ?, status = ?, isFocal = ?, focalProject = ?, pnpkiRole = ?, focalProvince = ?, phone = ?, access = ?, canEdit = ?, canDelete = ?, updatedAt = CURRENT_TIMESTAMP
-            WHERE id = ?`,
-      args: [
-        name,
-        email,
-        password,
-        role,
-        region,
-        status,
-        isFocal,
-        focalProject,
-        pnpkiRole,
-        focalProvince,
-        phone,
-        access,
-        canEdit,
-        canDelete,
-        targetId,
-      ],
-    });
+    try {
+      await db.execute({
+        sql: `UPDATE administration 
+              SET name = ?, email = ?, password = COALESCE(NULLIF(?, ''), password), role = ?, region = ?, status = ?, isFocal = ?, focalProject = ?, pnpkiRole = ?, focalProvince = ?, phone = ?, access = ?, canEdit = ?, canDelete = ?, updatedAt = CURRENT_TIMESTAMP
+              WHERE id = ?`,
+        args: [
+          name,
+          email,
+          password,
+          role,
+          region,
+          status,
+          isFocal,
+          focalProject,
+          pnpkiRole,
+          focalProvince,
+          phone,
+          access,
+          canEdit,
+          canDelete,
+          targetId,
+        ],
+      });
+    } catch (updErr: any) {
+      await ensureAdminColumns();
+      try {
+        await db.execute({
+          sql: `UPDATE administration 
+                SET name = ?, email = ?, password = COALESCE(NULLIF(?, ''), password), role = ?, region = ?, status = ?, isFocal = ?, focalProject = ?, pnpkiRole = ?, focalProvince = ?, phone = ?, access = ?, canEdit = ?, canDelete = ?, updatedAt = CURRENT_TIMESTAMP
+                WHERE id = ?`,
+          args: [
+            name,
+            email,
+            password,
+            role,
+            region,
+            status,
+            isFocal,
+            focalProject,
+            pnpkiRole,
+            focalProvince,
+            phone,
+            access,
+            canEdit,
+            canDelete,
+            targetId,
+          ],
+        });
+      } catch {
+        await db.execute({
+          sql: `UPDATE administration 
+                SET name = ?, email = ?, password = COALESCE(NULLIF(?, ''), password), role = ?, region = ?, status = ?, isFocal = ?, focalProject = ?, focalProvince = ?, phone = ?, access = ?, canEdit = ?, canDelete = ?, updatedAt = CURRENT_TIMESTAMP
+                WHERE id = ?`,
+          args: [
+            name,
+            email,
+            password,
+            role,
+            region,
+            status,
+            isFocal,
+            focalProject,
+            focalProvince,
+            phone,
+            access,
+            canEdit,
+            canDelete,
+            targetId,
+          ],
+        });
+      }
+    }
 
     // Mirror update to users table without wiping existing password if omitted
     await db.execute({
