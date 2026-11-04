@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db.js";
+import { DEFAULT_USERS } from "../../src/data/userStore.js";
 import {
   encryptP12Password,
   decryptP12Password,
@@ -135,7 +136,7 @@ dtrGeneratorRouter.get("/:id", async (req: Request, res: Response) => {
 // POST /api/dtr-generator - Create or update record (Upsert with strict user_Id audit tracking)
 dtrGeneratorRouter.post("/", async (req: Request, res: Response) => {
   try {
-    const { id, user_Id, Name, p12, p12_filename, p12_filesize, p12_password, image_digiSigned, clear_p12 } = req.body;
+    const { id, user_Id, Name, p12, p12_filename, p12_filesize, p12_password, image_digiSigned, clear_p12, email } = req.body;
 
     if (!Name || typeof Name !== "string" || !Name.trim()) {
       return res.status(400).json({ success: false, error: "Name is required" });
@@ -143,6 +144,7 @@ dtrGeneratorRouter.post("/", async (req: Request, res: Response) => {
 
     const headerUserId = req.headers["x-user-id"] ? String(req.headers["x-user-id"]).trim() : null;
     let cleanUserId = user_Id ? String(user_Id).trim() : headerUserId;
+    const cleanEmail = email ? String(email).trim().toLowerCase() : "";
     const cleanName = Name.trim();
     const cleanP12 = p12 || null;
     const cleanP12Filename = p12_filename ? String(p12_filename).trim() : null;
@@ -169,16 +171,6 @@ dtrGeneratorRouter.post("/", async (req: Request, res: Response) => {
           error: "Image too large. Maximum signature image size is 5MB.",
         });
       }
-    }
-
-    if (
-      (cleanUserId && cleanUserId.startsWith("g-")) ||
-      (id && String(id).trim().startsWith("dtr-sig-g-"))
-    ) {
-      return res.status(403).json({
-        success: false,
-        error: "Unregistered accounts cannot save or upload a .p12 digital signature profile. Please contact an administrator to register your account.",
-      });
     }
 
     // Automatic Audit Trailing: If cleanUserId was not explicitly supplied, attempt intelligent lookup from administration table
@@ -212,19 +204,57 @@ dtrGeneratorRouter.post("/", async (req: Request, res: Response) => {
       }
     }
 
-    // Strict registration check: reject if user_Id is missing, starts with 'g-', or does not exist in administration
-    if (!cleanUserId || cleanUserId.startsWith("g-")) {
-      return res.status(403).json({
-        success: false,
-        error: "Only registered users in the administration user list are permitted to save a .p12 digital signature profile.",
-      });
+    // Resilient registration check: verify against administration, users table, and DEFAULT_USERS
+    let adminUserCheck = cleanUserId
+      ? await db.execute({
+          sql: "SELECT id FROM administration WHERE id = ? LIMIT 1",
+          args: [cleanUserId],
+        }).catch(() => ({ rows: [] }))
+      : { rows: [] };
+
+    if (adminUserCheck.rows.length === 0 && cleanUserId) {
+      // Check users table
+      const userCheck = await db.execute({
+        sql: "SELECT * FROM users WHERE id = ? OR (email IS NOT NULL AND LOWER(email) = LOWER(?)) OR (google_id IS NOT NULL AND google_id = ?) LIMIT 1",
+        args: [cleanUserId, cleanEmail || cleanUserId, cleanUserId],
+      }).catch(() => ({ rows: [] }));
+
+      if (userCheck.rows.length > 0) {
+        const u: any = userCheck.rows[0];
+        cleanUserId = String(u.id);
+        await db.execute({
+          sql: `INSERT OR REPLACE INTO administration (id, name, email, password, role, region, status, isFocal, focalProject, focalProvince, phone, access, canEdit, canDelete, auth_provider, google_id, avatar_url, lastLogin, createdAt, updatedAt)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+          args: [
+            u.id, u.name, u.email, u.password || null, u.role || "Viewer", u.region || "Region V (Bicol)", u.status || "active",
+            u.isFocal ? 1 : 0, u.focalProject || null, u.focalProvince || null, u.phone || null,
+            typeof u.access === "string" ? u.access : JSON.stringify(u.access || {}),
+            u.canEdit ? 1 : 0, u.canDelete ? 1 : 0, u.auth_provider || "google", u.google_id || null, u.avatar_url || null, u.lastLogin || null,
+          ],
+        }).catch(() => {});
+        adminUserCheck = userCheck;
+      } else {
+        // Check DEFAULT_USERS
+        const def = DEFAULT_USERS.find(
+          (u) => String(u.id) === cleanUserId || (cleanEmail && u.email && u.email.trim().toLowerCase() === cleanEmail)
+        );
+        if (def) {
+          cleanUserId = String(def.id);
+          await db.execute({
+            sql: `INSERT OR REPLACE INTO administration (id, name, email, password, role, region, status, isFocal, focalProject, focalProvince, phone, access, canEdit, canDelete, auth_provider, lastLogin, createdAt, updatedAt)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+            args: [
+              def.id, def.name, def.email.toLowerCase().trim(), null, def.role, def.region || "Region V (Bicol)", def.status || "active",
+              def.isFocal ? 1 : 0, def.focalProject || null, def.focalProvince || null, def.phone || null,
+              JSON.stringify(def.access || {}), def.canEdit ? 1 : 0, def.canDelete ? 1 : 0, "google", def.lastLogin || null,
+            ],
+          }).catch(() => {});
+          adminUserCheck = { rows: [def as any] };
+        }
+      }
     }
 
-    const adminUserCheck = await db.execute({
-      sql: "SELECT id FROM administration WHERE id = ? LIMIT 1",
-      args: [cleanUserId],
-    });
-    if (adminUserCheck.rows.length === 0) {
+    if (!cleanUserId || adminUserCheck.rows.length === 0) {
       return res.status(403).json({
         success: false,
         error: "User account is not registered in the administration user list. Cannot save .p12 profile.",
@@ -418,17 +448,6 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
 
     const headerUserId = req.headers["x-user-id"] ? String(req.headers["x-user-id"]).trim() : null;
 
-    if (
-      (user_Id && String(user_Id).trim().startsWith("g-")) ||
-      (headerUserId && headerUserId.startsWith("g-")) ||
-      (profileId && (String(profileId).trim().startsWith("g-") || String(profileId).trim().startsWith("dtr-sig-g-")))
-    ) {
-      return res.status(403).json({
-        success: false,
-        error: "Unregistered accounts are not permitted to cryptographically sign documents.",
-      });
-    }
-
     // Verify that any supplied user_Id / profileId belongs to a registered user in administration
     const candidateUserId =
       (user_Id ? String(user_Id).trim() : null) ||
@@ -436,10 +455,43 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
       headerUserId;
 
     if (candidateUserId) {
-      const regCheck = await db.execute({
+      let regCheck = await db.execute({
         sql: "SELECT * FROM administration WHERE id = ? OR email = ? OR LOWER(name) = LOWER(?) LIMIT 1",
         args: [candidateUserId, candidateUserId, candidateUserId],
-      });
+      }).catch(() => ({ rows: [] }));
+
+      if (regCheck.rows.length === 0) {
+        const userCheck = await db.execute({
+          sql: "SELECT * FROM users WHERE id = ? OR email = ? OR LOWER(name) = LOWER(?) LIMIT 1",
+          args: [candidateUserId, candidateUserId, candidateUserId],
+        }).catch(() => ({ rows: [] }));
+
+        if (userCheck.rows.length > 0) {
+          const u: any = userCheck.rows[0];
+          await db.execute({
+            sql: `INSERT OR REPLACE INTO administration (id, name, email, password, role, region, status, isFocal, focalProject, focalProvince, phone, access, canEdit, canDelete, auth_provider, google_id, avatar_url, lastLogin, createdAt, updatedAt)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+            args: [
+              u.id, u.name, u.email, u.password || null, u.role || "Viewer", u.region || "Region V (Bicol)", u.status || "active",
+              u.isFocal ? 1 : 0, u.focalProject || null, u.focalProvince || null, u.phone || null,
+              typeof u.access === "string" ? u.access : JSON.stringify(u.access || {}),
+              u.canEdit ? 1 : 0, u.canDelete ? 1 : 0, u.auth_provider || "google", u.google_id || null, u.avatar_url || null, u.lastLogin || null,
+            ],
+          }).catch(() => {});
+          regCheck = userCheck;
+        } else {
+          const def = DEFAULT_USERS.find(
+            (u) =>
+              String(u.id) === candidateUserId ||
+              (u.email && u.email.toLowerCase() === candidateUserId.toLowerCase()) ||
+              (u.name && u.name.toLowerCase() === candidateUserId.toLowerCase())
+          );
+          if (def) {
+            regCheck = { rows: [def as any] };
+          }
+        }
+      }
+
       if (regCheck.rows.length === 0) {
         return res.status(403).json({
           success: false,

@@ -628,9 +628,14 @@ export function SystemSettings() {
     const matchesSearch =
       u.name.toLowerCase().includes(search.toLowerCase()) ||
       u.email.toLowerCase().includes(search.toLowerCase()) ||
+      (u.role || "").toLowerCase().includes(search.toLowerCase()) ||
       u.region.toLowerCase().includes(search.toLowerCase());
 
-    const matchesRole = selectedRole === "All" || u.role === selectedRole;
+    const matchesRole =
+      selectedRole === "All" ||
+      (selectedRole === "Custom"
+        ? !ROLE_OPTIONS.some((r) => r.value === u.role)
+        : u.role === selectedRole);
     const matchesRegion = selectedRegion === "All" || u.region === selectedRegion;
 
     const matchesFocal =
@@ -1048,6 +1053,7 @@ export function SystemSettings() {
                 className="bg-[#111728] border border-[#1C2844] rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500 cursor-pointer"
               >
                 <option value="All">All Roles</option>
+                <option value="Custom">Custom / Other Positions</option>
                 {ROLE_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
                     {opt.label}

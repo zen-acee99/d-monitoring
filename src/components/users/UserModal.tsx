@@ -32,7 +32,9 @@ import {
   Sparkles,
   ToggleLeft,
   ToggleRight,
-  FileSignature
+  FileSignature,
+  List,
+  Edit3
 } from "lucide-react";
 import { PROJECTS } from "@/config/projects";
 import { UserRecord, UserRole } from "@/data/userStore";
@@ -327,7 +329,9 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
   const [access, setAccess] = useState<Record<string, boolean>>({});
   const [canEdit, setCanEdit] = useState(true);
   const [canDelete, setCanDelete] = useState(false);
-  const [errors, setErrors] = useState<{ name?: string; email?: string; focalProject?: string; pnpkiRole?: string }>({});
+  const [isCustomRole, setIsCustomRole] = useState(false);
+  const [customRoleText, setCustomRoleText] = useState("");
+  const [errors, setErrors] = useState<{ name?: string; email?: string; role?: string; focalProject?: string; pnpkiRole?: string }>({});
   const [modules, setModules] = useState<SystemModule[]>([]);
   const [moduleCategoryFilter, setModuleCategoryFilter] = useState<"All" | "Project" | "Core Tool" | "Management">("All");
 
@@ -341,7 +345,19 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
     if (initialUser) {
       setName(initialUser.name || "");
       setEmail(initialUser.email || "");
-      setRole((initialUser.role as UserRole) || "PDO I");
+      const initialRole = initialUser.role || "PDO I";
+      const matchedRoleOpt = ROLE_OPTIONS.find(
+        (opt) => opt.value.toLowerCase() === initialRole.toLowerCase()
+      );
+      if (matchedRoleOpt) {
+        setIsCustomRole(false);
+        setCustomRoleText("");
+        setRole(matchedRoleOpt.value as UserRole);
+      } else {
+        setIsCustomRole(true);
+        setCustomRoleText(initialRole);
+        setRole(initialRole);
+      }
       setRegion(initialUser.region || "Region V (Bicol)");
       setStatus(initialUser.status || "active");
       const userIsFocal = Boolean(initialUser.isFocal);
@@ -382,6 +398,8 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
       // Default new user setup
       setName("");
       setEmail("");
+      setIsCustomRole(false);
+      setCustomRoleText("");
       setRole("PDO I");
       setRegion("Region V (Bicol)");
       setStatus("active");
@@ -399,6 +417,12 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
 
   // When role changes to Director / Super Admin / Admin / OIC Chief, grant default full module access
   const handleRoleChange = (newRole: UserRole) => {
+    if (newRole === "__custom__") {
+      setIsCustomRole(true);
+      setRole(customRoleText.trim() || "");
+      return;
+    }
+    setIsCustomRole(false);
     setRole(newRole);
     if (newRole === "Provincial Officer") {
       if (!focalProvince || focalProvince === "All Provinces / Regional" || focalProvince === "TOD" || focalProvince === "HRM") {
@@ -639,12 +663,15 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    const newErrors: { name?: string; email?: string; focalProject?: string; pnpkiRole?: string } = {};
+    const newErrors: { name?: string; email?: string; role?: string; focalProject?: string; pnpkiRole?: string } = {};
     if (!name.trim()) newErrors.name = "Full name is required";
     if (!email.trim()) {
       newErrors.email = "Email address is required";
     } else if (!email.includes("@")) {
       newErrors.email = "Please enter a valid email address";
+    }
+    if ((isCustomRole || role === "__custom__") && !customRoleText.trim()) {
+      newErrors.role = "Please enter the custom position / organizational role";
     }
     if (isFocal && (!focalProject || focalProject === "none" || focalProject === "all_projects")) {
       newErrors.focalProject = "Please select a specific DICT project for this Focal Person, or uncheck Focal Person below";
@@ -658,6 +685,15 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
       return;
     }
 
+    let finalRole = (isCustomRole || role === "__custom__") ? customRoleText.trim() : role;
+    if (isCustomRole) {
+      const matchOpt = ROLE_OPTIONS.find(
+        (opt) => opt.value.toLowerCase() === finalRole.toLowerCase()
+      );
+      if (matchOpt) {
+        finalRole = matchOpt.value;
+      }
+    }
     const hasSpecificFocalProject = Boolean(
       focalProject &&
       focalProject !== "all_projects" &&
@@ -665,7 +701,7 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
     );
     const effectiveFocal = Boolean(isFocal && hasSpecificFocalProject);
     const resolvedFocalProvince =
-      role === "Provincial Officer" && (!focalProvince || focalProvince === "All Provinces / Regional")
+      finalRole === "Provincial Officer" && (!focalProvince || focalProvince === "All Provinces / Regional")
         ? "Albay"
         : focalProvince || "All Provinces / Regional";
 
@@ -674,7 +710,7 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
       name: name.trim(),
       email: email.trim().toLowerCase(),
       password: initialUser?.password || undefined,
-      role,
+      role: finalRole,
       region,
       status,
       isFocal: effectiveFocal,
@@ -815,33 +851,168 @@ export function UserModal({ isOpen, onClose, onSave, initialUser, isSubmitting }
         {/* Position, Project Handled & Regional Jurisdiction Selectors */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
-              <span>Position / Organizational Role <span className="text-red-400">*</span></span>
-              {(role === "Regional Director" || role === "Asst. Regional Director" || role === "Assistant Regional Director" || role === "Super Admin" || role === "Admin") && (
-                <span className="text-[10px] text-blue-400 font-bold flex items-center gap-1">
-                  <Shield className="w-3 h-3" /> Executive
-                </span>
-              )}
-              {role === "Provincial Officer" && (
-                <span className="text-[10px] text-amber-400 font-bold flex items-center gap-1">
-                  <MapPin className="w-3 h-3" /> Provincial Officer
-                </span>
-              )}
-            </label>
-            <select
-              value={role}
-              onChange={(e) => handleRoleChange(e.target.value as UserRole)}
-              className="w-full bg-[#111728] border border-[#1C2844] rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500 transition-colors cursor-pointer"
-            >
-              {ROLE_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value} className="bg-[#0C101D] text-white">
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-            <p className="text-[10px] text-slate-400">
-              {ROLE_OPTIONS.find((r) => r.value === role)?.description}
-            </p>
+            <div className="flex items-center justify-between gap-1">
+              <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5 flex-wrap">
+                <span>Position / Organizational Role <span className="text-red-400">*</span></span>
+                {isCustomRole ? (
+                  <span className="text-[10px] text-cyan-400 font-bold flex items-center gap-1 bg-cyan-950/60 border border-cyan-500/40 px-1.5 py-0.5 rounded">
+                    <Sparkles className="w-3 h-3" /> Custom Position
+                  </span>
+                ) : (
+                  (role === "Regional Director" || role === "Asst. Regional Director" || role === "Assistant Regional Director" || role === "Super Admin" || role === "Admin") ? (
+                    <span className="text-[10px] text-blue-400 font-bold flex items-center gap-1">
+                      <Shield className="w-3 h-3" /> Executive
+                    </span>
+                  ) : role === "Provincial Officer" ? (
+                    <span className="text-[10px] text-amber-400 font-bold flex items-center gap-1">
+                      <MapPin className="w-3 h-3" /> Provincial Officer
+                    </span>
+                  ) : null
+                )}
+              </label>
+
+              {/* Mode Toggle Button: Type Custom vs Select from List */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (isCustomRole) {
+                    setIsCustomRole(false);
+                    const matched = ROLE_OPTIONS.find((opt) => opt.value.toLowerCase() === customRoleText.toLowerCase());
+                    if (matched) {
+                      handleRoleChange(matched.value);
+                    } else if (!role || role === "__custom__") {
+                      handleRoleChange("PDO I");
+                    }
+                  } else {
+                    setIsCustomRole(true);
+                    setCustomRoleText(role && role !== "__custom__" ? role : "");
+                  }
+                }}
+                className="text-[11px] font-medium text-cyan-400 hover:text-cyan-300 flex items-center gap-1 px-2 py-0.5 rounded-lg bg-cyan-950/50 hover:bg-cyan-900/60 border border-cyan-500/30 transition-colors cursor-pointer shrink-0"
+              >
+                {isCustomRole ? (
+                  <>
+                    <List className="w-3 h-3" /> Choose from list
+                  </>
+                ) : (
+                  <>
+                    <Edit3 className="w-3 h-3" /> Type custom position
+                  </>
+                )}
+              </button>
+            </div>
+
+            {isCustomRole ? (
+              /* Editable Text Input Mode (The user can directly type ANY position!) */
+              <div className="space-y-1.5 animate-in fade-in duration-200">
+                <div className="relative flex items-center">
+                  <input
+                    type="text"
+                    list="custom-role-suggestions"
+                    value={customRoleText}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setCustomRoleText(val);
+                      setRole(val);
+                      if (errors.role) setErrors((prev) => ({ ...prev, role: undefined }));
+                    }}
+                    placeholder="Type position title (e.g. Administrative Aide VI, Computer Operator...)"
+                    className={`w-full bg-[#111728] border ${
+                      errors.role ? "border-red-500" : "border-cyan-500/60 ring-1 ring-cyan-500/30"
+                    } rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 transition-colors pr-24`}
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCustomRole(false);
+                      const matched = ROLE_OPTIONS.find((opt) => opt.value.toLowerCase() === customRoleText.toLowerCase());
+                      handleRoleChange(matched ? matched.value : "PDO I");
+                    }}
+                    className="absolute right-2 px-2.5 py-1 text-[10px] font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-600 transition-colors cursor-pointer flex items-center gap-1"
+                  >
+                    <List className="w-3 h-3" /> List
+                  </button>
+                </div>
+
+                <datalist id="custom-role-suggestions">
+                  {ROLE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value} />
+                  ))}
+                </datalist>
+
+                {errors.role ? (
+                  <p className="text-[10px] text-red-400 font-medium">{errors.role}</p>
+                ) : (
+                  <div className="flex items-center justify-between text-[10px] text-slate-400">
+                    <span className="text-cyan-400/90 flex items-center gap-1">
+                      <Sparkles className="w-3 h-3 text-cyan-400 shrink-0" />
+                      {customRoleText.trim() ? `Custom Position: "${customRoleText.trim()}"` : "Type position if not in standard list"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsCustomRole(false);
+                        handleRoleChange("PDO I");
+                      }}
+                      className="text-slate-400 hover:text-cyan-300 underline cursor-pointer shrink-0"
+                    >
+                      Switch to dropdown
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* Dropdown Select Mode */
+              <div className="space-y-1">
+                <select
+                  value={role}
+                  onChange={(e) => {
+                    if (e.target.value === "__custom__") {
+                      setIsCustomRole(true);
+                      setCustomRoleText("");
+                      setRole("");
+                    } else {
+                      handleRoleChange(e.target.value as UserRole);
+                    }
+                  }}
+                  className={`w-full bg-[#111728] border ${
+                    errors.role ? "border-red-500" : "border-[#1C2844]"
+                  } rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500 transition-colors cursor-pointer`}
+                >
+                  <option value="__custom__" className="bg-[#0C101D] text-cyan-300 font-semibold py-1">
+                    ✏️ ➕ Position not listed? Click here to type custom position...
+                  </option>
+                  <optgroup label="Standard Positions / Roles" className="bg-[#0C101D] text-slate-400 font-semibold">
+                    {ROLE_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value} className="bg-[#0C101D] text-white py-1">
+                        {opt.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                  <option value="__custom__" className="bg-[#0C101D] text-cyan-300 font-semibold py-1">
+                    ➕ Other / Custom Position (Type custom position)...
+                  </option>
+                </select>
+
+                <div className="flex items-center justify-between text-[10px] pt-0.5">
+                  <p className="text-slate-400 truncate max-w-[240px]">
+                    {ROLE_OPTIONS.find((r) => r.value === role)?.description || "Official personnel role and operational designation"}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCustomRole(true);
+                      setCustomRoleText(role && role !== "__custom__" ? role : "");
+                      setRole("");
+                    }}
+                    className="text-cyan-400 hover:text-cyan-300 underline shrink-0 cursor-pointer flex items-center gap-1 font-medium"
+                  >
+                    <Edit3 className="w-2.5 h-2.5" /> Not in list? Type it
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Project Handled Dropdown right after selecting Position */}

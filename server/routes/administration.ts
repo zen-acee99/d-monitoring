@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db.js";
+import { DEFAULT_USERS } from "../../src/data/userStore.js";
 import { hashPassword, verifyPassword, validatePasswordStrength } from "../services/pnpkiSigningService.js";
 
 export const administrationRouter = Router();
@@ -656,10 +657,31 @@ administrationRouter.get("/permissions/check", async (req: Request, res: Respons
       return res.status(400).json({ success: false, error: "userId and projectId are required" });
     }
 
-    const result = await db.execute({
+    let result = await db.execute({
       sql: "SELECT * FROM administration WHERE id = ? OR email = ?",
       args: [String(userId), String(userId)],
-    });
+    }).catch(() => ({ rows: [] }));
+
+    if (result.rows.length === 0) {
+      const userRes = await db.execute({
+        sql: "SELECT * FROM users WHERE id = ? OR email = ?",
+        args: [String(userId), String(userId)],
+      }).catch(() => ({ rows: [] }));
+      if (userRes.rows.length > 0) {
+        result = userRes;
+      }
+    }
+
+    if (result.rows.length === 0) {
+      const defMatch = DEFAULT_USERS.find(
+        (u) =>
+          String(u.id) === String(userId) ||
+          (u.email && u.email.toLowerCase() === String(userId).toLowerCase())
+      );
+      if (defMatch) {
+        result = { rows: [defMatch as any] };
+      }
+    }
 
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, error: "User not found" });

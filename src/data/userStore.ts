@@ -61,9 +61,14 @@ export interface UserRecord {
   createdAt: string;
 }
 
+export function cleanEmail(email?: string | null): string {
+  if (!email || typeof email !== "string") return "";
+  return email.toLowerCase().trim().replace(/[\u200B-\u200D\uFEFF]/g, "");
+}
+
 const STORAGE_KEY = "dict_r5_users_db";
 
-const DEFAULT_USERS: UserRecord[] = [
+export const DEFAULT_USERS: UserRecord[] = [
   {
     id: "usr-mu3eob3l",
     name: "Ace Malto",
@@ -78,6 +83,22 @@ const DEFAULT_USERS: UserRecord[] = [
     canEdit: true,
     canDelete: true,
     lastLogin: "Just now (GovMail SSO - 10/19/2026, 9:17:22 AM)",
+    createdAt: "2026-09-16 01:12:08",
+  },
+  {
+    id: "usr-acemm1599",
+    name: "Ace Malto",
+    email: "acemm.1599@gmail.com",
+    role: "Super Admin",
+    region: "Region V (Bicol)",
+    status: "active",
+    isFocal: false,
+    focalProvince: "Albay",
+    phone: "+639556837001",
+    access: {"MOD_OVERVIEW":true,"overview":true,"MOD_DTR":true,"dtr":true,"MOD_CALENDAR":true,"calendar":true,"MOD_SIGNING":true,"signing-workspace":true,"MOD_SIGNING-WORKSPACE":true,"signing":true,"MOD_GECS":true,"gecs":true,"MOD_FREEWIFI":true,"freewifi":true,"MOD_EGOVPH":true,"egovph":true,"MOD_ELGU":true,"elgu":true,"MOD_NBP":true,"nbp":true,"MOD_GOVNET":true,"govnet":true,"MOD_PNPKI":true,"pnpki":true,"MOD_ILCDB":true,"ilcdb":true,"MOD_CYBERSECURITY":true,"cybersecurity":true,"MOD_MISS":true,"miss":true,"MOD_IIDB":true,"iidb":true,"MOD_PROJECT_DATA":true,"project_data":true,"MOD_ADMIN":true,"admin":true,"mod-dtr":true,"mod-calendar":true,"mod-signing":true,"mod-admin":true,"mod-project-data":true,"mod-cybersecurity":true,"mod-elgu":true,"mod-freewifi":true,"mod-gecs":true,"mod-govnet":true,"mod-iidb":true,"mod-ilcdb":true,"mod-miss":true,"mod-nbp":true,"mod-pnpki":true,"mod-egovph":true},
+    canEdit: true,
+    canDelete: true,
+    lastLogin: "Just now (GovMail SSO)",
     createdAt: "2026-09-16 01:12:08",
   },
   {
@@ -408,6 +429,9 @@ export function normalizeUserAssignment(u: UserRecord): UserRecord {
 }
 
 export function getStoredUsers(): UserRecord[] {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") {
+    return DEFAULT_USERS;
+  }
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
@@ -416,13 +440,29 @@ export function getStoredUsers(): UserRecord[] {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
       const cleaned = parsed
-        .filter((u: any) => u && !String(u.id || "").startsWith("g-"))
+        .filter((u: any) => u && u.id)
         .map((u: UserRecord) => normalizeUserAssignment(u));
-      if (cleaned.length !== parsed.length) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
+
+      // Always guarantee default DICT personnel (especially ace.malto@dict.gov.ph) are present and merged
+      const merged = [...cleaned];
+      for (const defUser of DEFAULT_USERS) {
+        const exists = merged.some(
+          (u) =>
+            (cleanEmail(u.email) && cleanEmail(u.email) === cleanEmail(defUser.email)) ||
+            String(u.id) === String(defUser.id)
+        );
+        if (!exists) {
+          merged.push(defUser);
+        }
       }
-      if (cleaned.length > 0) {
-        return cleaned;
+
+      if (merged.length !== parsed.length) {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+        } catch {}
+      }
+      if (merged.length > 0) {
+        return merged;
       }
     }
     return DEFAULT_USERS;
@@ -433,6 +473,9 @@ export function getStoredUsers(): UserRecord[] {
 }
 
 export function saveStoredUsers(users: UserRecord[]): void {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") {
+    return;
+  }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(users));
     window.dispatchEvent(new Event("dict_users_updated"));

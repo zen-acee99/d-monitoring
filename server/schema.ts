@@ -1,4 +1,5 @@
 import { db } from "./db.js";
+import { DEFAULT_USERS } from "../src/data/userStore.js";
 
 export const DEFAULT_PROJECTS = [
   {
@@ -394,12 +395,53 @@ export async function initDatabase() {
     );
   `);
 
+  // Seed default registered personnel into administration and users tables if empty or ace.malto@dict.gov.ph is missing
+  try {
+    const adminCountRes = await db.execute("SELECT COUNT(*) as count FROM administration");
+    const adminCount = Number(adminCountRes.rows[0]?.count ?? 0);
+    const aceAdmin = await db.execute({
+      sql: "SELECT id FROM administration WHERE LOWER(TRIM(email)) = 'ace.malto@dict.gov.ph' OR LOWER(TRIM(email)) = 'acemm.1599@gmail.com' LIMIT 2",
+      args: [],
+    });
+
+    if (adminCount === 0 || aceAdmin.rows.length < 2) {
+      console.log("Seeding registered personnel into administration table...");
+      for (const u of DEFAULT_USERS) {
+        await db.execute({
+          sql: `INSERT OR REPLACE INTO administration 
+                (id, name, email, password, role, region, status, isFocal, focalProject, focalProvince, phone, access, canEdit, canDelete, auth_provider, lastLogin, createdAt, updatedAt)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+          args: [
+            u.id,
+            u.name,
+            u.email.toLowerCase().trim(),
+            (u as any).password || (u.email === "ace.malto@dict.gov.ph" || u.email === "acemm.1599@gmail.com" ? "admindict" : null),
+            u.role,
+            u.region || "Region V (Bicol)",
+            u.status || "active",
+            u.isFocal ? 1 : 0,
+            u.focalProject || null,
+            u.focalProvince || null,
+            u.phone || null,
+            JSON.stringify(u.access || {}),
+            u.canEdit ? 1 : 0,
+            u.canDelete ? 1 : 0,
+            u.authProvider || (u.email.endsWith("@gmail.com") ? "google" : "local"),
+            u.lastLogin || null,
+          ],
+        });
+      }
+    }
+  } catch (e) {
+    console.warn("Could not seed default personnel into administration table:", e);
+  }
+
   // Sync existing users from administration into users table
   try {
     const existingAdmins = await db.execute("SELECT * FROM administration");
     for (const row of existingAdmins.rows as any[]) {
       await db.execute({
-        sql: `INSERT OR IGNORE INTO users (id, name, email, password, auth_provider, google_id, avatar_url, role, region, status, isFocal, focalProject, focalProvince, phone, access, canEdit, canDelete, lastLogin, created_at, updated_at)
+        sql: `INSERT OR REPLACE INTO users (id, name, email, password, auth_provider, google_id, avatar_url, role, region, status, isFocal, focalProject, focalProvince, phone, access, canEdit, canDelete, lastLogin, created_at, updated_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)`,
         args: [
           row.id,

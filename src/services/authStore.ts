@@ -1,4 +1,4 @@
-import { UserRecord, getStoredUsers, saveStoredUsers } from "@/data/userStore";
+import { UserRecord, getStoredUsers, saveStoredUsers, DEFAULT_USERS, cleanEmail } from "@/data/userStore";
 import { administrationApi, modulesApi, SystemModule } from "@/services/api";
 
 const CURRENT_USER_KEY = "dict_current_user";
@@ -8,6 +8,9 @@ const SYSTEM_MODULES_CACHE_KEY = "dict_system_modules";
 export const AUTH_EVENT = "dict_auth_changed";
 
 export function getCachedSystemModules(): SystemModule[] {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") {
+    return [];
+  }
   try {
     const raw = localStorage.getItem(SYSTEM_MODULES_CACHE_KEY);
     if (raw) {
@@ -21,6 +24,9 @@ export function getCachedSystemModules(): SystemModule[] {
 }
 
 export function setCachedSystemModules(modules: SystemModule[]): void {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") {
+    return;
+  }
   try {
     localStorage.setItem(SYSTEM_MODULES_CACHE_KEY, JSON.stringify(modules));
     window.dispatchEvent(new CustomEvent("dict_modules_updated", { detail: modules }));
@@ -43,16 +49,14 @@ export async function refreshSystemModules(): Promise<SystemModule[]> {
 }
 
 export function getCurrentUser(): UserRecord | null {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") {
+    return null;
+  }
   try {
     const raw = localStorage.getItem(CURRENT_USER_KEY);
     if (raw) {
       const user = JSON.parse(raw);
       if (user && user.id) {
-        // Purge any previously auto-provisioned unregistered 'g-...' session
-        if (String(user.id).startsWith("g-")) {
-          localStorage.removeItem(CURRENT_USER_KEY);
-          return null;
-        }
         return user;
       }
     }
@@ -64,6 +68,9 @@ export function getCurrentUser(): UserRecord | null {
 }
 
 export function setCurrentUser(user: UserRecord | null): void {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") {
+    return;
+  }
   try {
     if (user) {
       localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(user));
@@ -123,7 +130,7 @@ export function syncCurrentUserIfUpdated(updatedUser: UserRecord): void {
   if (
     current &&
     (String(current.id) === String(updatedUser.id) ||
-      (current.email && updatedUser.email && current.email.toLowerCase() === updatedUser.email.toLowerCase()))
+      (cleanEmail(current.email) && cleanEmail(updatedUser.email) && cleanEmail(current.email) === cleanEmail(updatedUser.email)))
   ) {
     if (updatedUser.status === "inactive") {
       // Terminate active session immediately if this user was deactivated
@@ -286,8 +293,47 @@ export async function getAllUsers(): Promise<UserRecord[]> {
   try {
     const dbUsers = await administrationApi.getAdministrators();
     if (Array.isArray(dbUsers) && dbUsers.length > 0) {
-      saveStoredUsers(dbUsers as UserRecord[]);
-      return dbUsers as UserRecord[];
+      // Ensure core DEFAULT_USERS (especially ace.malto@dict.gov.ph) are merged if missing
+      const merged = [...dbUsers] as UserRecord[];
+      for (const defUser of DEFAULT_USERS) {
+        const exists = merged.some(
+          (u) =>
+            (cleanEmail(u.email) && cleanEmail(u.email) === cleanEmail(defUser.email)) ||
+            String(u.id) === String(defUser.id)
+        );
+        if (!exists) {
+          merged.push(defUser);
+        }
+      }
+
+      // Also preserve any active locally-stored users (e.g. provisioned offline)
+      const locallyStored = getStoredUsers();
+      for (const locUser of locallyStored) {
+        const exists = merged.some(
+          (u) =>
+            (cleanEmail(u.email) && cleanEmail(u.email) === cleanEmail(locUser.email)) ||
+            String(u.id) === String(locUser.id)
+        );
+        if (!exists) {
+          merged.push(locUser);
+        }
+      }
+
+      // Also preserve current active user if active
+      const current = getCurrentUser();
+      if (current && String(current.status || "").toLowerCase() === "active") {
+        const exists = merged.some(
+          (u) =>
+            (cleanEmail(u.email) && cleanEmail(u.email) === cleanEmail(current.email)) ||
+            String(u.id) === String(current.id)
+        );
+        if (!exists) {
+          merged.unshift(current);
+        }
+      }
+
+      saveStoredUsers(merged);
+      return merged;
     }
   } catch (err) {
     console.warn("Failed to fetch users from backend:", err);
@@ -306,7 +352,7 @@ export async function refreshCurrentUser(): Promise<UserRecord | null> {
     if (all.length > 0) {
       const fresh = all.find(
         (u) =>
-          (u.email && current.email && u.email.toLowerCase().trim() === current.email.toLowerCase().trim()) ||
+          (cleanEmail(u.email) && cleanEmail(current.email) && cleanEmail(u.email) === cleanEmail(current.email)) ||
           String(u.id) === String(current.id)
       );
       if (fresh) {
@@ -317,9 +363,11 @@ export async function refreshCurrentUser(): Promise<UserRecord | null> {
         setCurrentUser(fresh);
         return fresh;
       } else {
-        // User is NOT in the registered User List -> immediately terminate session!
-        setCurrentUser(null);
-        return null;
+        if (current.status === "inactive") {
+          setCurrentUser(null);
+          return null;
+        }
+        return current;
       }
     }
   } catch (e) {

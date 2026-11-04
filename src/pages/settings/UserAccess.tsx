@@ -240,9 +240,14 @@ export function UserAccess() {
   const filteredUsers = users.filter((user) => {
     const matchesSearch =
       user.name.toLowerCase().includes(search.toLowerCase()) ||
-      user.email.toLowerCase().includes(search.toLowerCase());
+      user.email.toLowerCase().includes(search.toLowerCase()) ||
+      (user.role || "").toLowerCase().includes(search.toLowerCase());
 
-    const matchesRole = roleFilter === "All" || user.role === roleFilter;
+    const matchesRole =
+      roleFilter === "All" ||
+      (roleFilter === "Custom"
+        ? !ROLE_OPTIONS.some((r) => r.value === user.role)
+        : user.role === roleFilter);
     const matchesRegion = regionFilter === "All" || user.region === regionFilter;
     const matchesFocal =
       focalFilter === "All" ||
@@ -337,6 +342,7 @@ export function UserAccess() {
               className="bg-[#111728] border border-[#1C2844] rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500 cursor-pointer"
             >
               <option value="All">All Roles</option>
+              <option value="Custom">Custom / Other Positions</option>
               {ROLE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
                   {opt.label}
@@ -550,7 +556,7 @@ export function UserAccess() {
                             type="button"
                             onClick={() => {
                               if (!canSimulateSwitchUser) {
-                                showToast("Access Denied: 'Simulate/ Switch user to this user' is exclusively restricted to ace.malto@dict.gov.ph.", "error");
+                                showToast("Access Denied: 'Simulate/ Switch user to this user' is exclusively restricted to Ace Malto.", "error");
                                 return;
                               }
                               if (user.status === "inactive") {

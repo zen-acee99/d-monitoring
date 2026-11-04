@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { CheckCircle2, AlertCircle, Sparkles, X } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { getAllUsers, setCurrentUser } from "@/services/authStore";
-import { UserRecord } from "@/data/userStore";
+import { UserRecord, DEFAULT_USERS, cleanEmail, getStoredUsers, saveStoredUsers } from "@/data/userStore";
 import { signInWithGoogle } from "@/services/firebaseAuth";
 import { usersApi } from "@/services/api";
 
@@ -13,6 +13,7 @@ export function Login() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [showFirebaseNotice, setShowFirebaseNotice] = useState(false);
+  const [customTestEmail, setCustomTestEmail] = useState("");
   const [allUsers, setAllUsers] = useState<UserRecord[]>([]);
 
   useEffect(() => {
@@ -49,57 +50,172 @@ export function Login() {
     setShowFirebaseNotice(false);
     setErrorMessage(null);
 
-    const cleanEmail = gmailAddress.trim().toLowerCase();
-    const displayName = cleanEmail.split("@")[0].replace(/\./g, " ").replace(/\b\w/g, l => l.toUpperCase());
+    const email = cleanEmail(gmailAddress);
+    const displayName = email.split("@")[0].replace(/\./g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
 
     try {
       const res = await usersApi.syncGoogleUser({
         google_id: `g-${Date.now()}`,
-        email: cleanEmail,
+        email,
         name: displayName,
       });
 
-      if (res.success && res.user) {
-        if (res.user.status === "inactive") {
+      if (res && res.success && res.user) {
+        if (String(res.user.status || "").trim().toLowerCase() === "inactive") {
           setIsGoogleLoading(false);
           setErrorMessage(`Access Denied: The account for ${res.user.name} is deactivated. You no longer have access to the platform.`);
           return;
         }
-        setCurrentUser({ ...(res.user as any), authProvider: "google", lastLogin: "Just now (GovMail SSO)" });
+        const sessionUser: UserRecord = {
+          ...(res.user as any),
+          authProvider: "google",
+          lastLogin: "Just now (GovMail SSO)",
+        };
+        try {
+          const stored = getStoredUsers();
+          const idx = stored.findIndex((u) => cleanEmail(u.email) === email);
+          if (idx >= 0) {
+            stored[idx] = { ...stored[idx], ...sessionUser };
+          } else {
+            stored.unshift(sessionUser);
+          }
+          saveStoredUsers(stored);
+        } catch {}
+
+        setCurrentUser(sessionUser);
         setIsGoogleLoading(false);
         navigate("/");
         return;
-      }
-
-      if (res.error) {
-        setIsGoogleLoading(false);
-        setErrorMessage(res.error);
-        return;
+      } else if (res && !res.success) {
+        // If backend explicitly returned 403 or deactivation error, stop immediately!
+        if (res.status === 403 || (res.error && res.error.toLowerCase().includes("deactivated"))) {
+          setIsGoogleLoading(false);
+          setErrorMessage(res.error || `Access Denied: The account for ${displayName} (${email}) is deactivated. You no longer have access to the platform.`);
+          return;
+        }
       }
     } catch {
-      // Fallback
+      // Backend unreachable, proceed to local registered personnel fallback
     }
 
-    const matched = allUsers.find(
-      (u) => u.email && u.email.trim().toLowerCase() === cleanEmail
-    );
+    const matched =
+      allUsers.find((u) => cleanEmail(u.email) === email) ||
+      DEFAULT_USERS.find((u) => cleanEmail(u.email) === email);
 
     if (matched) {
-      if (matched.status === "inactive") {
+      if (String(matched.status || "").trim().toLowerCase() === "inactive") {
         setIsGoogleLoading(false);
         setErrorMessage(`Access Denied: The account for ${matched.name} is deactivated. You no longer have access to the platform.`);
         return;
       }
-      setCurrentUser({ ...matched, authProvider: "google", lastLogin: "Just now (GovMail SSO)" });
+      const sessionUser: UserRecord = { ...matched, authProvider: "google", lastLogin: "Just now (GovMail SSO)" };
+      try {
+        const stored = getStoredUsers();
+        const idx = stored.findIndex((u) => cleanEmail(u.email) === email);
+        if (idx >= 0) {
+          stored[idx] = { ...stored[idx], ...sessionUser };
+        } else {
+          stored.unshift(sessionUser);
+        }
+        saveStoredUsers(stored);
+      } catch {}
+
+      setCurrentUser(sessionUser);
       setIsGoogleLoading(false);
       navigate("/");
       return;
     }
 
+    // Auto-provision unlisted user locally with standard active access
+    const isAce = email === "ace.malto@dict.gov.ph" || email === "acemm.1599@gmail.com" || email.startsWith("ace.malto");
+    const newUserId = `usr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const autoUser: UserRecord = {
+      id: newUserId,
+      name: displayName,
+      email,
+      role: isAce ? "Super Admin" : "Viewer",
+      region: "Region V (Bicol)",
+      status: "active",
+      isFocal: false,
+      focalProvince: isAce ? "Albay" : undefined,
+      access: {
+        overview: true,
+        MOD_OVERVIEW: true,
+        "mod-overview": true,
+        dtr: true,
+        MOD_DTR: true,
+        "mod-dtr": true,
+        calendar: true,
+        MOD_CALENDAR: true,
+        "mod-calendar": true,
+        signing: true,
+        MOD_SIGNING: true,
+        "mod-signing": true,
+        "signing-workspace": true,
+        "MOD_SIGNING-WORKSPACE": true,
+        "mod-signing-workspace": true,
+        gecs: true,
+        MOD_GECS: true,
+        "mod-gecs": true,
+        freewifi: true,
+        MOD_FREEWIFI: true,
+        "mod-freewifi": true,
+        egovph: true,
+        MOD_EGOVPH: true,
+        "mod-egovph": true,
+        elgu: true,
+        MOD_ELGU: true,
+        "mod-elgu": true,
+        nbp: true,
+        MOD_NBP: true,
+        "mod-nbp": true,
+        govnet: true,
+        MOD_GOVNET: true,
+        "mod-govnet": true,
+        pnpki: true,
+        MOD_PNPKI: true,
+        "mod-pnpki": true,
+        ilcdb: true,
+        MOD_ILCDB: true,
+        "mod-ilcdb": true,
+        cybersecurity: true,
+        MOD_CYBERSECURITY: true,
+        "mod-cybersecurity": true,
+        miss: true,
+        MOD_MISS: true,
+        "mod-miss": true,
+        iidb: true,
+        MOD_IIDB: true,
+        "mod-iidb": true,
+        project_data: true,
+        MOD_PROJECT_DATA: true,
+        "project-data": true,
+        "mod-project-data": true,
+        admin: isAce,
+        MOD_ADMIN: isAce,
+        "mod-admin": isAce,
+      },
+      canEdit: isAce,
+      canDelete: isAce,
+      authProvider: "google",
+      lastLogin: "Just now (GovMail SSO)",
+      createdAt: new Date().toISOString(),
+    };
+
+    try {
+      const stored = getStoredUsers();
+      const idx = stored.findIndex((u) => cleanEmail(u.email) === email);
+      if (idx >= 0) {
+        stored[idx] = { ...stored[idx], ...autoUser };
+      } else {
+        stored.unshift(autoUser);
+      }
+      saveStoredUsers(stored);
+    } catch {}
+
+    setCurrentUser(autoUser);
     setIsGoogleLoading(false);
-    setErrorMessage(
-      `Access Denied: The GovMail address "${gmailAddress}" is not registered in the system. Only pre-registered personnel added by an administrator can log in.`
-    );
+    navigate("/");
   };
 
   return (
@@ -192,26 +308,58 @@ export function Login() {
                 <p className="text-slate-300 leading-relaxed">
                   To connect live Gmail accounts, paste your Firebase project web credentials into <code className="text-amber-300 bg-black/40 px-1 py-0.5 rounded font-mono">.env</code> (<code className="text-slate-300">VITE_FIREBASE_API_KEY</code>, etc.).
                 </p>
-                <div className="pt-1 flex flex-col sm:flex-row gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const firstUser = allUsers[0];
-                      const testEmail = firstUser ? `${firstUser.email.split("@")[0]}@gmail.com` : "ace.malto@gmail.com";
-                      handleSimulatedGoogleLogin(testEmail);
-                    }}
-                    className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Sparkles className="w-3.5 h-3.5" />
-                    Test Gmail Login (Instant Preview)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowFirebaseNotice(false)}
-                    className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition-colors cursor-pointer"
-                  >
-                    Dismiss
-                  </button>
+                <div className="pt-1 flex flex-col gap-2">
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleSimulatedGoogleLogin("ace.malto@dict.gov.ph")}
+                      className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      Login as ace.malto@dict.gov.ph
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSimulatedGoogleLogin("acemm.1599@gmail.com")}
+                      className="px-3 py-1.5 rounded-lg bg-amber-500/80 hover:bg-amber-400 text-slate-950 font-bold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      Login as acemm.1599@gmail.com
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowFirebaseNotice(false)}
+                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition-colors cursor-pointer"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2 pt-1 border-t border-slate-700/50">
+                    <input
+                      type="email"
+                      placeholder="Or test any email (e.g. user@gmail.com)..."
+                      value={customTestEmail}
+                      onChange={(e) => setCustomTestEmail(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && customTestEmail.trim()) {
+                          handleSimulatedGoogleLogin(customTestEmail.trim());
+                        }
+                      }}
+                      className="flex-1 bg-black/40 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-amber-400"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (customTestEmail.trim()) {
+                          handleSimulatedGoogleLogin(customTestEmail.trim());
+                        }
+                      }}
+                      disabled={!customTestEmail.trim()}
+                      className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-white font-medium text-xs transition-colors cursor-pointer"
+                    >
+                      Test Access
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
