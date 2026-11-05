@@ -249,6 +249,164 @@ dtrStorageRouter.get("/:id", async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/dtr-storage/batch - High-speed micro-batch upsert for 100-200 files
+dtrStorageRouter.post("/batch", async (req: Request, res: Response) => {
+  try {
+    const records = req.body.records;
+    if (!Array.isArray(records) || records.length === 0) {
+      return res.status(400).json({ success: false, error: "Invalid records array" });
+    }
+
+    const savedRecords: any[] = [];
+    const errors: { id: string; error: string }[] = [];
+
+    // Process records in controlled concurrent micro-chunks of 10 to maximize Turso throughput without overloading
+    const CHUNK_SIZE = 10;
+    for (let i = 0; i < records.length; i += CHUNK_SIZE) {
+      const chunk = records.slice(i, i + CHUNK_SIZE);
+      await Promise.all(
+        chunk.map(async (body: any) => {
+          try {
+            const employeeName = (body.employeeName || body.employee_name || "PERSONNEL").trim().toUpperCase();
+            const headerUserId = req.headers["x-user-id"] ? String(req.headers["x-user-id"]).trim() : null;
+            let cleanUserId = body.userId || body.user_id ? String(body.userId || body.user_id).trim() : headerUserId;
+
+            const recordId = body.id || `DTR-${body.module || "PROV"}-${Date.now().toString().slice(-6)}-${Math.random().toString(36).substring(2, 6)}`;
+            const submittedDate = body.submittedDate || body.submitted_date || new Date().toISOString();
+            const rowsJson = body.rows ? JSON.stringify(body.rows) : (body.rows_json || "[]");
+
+            await db.execute({
+              sql: `INSERT INTO dtr_storage (
+                      id, user_id, employee_name, employee_id, position, employment_status,
+                      module, province, section_division, period_text, month, year, scope,
+                      regular_hours, saturday_hours, supervisor_name, supervisor_title,
+                      total_days_rendered, total_hours_rendered, undertime_hours, undertime_minutes, late_minutes,
+                      status, submitted_date, pdf_filename, pdf_filesize, pdf_data,
+                      has_p12, signature_image, signer_name,
+                      employee_signature_image, employee_has_p12, employee_signer_name,
+                      supervisor_signature_image, supervisor_has_p12,
+                      rows_json, doc_type, remarks, created_at, updated_at
+                    ) VALUES (
+                      ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?,
+                      ?, ?, ?,
+                      ?, ?, ?,
+                      ?, ?,
+                      ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    )
+                    ON CONFLICT(id) DO UPDATE SET
+                      user_id = COALESCE(excluded.user_id, dtr_storage.user_id),
+                      employee_name = excluded.employee_name,
+                      employee_id = excluded.employee_id,
+                      position = excluded.position,
+                      employment_status = excluded.employment_status,
+                      module = excluded.module,
+                      province = excluded.province,
+                      section_division = excluded.section_division,
+                      period_text = excluded.period_text,
+                      month = excluded.month,
+                      year = excluded.year,
+                      scope = excluded.scope,
+                      regular_hours = excluded.regular_hours,
+                      saturday_hours = excluded.saturday_hours,
+                      supervisor_name = excluded.supervisor_name,
+                      supervisor_title = excluded.supervisor_title,
+                      total_days_rendered = excluded.total_days_rendered,
+                      total_hours_rendered = excluded.total_hours_rendered,
+                      undertime_hours = excluded.undertime_hours,
+                      undertime_minutes = excluded.undertime_minutes,
+                      late_minutes = excluded.late_minutes,
+                      status = excluded.status,
+                      submitted_date = excluded.submitted_date,
+                      pdf_filename = excluded.pdf_filename,
+                      pdf_filesize = excluded.pdf_filesize,
+                      pdf_data = COALESCE(excluded.pdf_data, dtr_storage.pdf_data),
+                      has_p12 = excluded.has_p12,
+                      signature_image = COALESCE(excluded.signature_image, dtr_storage.signature_image),
+                      signer_name = COALESCE(excluded.signer_name, dtr_storage.signer_name),
+                      employee_signature_image = COALESCE(excluded.employee_signature_image, dtr_storage.employee_signature_image),
+                      employee_has_p12 = COALESCE(excluded.employee_has_p12, dtr_storage.employee_has_p12),
+                      employee_signer_name = COALESCE(excluded.employee_signer_name, dtr_storage.employee_signer_name),
+                      supervisor_signature_image = COALESCE(excluded.supervisor_signature_image, dtr_storage.supervisor_signature_image),
+                      supervisor_has_p12 = COALESCE(excluded.supervisor_has_p12, dtr_storage.supervisor_has_p12),
+                      rows_json = excluded.rows_json,
+                      doc_type = COALESCE(excluded.doc_type, dtr_storage.doc_type),
+                      remarks = excluded.remarks,
+                      updated_at = CURRENT_TIMESTAMP`,
+              args: [
+                recordId,
+                cleanUserId,
+                employeeName,
+                body.employeeId || body.employee_id || `DICT-R5-${body.year || 2026}-${Math.floor(100 + Math.random() * 900)}`,
+                body.position || "Technical Specialist / Engineer",
+                body.employmentStatus || body.employment_status || "Regular",
+                (body.module || "PROVINCIAL").toUpperCase(),
+                body.province || null,
+                body.sectionDivision || body.section_division || (body.province ? `${body.province} Provincial Operations` : "Regional Operations (RO)"),
+                body.periodText || body.period_text || "AUGUST 01-31, 2026",
+                body.month !== undefined ? Number(body.month) : 7,
+                body.year !== undefined ? Number(body.year) : 2026,
+                body.scope || "full",
+                body.regularHours || body.regular_hours || "",
+                body.saturdayHours || body.saturday_hours || "",
+                body.supervisorName || body.supervisor_name || "NORLY A. TABO",
+                body.supervisorTitle || body.supervisor_title || "OIC Chief - Technical Operations Division",
+                Number(body.totalDaysRendered || body.total_days_rendered) || 0,
+                Number(body.totalHoursRendered || body.total_hours_rendered) || 0,
+                Number(body.undertimeHours || body.undertime_hours) || 0,
+                Number(body.undertimeMinutes || body.undertime_minutes) || 0,
+                Number(body.lateMinutes || body.late_minutes) || 0,
+                body.status || "Submitted",
+                submittedDate,
+                body.pdfFileName || body.pdf_filename || `DTR_${employeeName.replace(/[^a-zA-Z0-9]/g, "_")}.pdf`,
+                body.pdfFileSize || body.pdf_filesize || "325 KB",
+                body.pdfDataUrl || body.pdf_data || null,
+                body.hasP12 ? 1 : 0,
+                body.signatureImage || body.signature_image || null,
+                body.signerName || body.signer_name || null,
+                body.employeeSignatureImage || body.employee_signature_image || body.signatureImage || null,
+                body.employeeHasP12 !== undefined ? (body.employeeHasP12 ? 1 : 0) : (body.hasP12 ? 1 : 0),
+                body.employeeSignerName || body.employee_signer_name || employeeName,
+                body.supervisorSignatureImage || body.supervisor_signature_image || null,
+                body.supervisorHasP12 ? 1 : 0,
+                rowsJson,
+                body.docType || body.doc_type || (body.pdfFileName?.toUpperCase().startsWith("AR_") ? "AR" : "DTR"),
+                body.remarks || `Generated for ${body.province || "Regional Office"}`,
+              ],
+            });
+
+            savedRecords.push({ id: recordId, fileName: body.pdfFileName });
+          } catch (err: any) {
+            errors.push({ id: body.id, error: err.message });
+          }
+        })
+      );
+    }
+
+    if (savedRecords.length > 0) {
+      broadcastDtrRealtimeEvent({
+        type: "INSERT",
+        record: { module: "SIGNING_WORKSPACE", batchCount: savedRecords.length } as any,
+        id: `batch-${Date.now()}`,
+      });
+    }
+
+    return res.json({
+      success: errors.length === 0,
+      savedCount: savedRecords.length,
+      errorsCount: errors.length,
+      savedRecords,
+      errors,
+    });
+  } catch (error: any) {
+    console.error("Batch save error in dtr_storage:", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // POST /api/dtr-storage - Create or upsert record with audit user_id tracking
 dtrStorageRouter.post("/", async (req: Request, res: Response) => {
   try {
