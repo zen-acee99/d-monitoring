@@ -2753,15 +2753,113 @@ export function SigningWorkspace() {
       !hasUserAlreadySigned(d, currentUser?.name)
   );
 
+  // ─── Batch Multi-Select & High-Speed Batch Deletion ─────────────────────────
+
+  const [isDeletingBatch, setIsDeletingBatch] = useState(false);
+  const [confirmDeleteModal, setConfirmDeleteModal] = useState<{
+    isOpen: boolean;
+    type: "selected" | "all";
+    count: number;
+    ids: string[];
+  }>({
+    isOpen: false,
+    type: "selected",
+    count: 0,
+    ids: [],
+  });
+
   const toggleSelect = (id: string) => {
     setDocuments((prev) =>
       prev.map((d) => (d.id === id ? { ...d, selected: !d.selected } : d))
     );
   };
 
-  const toggleSelectAll = () => {
-    const allSelected = documents.length > 0 && documents.every((d) => d.selected);
-    setDocuments((prev) => prev.map((d) => ({ ...d, selected: !allSelected })));
+  const toggleSelectAll = (forceValue?: boolean) => {
+    const allSelected = forceValue !== undefined ? !forceValue : documents.length > 0 && documents.every((d) => d.selected);
+    const targetState = forceValue !== undefined ? forceValue : !allSelected;
+    setDocuments((prev) => prev.map((d) => ({ ...d, selected: targetState })));
+  };
+
+  const deselectAll = () => {
+    setDocuments((prev) => prev.map((d) => ({ ...d, selected: false })));
+  };
+
+  const handlePromptDeleteSelected = () => {
+    const ids = documents.filter((d) => d.selected).map((d) => d.id);
+    if (ids.length === 0) {
+      showNotif("⚠️ Please select at least one document to delete.");
+      return;
+    }
+    setConfirmDeleteModal({
+      isOpen: true,
+      type: "selected",
+      count: ids.length,
+      ids,
+    });
+  };
+
+  const handlePromptDeleteAll = () => {
+    if (documents.length === 0) {
+      showNotif("⚠️ No documents in the workspace to delete.");
+      return;
+    }
+    setConfirmDeleteModal({
+      isOpen: true,
+      type: "all",
+      count: documents.length,
+      ids: documents.map((d) => d.id),
+    });
+  };
+
+  const handleExecuteBatchDelete = async () => {
+    const targetIds = confirmDeleteModal.ids;
+    if (targetIds.length === 0) {
+      setConfirmDeleteModal((prev) => ({ ...prev, isOpen: false }));
+      return;
+    }
+
+    const count = targetIds.length;
+    setIsDeletingBatch(true);
+    setConfirmDeleteModal((prev) => ({ ...prev, isOpen: false }));
+    showNotif(`🗑 Deleting ${count} document(s) from workspace and repository…`);
+
+    // 1. Mark IDs in tombstone set immediately
+    targetIds.forEach((id) => markDocAsDeleted(id));
+
+    // 2. Clear from preview if active
+    if (previewDoc && targetIds.includes(previewDoc.id)) {
+      setPreviewDoc(null);
+    }
+
+    // 3. Immediately update state and flush to localStorage (<5ms)
+    const idSet = new Set(targetIds);
+    setDocuments((prev) => {
+      const updated = prev.filter((d) => !idSet.has(d.id));
+      try {
+        localStorage.setItem(
+          "dict_r5_signing_workspace_docs_v1",
+          serializeDocsForLocalStorage(updated)
+        );
+      } catch {}
+      return updated;
+    });
+
+    // 4. Broadcast DELETE event to other same-browser tabs immediately
+    targetIds.forEach((id) => broadcastLocalDtrEvent({ type: "DELETE", id }));
+
+    // 5. Concurrently delete from backend Turso dtr_storage table using asyncPool (concurrency 8)
+    try {
+      await asyncPool<string, void>(8, targetIds, async (id: string) => {
+        try {
+          await dtrStorageApi.deleteRecord(id);
+        } catch (err) {
+          console.warn(`Failed to delete record ${id} from dtr_storage:`, err);
+        }
+      });
+    } finally {
+      setIsDeletingBatch(false);
+      showNotif(`✓ ${count} document(s) permanently deleted.`);
+    }
   };
 
   // ─── High-Speed Batch Upload Handler (100–200 files with Auto-Retry) ───────
@@ -3512,6 +3610,74 @@ export function SigningWorkspace() {
             </div>
           </div>
 
+          {/* ── Multi-Select & Batch Deletion Bar (Select All / Delete All / Delete Selected) ── */}
+          {documents.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2.5 px-4 sm:px-5 py-2.5 bg-[#090D17] border-b border-[#1A2235] text-xs">
+              {/* Left: Selection toggles */}
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 cursor-pointer select-none text-slate-300 hover:text-white transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={documents.length > 0 && documents.every((d) => d.selected)}
+                    onChange={() => toggleSelectAll()}
+                    className="rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer"
+                  />
+                  <span className="font-semibold text-xs">
+                    Select All ({documents.length})
+                  </span>
+                </label>
+
+                {selectedDocs.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-bold bg-violet-500/15 text-violet-300 border border-violet-500/30">
+                      {selectedDocs.length} selected
+                    </span>
+                    <button
+                      type="button"
+                      onClick={deselectAll}
+                      className="text-[11px] text-slate-400 hover:text-slate-200 underline cursor-pointer"
+                    >
+                      Deselect
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Right: Batch Actions */}
+              <div className="flex items-center gap-2 ml-auto">
+                {/* Delete Selected (Active when 1 or more selected) */}
+                {selectedDocs.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handlePromptDeleteSelected}
+                    disabled={isDeletingBatch}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-600/20 hover:bg-red-600/30 border border-red-500/40 text-red-300 hover:text-red-200 font-bold text-xs transition-all cursor-pointer shadow-sm disabled:opacity-50"
+                    title={`Delete ${selectedDocs.length} selected document(s)`}
+                  >
+                    {isDeletingBatch ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="w-3.5 h-3.5" />
+                    )}
+                    <span>Delete Selected ({selectedDocs.length})</span>
+                  </button>
+                )}
+
+                {/* Delete All (Purge full queue) */}
+                <button
+                  type="button"
+                  onClick={handlePromptDeleteAll}
+                  disabled={isDeletingBatch || documents.length === 0}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-red-950/30 hover:bg-red-900/40 border border-red-900/50 text-red-400 hover:text-red-300 font-medium text-xs transition-all cursor-pointer disabled:opacity-40"
+                  title="Permanently remove all documents in this workspace"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Delete All ({documents.length})</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {filtered.length === 0 ? (
             <div className="px-4 py-12 text-center text-slate-500">
               <div className="flex flex-col items-center gap-2">
@@ -3534,24 +3700,6 @@ export function SigningWorkspace() {
                     : "block md:hidden"
                 }`}
               >
-                {/* Select All Bar in Mobile Card View */}
-                {isBulkSigningAuthorized && (
-                  <div className="px-4 py-2.5 bg-[#080B13] border-b border-[#1A2235] flex items-center justify-between text-xs text-slate-400">
-                    <label className="flex items-center gap-2 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={documents.length > 0 && documents.every((d) => d.selected)}
-                        onChange={toggleSelectAll}
-                        className="rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer"
-                      />
-                      <span className="font-semibold text-slate-300 text-[11px]">Select All ({documents.length})</span>
-                    </label>
-                    <span className="text-[10px] text-slate-500 font-mono">
-                      {filtered.filter((d) => d.selected).length} selected
-                    </span>
-                  </div>
-                )}
-
                 {paginatedDocs.map((doc) => {
                   const sc = statusConfig[doc.status];
                   const userIsReq = isUserAuthorizedToSignDoc(doc, currentUser);
@@ -3570,14 +3718,12 @@ export function SigningWorkspace() {
                       {/* Header: Checkbox + File Info + Status */}
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex items-start gap-2.5 min-w-0 flex-1">
-                          {isBulkSigningAuthorized && (
-                            <input
-                              type="checkbox"
-                              checked={!!doc.selected}
-                              onChange={() => toggleSelect(doc.id)}
-                              className="mt-1 rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer shrink-0"
-                            />
-                          )}
+                          <input
+                            type="checkbox"
+                            checked={!!doc.selected}
+                            onChange={() => toggleSelect(doc.id)}
+                            className="mt-1 rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer shrink-0"
+                          />
                           <div className="w-8 h-8 rounded-lg bg-[#111728] border border-[#1C2844] flex items-center justify-center shrink-0 mt-0.5">
                             <FileKey className="w-4 h-4 text-violet-400" />
                           </div>
@@ -3750,17 +3896,15 @@ export function SigningWorkspace() {
                 <table className="w-full text-xs text-left">
                   <thead>
                     <tr className="border-b border-[#1A2235] bg-[#080B13] text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-                      {isBulkSigningAuthorized && (
-                        <th className="px-4 py-3 w-8">
-                          <input
-                            type="checkbox"
-                            checked={documents.length > 0 && documents.every((d) => d.selected)}
-                            onChange={toggleSelectAll}
-                            className="rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer"
-                            title="Select all"
-                          />
-                        </th>
-                      )}
+                      <th className="px-4 py-3 w-8">
+                        <input
+                          type="checkbox"
+                          checked={documents.length > 0 && documents.every((d) => d.selected)}
+                          onChange={() => toggleSelectAll()}
+                          className="rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer"
+                          title="Select all"
+                        />
+                      </th>
                       <th className="px-4 py-3 min-w-[200px]">Document / Personnel</th>
                       <th className="px-4 py-3 w-24">Size</th>
                       <th className="px-4 py-3 w-32">Uploaded By</th>
@@ -3790,16 +3934,14 @@ export function SigningWorkspace() {
                         }`}
                       >
                         {/* Checkbox */}
-                        {isBulkSigningAuthorized && (
-                          <td className="px-4 py-3">
-                            <input
-                              type="checkbox"
-                              checked={!!doc.selected}
-                              onChange={() => toggleSelect(doc.id)}
-                              className="rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer"
-                            />
-                          </td>
-                        )}
+                        <td className="px-4 py-3">
+                          <input
+                            type="checkbox"
+                            checked={!!doc.selected}
+                            onChange={() => toggleSelect(doc.id)}
+                            className="rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer"
+                          />
+                        </td>
 
                         {/* File Name & Primary Personnel */}
                         <td className="px-4 py-3">
@@ -4104,6 +4246,51 @@ export function SigningWorkspace() {
             : undefined
         }
       />
+
+      {/* ── High-Speed Batch Delete Confirmation Modal (Delete Selected / Delete All) ── */}
+      {confirmDeleteModal.isOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
+          <div className="bg-[#0C101A] border border-red-500/30 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden p-5 sm:p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-red-500/15 border border-red-500/30 flex items-center justify-center text-red-400 shrink-0 shadow-lg shadow-red-950/40">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm sm:text-base font-bold text-white">
+                  {confirmDeleteModal.type === "all" ? "Delete All Documents?" : "Delete Selected Documents?"}
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  {confirmDeleteModal.type === "all"
+                    ? `You are about to permanently delete all ${confirmDeleteModal.count} documents.`
+                    : `You are about to delete ${confirmDeleteModal.count} selected document(s).`}
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-xs text-red-300 leading-relaxed">
+              ⚠️ This action is permanent. All associated PDF binaries, signature states, and metadata will be purged from the cloud storage repository.
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteModal((prev) => ({ ...prev, isOpen: false }))}
+                className="px-4 py-2 rounded-xl border border-[#1C2844] text-slate-400 hover:text-white hover:bg-white/5 text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleExecuteBatchDelete}
+                className="px-4 py-2 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-lg shadow-red-950/50 transition-all cursor-pointer active:scale-95"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Yes, Delete {confirmDeleteModal.count} File(s)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
