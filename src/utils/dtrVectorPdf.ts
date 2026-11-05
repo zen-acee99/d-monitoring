@@ -1816,7 +1816,7 @@ export async function signUploadedArPdfBytes(
 
   // 2. Draw official DTR-style "Digitally signed by <Name>" typography
   try {
-    const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const textX = signatureImage ? boxX + 48 : boxX + 4;
 
     const isReneJaneAr =
@@ -1825,17 +1825,17 @@ export async function signUploadedArPdfBytes(
 
     targetPage.drawText(isReneJaneAr ? "Digitally signed by" : "Digitally signed", {
       x: textX,
-      y: boxY + 13,
+      y: boxY + 13.5,
       size: 6.8,
-      font: helveticaBold,
+      font: helvetica,
       color: rgb(0, 0, 0),
     });
 
     targetPage.drawText(isReneJaneAr ? "Buena Rene Jane Rosendo" : `by ${resolvedSignerName}`, {
       x: textX,
-      y: boxY + 5,
+      y: boxY + 5.5,
       size: 6.8,
-      font: helveticaBold,
+      font: helvetica,
       color: rgb(0, 0, 0),
     });
   } catch (err) {
@@ -2337,7 +2337,7 @@ export async function signUploadedPersonnelPdfBytes(
   if (isCounter) {
     // Compact horizontal counter-signature stamp: border-none, bg-transparent, sign on left, DigiSigned on right, text-black
     try {
-      const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
       // 1. Left side: Signature image or vector checkmark (width ~14 pt, height ~12 pt)
       let hasDrawnCsImg = false;
@@ -2404,7 +2404,7 @@ export async function signUploadedPersonnelPdfBytes(
         x: textX,
         y: boxY + 7.8,
         size: 3.3,
-        font: helveticaBold,
+        font: helvetica,
         color: rgb(0, 0, 0),
       });
 
@@ -2412,7 +2412,7 @@ export async function signUploadedPersonnelPdfBytes(
         x: textX,
         y: boxY + 3.2,
         size: 3.0,
-        font: helveticaBold,
+        font: helvetica,
         color: rgb(0, 0, 0),
       });
     } catch (e) {
@@ -2454,7 +2454,6 @@ export async function signUploadedPersonnelPdfBytes(
     }
 
     try {
-      const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
       const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
       const textX = hasDrawnImage ? boxX + 44 : boxX + 5;
       const isReneJane =
@@ -2466,7 +2465,7 @@ export async function signUploadedPersonnelPdfBytes(
           x: textX,
           y: boxY + 14,
           size: 6.5,
-          font: helveticaBold,
+          font: helvetica,
           color: rgb(0.0, 0.0, 0.0),
         });
 
@@ -2474,32 +2473,24 @@ export async function signUploadedPersonnelPdfBytes(
           x: textX,
           y: boxY + 6.5,
           size: 6.2,
-          font: helveticaBold,
+          font: helvetica,
           color: rgb(0.0, 0.0, 0.0),
         });
       } else {
         targetPage.drawText("Digitally signed", {
           x: textX,
-          y: boxY + 18,
+          y: boxY + 14,
           size: 6.5,
-          font: helveticaBold,
-          color: rgb(0.08, 0.20, 0.50),
+          font: helvetica,
+          color: rgb(0.0, 0.0, 0.0),
         });
 
         targetPage.drawText(`by ${resolvedSignerName}`, {
           x: textX,
-          y: boxY + 10.5,
+          y: boxY + 6.5,
           size: 6.5,
-          font: helveticaBold,
-          color: rgb(0.0, 0.0, 0.0),
-        });
-
-        targetPage.drawText(`Date: ${formatPnpkiDate()}`, {
-          x: textX,
-          y: boxY + 3.5,
-          size: 5.2,
           font: helvetica,
-          color: rgb(0.25, 0.30, 0.40),
+          color: rgb(0.0, 0.0, 0.0),
         });
       }
     } catch (err) {

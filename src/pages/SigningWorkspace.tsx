@@ -637,19 +637,14 @@ function DocumentPreviewModal({
           {isSigned ? (
             <div
               onClick={() => onShowValidationStatus?.(signer.p12CommonName || signer.name, signer.signedAt)}
-              className="border-none bg-blue-500/10 px-2.5 py-1 rounded text-[9.5px] text-blue-900 font-bold inline-block cursor-pointer hover:bg-blue-100/60 transition-all"
+              className="border-none bg-slate-100 dark:bg-slate-800/60 px-2.5 py-1 rounded text-[9.5px] text-black dark:text-white font-normal inline-block cursor-pointer hover:bg-slate-200/80 transition-all"
               title="Click to view official PNPKI Digital Signature Validation Status"
             >
-              <div className="flex items-center gap-1">
-                <ShieldCheck className="w-3 h-3 text-blue-600" />
+              <div className="flex items-center gap-1 text-black dark:text-white font-normal">
+                <ShieldCheck className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
                 <span>Digitally signed</span>
               </div>
-              <div>by {signer.p12CommonName || signer.name}</div>
-              {signer.signedAt && (
-                <div className="text-[7.5px] font-mono text-slate-600">
-                  Date: {formatPnpkiDate(new Date(signer.signedAt))}
-                </div>
-              )}
+              <div className="text-black dark:text-white font-normal">by {signer.p12CommonName || signer.name}</div>
             </div>
           ) : (
             <div className="text-[10px] text-slate-400 italic">[Signature Area Above Name]</div>

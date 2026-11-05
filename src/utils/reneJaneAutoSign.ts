@@ -413,7 +413,7 @@ export async function autoSignPdfWithReneJane(
       embeddedPng = await pdfDoc.embedPng(sigImgBytes);
     }
 
-    const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, "0");
@@ -433,7 +433,7 @@ export async function autoSignPdfWithReneJane(
         x: textX,
         y: ry + 13.5,
         size: 6.2,
-        font: helveticaBold,
+        font: helvetica,
         color: rgb(0.0, 0.0, 0.0),
       });
 
@@ -441,7 +441,7 @@ export async function autoSignPdfWithReneJane(
         x: textX,
         y: ry + 6,
         size: 5.8,
-        font: helveticaBold,
+        font: helvetica,
         color: rgb(0.0, 0.0, 0.0),
       });
     });
