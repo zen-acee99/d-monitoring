@@ -42,6 +42,8 @@ import {
   CounterSignPosition,
   arrayBufferToBase64,
   base64ToUint8Array,
+  recheckDocWithLatestUsers,
+  mergeScanResultsIntoDoc,
 } from "@/utils/dtrVectorPdf";
 import { RENE_JANE_SIGNATURE_BASE64 } from "@/utils/reneJaneAutoSign";
 import { formatPnpkiDate } from "@/utils/dtrUtils";
@@ -429,7 +431,7 @@ const statusConfig: Record<
 // ─── Document Preview Modal Matching Image 2 Layout ────────────────────────
 
 function DocumentPreviewModal({
-  doc,
+  doc: rawDoc,
   onClose,
   onSign,
   onCounterSign,
@@ -450,20 +452,32 @@ function DocumentPreviewModal({
   const [activeTab, setActiveTab] = useState<"viewer" | "signatures">("viewer");
   const [selectedCounterPos, setSelectedCounterPos] = useState<CounterSignPosition>("auto");
 
+  // Dynamically resolve signatories with latest User List
+  const doc = useMemo(() => {
+    if (!rawDoc) return null;
+    try {
+      const freshUsers = getStoredUsers().map((u) => ({ name: u.name, role: u.role, email: u.email }));
+      const { updatedDoc } = recheckDocWithLatestUsers(rawDoc, freshUsers);
+      return updatedDoc as WorkspaceDocument;
+    } catch {
+      return rawDoc;
+    }
+  }, [rawDoc]);
+
   useEffect(() => {
-    if (!doc) {
+    if (!rawDoc) {
       setBlobUrl(null);
       return;
     }
 
     // Always check for signed/updated PDF first so changes are immediately visible
-    if (doc.pdfDataUrl) {
-      let url = doc.pdfDataUrl;
-      if (doc.pdfDataUrl.startsWith("data:")) {
+    if (rawDoc.pdfDataUrl) {
+      let url = rawDoc.pdfDataUrl;
+      if (rawDoc.pdfDataUrl.startsWith("data:")) {
         try {
-          const base64 = doc.pdfDataUrl.includes(",")
-            ? doc.pdfDataUrl.split(",")[1]
-            : doc.pdfDataUrl;
+          const base64 = rawDoc.pdfDataUrl.includes(",")
+            ? rawDoc.pdfDataUrl.split(",")[1]
+            : rawDoc.pdfDataUrl;
           const binary = atob(base64);
           const bytes = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i++) {
@@ -474,16 +488,16 @@ function DocumentPreviewModal({
           setBlobUrl(created);
           return () => URL.revokeObjectURL(created);
         } catch {
-          setBlobUrl(doc.pdfDataUrl);
+          setBlobUrl(rawDoc.pdfDataUrl);
         }
       } else {
-        setBlobUrl(doc.pdfDataUrl);
+        setBlobUrl(rawDoc.pdfDataUrl);
       }
       return;
     }
 
-    if (doc.fileObj) {
-      const url = URL.createObjectURL(doc.fileObj);
+    if (rawDoc.fileObj) {
+      const url = URL.createObjectURL(rawDoc.fileObj);
       setBlobUrl(url);
       return () => URL.revokeObjectURL(url);
     }
@@ -491,10 +505,10 @@ function DocumentPreviewModal({
     // If PDF binary data is not loaded yet in memory, fetch it on-demand from database
     let isCancelled = false;
     dtrStorageApi
-      .getRecord(doc.id)
+      .getRecord(rawDoc.id)
       .then((fullRec) => {
         if (!isCancelled && fullRec && fullRec.pdfDataUrl) {
-          doc.pdfDataUrl = fullRec.pdfDataUrl;
+          rawDoc.pdfDataUrl = fullRec.pdfDataUrl;
           try {
             const base64 = fullRec.pdfDataUrl.includes(",")
               ? fullRec.pdfDataUrl.split(",")[1]
@@ -517,7 +531,7 @@ function DocumentPreviewModal({
     return () => {
       isCancelled = true;
     };
-  }, [doc]);
+  }, [rawDoc]);
 
   if (!doc) return null;
 
@@ -1557,7 +1571,7 @@ function mapDtrRecordToWorkspaceDoc(record: any): WorkspaceDocument {
   ];
   const counterSigners: DocumentSigner[] = remarksData.counterSigners || [];
 
-  return {
+  const initialDoc: WorkspaceDocument = {
     id: record.id,
     fileName: record.pdfFileName || `${record.id}.pdf`,
     fileSize: record.pdfFileSize || "1.2 MB",
@@ -1578,6 +1592,15 @@ function mapDtrRecordToWorkspaceDoc(record: any): WorkspaceDocument {
     scannedInfo: remarksData.scannedInfo || undefined,
     province: record.province || remarksData.province || "",
   };
+
+  // Dynamically re-evaluate against latest User List to recognize any newly registered users
+  try {
+    const freshUsers = getStoredUsers().map((u) => ({ name: u.name, role: u.role, email: u.email }));
+    const { updatedDoc } = recheckDocWithLatestUsers(initialDoc, freshUsers);
+    return updatedDoc as WorkspaceDocument;
+  } catch {
+    return initialDoc;
+  }
 }
 
 const DELETED_IDS_STORAGE_KEY = "dict_r5_signing_workspace_deleted_ids_v1";
@@ -1627,15 +1650,27 @@ function SingleCounterSignModal({
     initialPosition === "auto" ? "right" : initialPosition
   );
 
-  // Gather all unique personnel from this document's signer chain
+  // Gather all unique personnel from this document's signer chain AND fresh User List
   const personnelChoices = useMemo(() => {
     if (!doc) return [];
     const names = new Set<string>();
+
+    // 1. Existing recognized signers in the document
     if (doc.targetPersonnel) names.add(doc.targetPersonnel);
     doc.requiredSigners.forEach((r) => r && names.add(r));
     doc.signers.forEach((s) => s?.name && names.add(s.name));
+
+    // 2. DYNAMIC USER RECOGNITION: Always cross-reference the fresh User List against document text
+    try {
+      const freshUsers = getStoredUsers().map((u) => ({ name: u.name, role: u.role, email: u.email }));
+      const { updatedDoc } = recheckDocWithLatestUsers(doc, freshUsers);
+      if (updatedDoc.targetPersonnel) names.add(updatedDoc.targetPersonnel);
+      (updatedDoc.requiredSigners || []).forEach((r: string) => r && names.add(r));
+      (updatedDoc.signers || []).forEach((s: any) => s?.name && names.add(s.name));
+    } catch {}
+
     return Array.from(names).filter((n) => n && n.trim().length > 2);
-  }, [doc]);
+  }, [doc, isOpen]);
 
   // Auto-select first choice when modal opens or doc changes
   useEffect(() => {
@@ -2070,13 +2105,41 @@ export function SigningWorkspace() {
       setCurrentUser(getCurrentUser());
       cachedSignerContextRef.current = null;
     };
+
+    const handleUserRosterUpdated = () => {
+      handleAuthChange();
+      try {
+        const freshUsers = getStoredUsers().map((u) => ({ name: u.name, role: u.role, email: u.email }));
+        setDocuments((prevDocs) => {
+          let hasAnyRecognition = false;
+          const updatedDocs = prevDocs.map((doc) => {
+            const { updatedDoc, hasNewRecognition } = recheckDocWithLatestUsers(doc, freshUsers);
+            if (hasNewRecognition) {
+              hasAnyRecognition = true;
+              persistDocSignatoryUpdate(updatedDoc);
+              return updatedDoc as WorkspaceDocument;
+            }
+            return doc;
+          });
+          return hasAnyRecognition ? updatedDocs : prevDocs;
+        });
+      } catch (err) {
+        console.warn("Could not recheck documents on user roster update:", err);
+      }
+    };
+
     window.addEventListener(AUTH_EVENT, handleAuthChange);
-    window.addEventListener("storage", handleAuthChange);
-    window.addEventListener("dict_users_updated", handleAuthChange);
+    window.addEventListener("storage", handleUserRosterUpdated);
+    window.addEventListener("dict_users_updated", handleUserRosterUpdated);
+    window.addEventListener("focus", handleUserRosterUpdated);
+    document.addEventListener("visibilitychange", handleUserRosterUpdated);
+
     return () => {
       window.removeEventListener(AUTH_EVENT, handleAuthChange);
-      window.removeEventListener("storage", handleAuthChange);
-      window.removeEventListener("dict_users_updated", handleAuthChange);
+      window.removeEventListener("storage", handleUserRosterUpdated);
+      window.removeEventListener("dict_users_updated", handleUserRosterUpdated);
+      window.removeEventListener("focus", handleUserRosterUpdated);
+      document.removeEventListener("visibilitychange", handleUserRosterUpdated);
     };
   }, []);
 
@@ -2127,13 +2190,22 @@ export function SigningWorkspace() {
   }, [currentUser]);
 
 
-  // Compute list of unique personnel uploaded in the active documents queue
+  // Compute list of unique personnel dynamically recognized across active documents queue
   const availablePersonnel = useMemo(() => {
     const names = new Set<string>();
+    const freshUsers = getStoredUsers().map((u) => ({ name: u.name, role: u.role, email: u.email }));
     documents.forEach((d) => {
       if (d.targetPersonnel) names.add(d.targetPersonnel);
-      d.requiredSigners.forEach((r) => names.add(r));
-      d.signers.forEach((s) => names.add(s.name));
+      (d.requiredSigners || []).forEach((r) => names.add(r));
+      (d.signers || []).forEach((s) => names.add(s.name));
+
+      // Dynamic cross-reference with fresh User List
+      try {
+        const { updatedDoc } = recheckDocWithLatestUsers(d, freshUsers);
+        if (updatedDoc.targetPersonnel) names.add(updatedDoc.targetPersonnel);
+        (updatedDoc.requiredSigners || []).forEach((r: string) => r && names.add(r));
+        (updatedDoc.signers || []).forEach((s: any) => s?.name && names.add(s.name));
+      } catch {}
     });
     return Array.from(names).filter((n) => n && n.trim().length > 2);
   }, [documents]);
@@ -2796,9 +2868,78 @@ export function SigningWorkspace() {
 
   // ─── Single Counter-Sign with Personnel Picker ───────────────────────────────
 
-  const handleOpenSingleCounterSign = (doc: WorkspaceDocument, initialPos: CounterSignPosition = "right") => {
+  const persistDocSignatoryUpdate = async (doc: WorkspaceDocument) => {
+    try {
+      const remarksPayload = {
+        targetPersonnel: doc.targetPersonnel,
+        requiredSigners: doc.requiredSigners,
+        signers: doc.signers,
+        counterSigners: doc.counterSigners,
+        scannedInfo: doc.scannedInfo,
+        notes: doc.notes,
+      };
+      await dtrStorageApi.saveRecord({
+        id: doc.id,
+        employeeName: doc.targetPersonnel,
+        module: "SIGNING_WORKSPACE",
+        remarks: JSON.stringify(remarksPayload),
+      } as any);
+
+      broadcastLocalDtrEvent({
+        type: "UPDATE",
+        record: { id: doc.id, remarks: JSON.stringify(remarksPayload) } as any,
+        id: doc.id,
+      });
+    } catch (e) {
+      console.warn("Could not persist dynamic signatory update:", e);
+    }
+  };
+
+  const handleOpenSingleCounterSign = async (doc: WorkspaceDocument, initialPos: CounterSignPosition = "right") => {
     setCounterSignPositionChoice(initialPos === "auto" ? "right" : initialPos);
-    setCounterSignDocTarget(doc);
+
+    // 1. Immediately re-check document against the latest User List
+    const freshUsers = getStoredUsers().map((u) => ({ name: u.name, role: u.role, email: u.email }));
+    const { updatedDoc, hasNewRecognition, newlyDetectedNames } = recheckDocWithLatestUsers(doc, freshUsers);
+
+    let activeDoc = updatedDoc;
+    if (hasNewRecognition) {
+      setDocuments((prev) => prev.map((d) => (d.id === activeDoc.id ? activeDoc : d)));
+      showNotif(`✓ Dynamically recognized newly added personnel: ${newlyDetectedNames.join(", ")}`);
+      persistDocSignatoryUpdate(activeDoc);
+    }
+
+    setCounterSignDocTarget(activeDoc);
+
+    // 2. Perform background deep-scan of PDF streams with latest users if binary data is available
+    try {
+      let pdfBytes: Uint8Array | null = null;
+      if (activeDoc.fileObj) {
+        const ab = await activeDoc.fileObj.arrayBuffer();
+        pdfBytes = new Uint8Array(ab);
+      } else if (activeDoc.pdfDataUrl) {
+        pdfBytes = base64ToUint8Array(activeDoc.pdfDataUrl);
+      } else {
+        const full = await dtrStorageApi.getRecord(activeDoc.id);
+        if (full?.pdfDataUrl) {
+          activeDoc.pdfDataUrl = full.pdfDataUrl;
+          pdfBytes = base64ToUint8Array(full.pdfDataUrl);
+        }
+      }
+
+      if (pdfBytes) {
+        const scan = await scanPdfForSigners(pdfBytes, freshUsers);
+        const { updatedDoc: deepDoc, hasNewRecognition: deepHasNew, newlyDetectedNames: deepNames } =
+          mergeScanResultsIntoDoc(activeDoc, scan, freshUsers);
+        if (deepHasNew) {
+          setDocuments((prev) => prev.map((d) => (d.id === deepDoc.id ? deepDoc : d)));
+          setCounterSignDocTarget(deepDoc);
+          persistDocSignatoryUpdate(deepDoc);
+        }
+      }
+    } catch (err) {
+      console.warn("Could not deep-scan PDF during counter-sign:", err);
+    }
   };
 
   const handleExecuteSingleCounterSign = async (

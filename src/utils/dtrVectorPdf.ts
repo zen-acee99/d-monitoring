@@ -1908,6 +1908,7 @@ export interface ScanPdfResult {
   primaryPersonnel: string;
   requiredSigners: string[];
   signers: ScannedPdfSigner[];
+  detectedTexts?: string[];
 }
 
 export interface ScannedPdfUserCandidate {
@@ -1932,6 +1933,7 @@ export async function scanPdfForSigners(
   const pageCount = pages.length;
 
   const detectedSigners: ScannedPdfSigner[] = [];
+  const allDetectedTexts: string[] = [];
 
   // 1. Gather User List candidates strictly from argument or stored users (no hardcoded leader pre-seeding)
   let effectiveUsers: ScannedPdfUserCandidate[] = userList && userList.length > 0 ? [...userList] : [];
@@ -1977,6 +1979,13 @@ export async function scanPdfForSigners(
       }
       return true;
     });
+
+    for (const it of sigAreaItems) {
+      const trimmed = it.text.trim();
+      if (trimmed.length >= 3 && !isDecorationOrUnderline(trimmed) && !isDigitalSignatureBadge(trimmed)) {
+        allDetectedTexts.push(trimmed);
+      }
+    }
 
     // Match strictly against users present in the active user list
     for (const u of effectiveUsers) {
@@ -2044,7 +2053,229 @@ export async function scanPdfForSigners(
     primaryPersonnel,
     requiredSigners,
     signers: detectedSigners,
+    detectedTexts: Array.from(new Set(allDetectedTexts)),
   };
+}
+
+/**
+ * Cross-references an array of text snippets (from PDF signature areas, file names, notes)
+ * against a user roster to detect any registered users present in the document.
+ */
+export function detectMatchingUsersFromText(
+  candidateTexts: string[],
+  userList: ScannedPdfUserCandidate[]
+): ScannedPdfUserCandidate[] {
+  if (!candidateTexts || candidateTexts.length === 0 || !userList || userList.length === 0) {
+    return [];
+  }
+
+  const matched: ScannedPdfUserCandidate[] = [];
+  const normalizedSnippets = candidateTexts
+    .map((t) => (typeof t === "string" ? normalizeNameForMatch(t) : ""))
+    .filter((t) => t.length >= 3);
+
+  const combinedDocText = normalizedSnippets.join(" ");
+
+  for (const u of userList) {
+    if (!u.name || u.name.trim().length < 3) continue;
+    const normUName = normalizeNameForMatch(u.name);
+    const uParts = normUName.split(/\s+/).filter((p) => p.length > 2);
+
+    // 1. Direct snippet match against extracted lines or filename/notes
+    const directMatch = normalizedSnippets.some((snippet) => {
+      if (snippet === normUName || snippet.includes(normUName)) return true;
+      if (uParts.length >= 2 && uParts.every((part) => snippet.includes(part))) return true;
+      if (matchNames(snippet, u.name)) return true;
+      return false;
+    });
+
+    if (directMatch) {
+      if (!matched.some((m) => m.name.toLowerCase() === u.name.toLowerCase())) {
+        matched.push(u);
+      }
+      continue;
+    }
+
+    // 2. Combined text match: all significant parts exist in document text
+    if (uParts.length >= 2 && uParts.every((part) => combinedDocText.includes(part))) {
+      if (!matched.some((m) => m.name.toLowerCase() === u.name.toLowerCase())) {
+        matched.push(u);
+      }
+      continue;
+    }
+  }
+
+  return matched;
+}
+
+/**
+ * Dynamically re-evaluates an existing document against the latest User List.
+ * If any newly added personnel from the User List are detected in the document
+ * (via detectedTexts, signers, fileName, notes, or targetPersonnel), they are
+ * immediately recognized and added to requiredSigners & signers.
+ */
+export function recheckDocWithLatestUsers(
+  doc: any,
+  latestUsers: ScannedPdfUserCandidate[]
+): { updatedDoc: any; hasNewRecognition: boolean; newlyDetectedNames: string[] } {
+  if (!doc || !latestUsers || latestUsers.length === 0) {
+    return { updatedDoc: doc, hasNewRecognition: false, newlyDetectedNames: [] };
+  }
+
+  // 1. Gather all candidate text snippets from the document
+  const candidateTexts: string[] = [];
+  if (doc.scannedInfo?.detectedTexts && Array.isArray(doc.scannedInfo.detectedTexts)) {
+    candidateTexts.push(...doc.scannedInfo.detectedTexts);
+  }
+  if (doc.scannedInfo?.signers && Array.isArray(doc.scannedInfo.signers)) {
+    candidateTexts.push(...doc.scannedInfo.signers.map((s: any) => s.name));
+  }
+  if (doc.fileName) candidateTexts.push(doc.fileName);
+  if (doc.notes) candidateTexts.push(doc.notes);
+  if (doc.targetPersonnel) candidateTexts.push(doc.targetPersonnel);
+  if (Array.isArray(doc.requiredSigners)) candidateTexts.push(...doc.requiredSigners);
+  if (Array.isArray(doc.signers)) candidateTexts.push(...doc.signers.map((s: any) => s.name));
+
+  const matchedUsers = detectMatchingUsersFromText(candidateTexts, latestUsers);
+
+  let hasNewRecognition = false;
+  const newlyDetectedNames: string[] = [];
+  const nextRequired = [...(doc.requiredSigners || [])];
+  const nextSigners = [...(doc.signers || [])];
+
+  for (const u of matchedUsers) {
+    const cleanName = u.name.toUpperCase().replace(/^(ENGR\.?|ATTY\.?|DIR\.?|DR\.?)\s+/i, "").trim();
+    const alreadyInReq = nextRequired.some(
+      (r: string) => matchNames(r, cleanName) || normalizeNameForMatch(r) === normalizeNameForMatch(cleanName)
+    );
+    if (!alreadyInReq) {
+      hasNewRecognition = true;
+      newlyDetectedNames.push(cleanName);
+      nextRequired.push(cleanName);
+      nextSigners.push({
+        name: cleanName,
+        role: u.role || "Signatory",
+        status: "pending",
+        position: "above",
+      });
+    }
+  }
+
+  // Check if primary targetPersonnel was an unassigned placeholder (e.g. PERSONNEL, User, Unknown User)
+  let nextTarget = doc.targetPersonnel;
+  const isPlaceholderTarget =
+    !nextTarget ||
+    nextTarget.toUpperCase() === "PERSONNEL" ||
+    nextTarget.toUpperCase() === "USER" ||
+    nextTarget.toUpperCase() === "UNKNOWN USER";
+
+  if (isPlaceholderTarget && newlyDetectedNames.length > 0) {
+    nextTarget = newlyDetectedNames[0];
+    hasNewRecognition = true;
+  }
+
+  if (!hasNewRecognition) {
+    return { updatedDoc: doc, hasNewRecognition: false, newlyDetectedNames: [] };
+  }
+
+  const updatedDoc = {
+    ...doc,
+    targetPersonnel: nextTarget,
+    requiredSigners: nextRequired,
+    signers: nextSigners,
+  };
+
+  return { updatedDoc, hasNewRecognition: true, newlyDetectedNames };
+}
+
+/**
+ * Merges fresh PDF scan results (performed with latest User List) into an existing document.
+ */
+export function mergeScanResultsIntoDoc(
+  doc: any,
+  scan: ScanPdfResult,
+  userList?: ScannedPdfUserCandidate[]
+): { updatedDoc: any; hasNewRecognition: boolean; newlyDetectedNames: string[] } {
+  if (!doc || !scan) {
+    return { updatedDoc: doc, hasNewRecognition: false, newlyDetectedNames: [] };
+  }
+
+  const nextRequired = [...(doc.requiredSigners || [])];
+  const nextSigners = [...(doc.signers || [])];
+  const newlyDetectedNames: string[] = [];
+  let hasNewRecognition = false;
+
+  for (const s of scan.signers || []) {
+    const cleanName = s.name.toUpperCase().replace(/^(ENGR\.?|ATTY\.?|DIR\.?|DR\.?)\s+/i, "").trim();
+    const already = nextRequired.some(
+      (r: string) => matchNames(r, cleanName) || normalizeNameForMatch(r) === normalizeNameForMatch(cleanName)
+    );
+    if (!already) {
+      hasNewRecognition = true;
+      newlyDetectedNames.push(cleanName);
+      nextRequired.push(cleanName);
+      nextSigners.push({
+        name: cleanName,
+        role: "Signatory",
+        status: "pending",
+        position: "above",
+      });
+    }
+  }
+
+  // Also check scan.detectedTexts with userList if provided
+  if (userList && scan.detectedTexts && scan.detectedTexts.length > 0) {
+    const matched = detectMatchingUsersFromText(scan.detectedTexts, userList);
+    for (const u of matched) {
+      const cleanName = u.name.toUpperCase().replace(/^(ENGR\.?|ATTY\.?|DIR\.?|DR\.?)\s+/i, "").trim();
+      const already = nextRequired.some(
+        (r: string) => matchNames(r, cleanName) || normalizeNameForMatch(r) === normalizeNameForMatch(cleanName)
+      );
+      if (!already) {
+        hasNewRecognition = true;
+        newlyDetectedNames.push(cleanName);
+        nextRequired.push(cleanName);
+        nextSigners.push({
+          name: cleanName,
+          role: u.role || "Signatory",
+          status: "pending",
+          position: "above",
+        });
+      }
+    }
+  }
+
+  let nextTarget = doc.targetPersonnel;
+  const isPlaceholderTarget =
+    !nextTarget ||
+    nextTarget.toUpperCase() === "PERSONNEL" ||
+    nextTarget.toUpperCase() === "USER" ||
+    nextTarget.toUpperCase() === "UNKNOWN USER";
+
+  if (isPlaceholderTarget && scan.primaryPersonnel && scan.primaryPersonnel.toUpperCase() !== "PERSONNEL") {
+    nextTarget = scan.primaryPersonnel;
+    hasNewRecognition = true;
+  } else if (isPlaceholderTarget && newlyDetectedNames.length > 0) {
+    nextTarget = newlyDetectedNames[0];
+    hasNewRecognition = true;
+  }
+
+  const existingDetectedTexts = doc.scannedInfo?.detectedTexts || [];
+  const mergedDetectedTexts = Array.from(new Set([...existingDetectedTexts, ...(scan.detectedTexts || [])]));
+
+  const updatedDoc = {
+    ...doc,
+    targetPersonnel: nextTarget,
+    requiredSigners: nextRequired,
+    signers: nextSigners,
+    scannedInfo: {
+      ...(doc.scannedInfo || {}),
+      ...scan,
+      detectedTexts: mergedDetectedTexts,
+    },
+  };
+
+  return { updatedDoc, hasNewRecognition, newlyDetectedNames };
 }
 
 /**
