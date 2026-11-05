@@ -4,15 +4,30 @@ import { DtrConfig, DtrRow, formatPnpkiDate, formatTo12Hour } from "./dtrUtils";
 import { dtrGeneratorApi } from "@/services/api";
 
 
-// Helper to convert ArrayBuffer to Base64 in browser or Node
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
+// Helper to convert ArrayBuffer or Uint8Array to Base64 in browser or Node efficiently
+export function arrayBufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  const CHUNK_SIZE = 0x8000;
   let binary = "";
-  const bytes = new Uint8Array(buffer);
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+    binary += String.fromCharCode.apply(
+      null,
+      bytes.subarray(i, Math.min(i + CHUNK_SIZE, bytes.length)) as unknown as number[]
+    );
   }
   return btoa(binary);
+}
+
+// Fast Base64 to Uint8Array helper
+export function base64ToUint8Array(base64: string): Uint8Array {
+  const clean = base64.includes(",") ? base64.split(",")[1] : base64;
+  const binary = atob(clean);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }
 
 /**
@@ -948,14 +963,7 @@ export async function getSignedDtrVectorPdfBytes(
   // This ensures all interactive digital signature boxes and PNPKI verification links are clickable across all PDF readers
   finalUint8 = await normalizePdfAnnotations(finalUint8);
 
-  const uint8ToBase64 = (u8: Uint8Array): string => {
-    let binary = "";
-    const len = u8.byteLength;
-    for (let i = 0; i < len; i++) {
-      binary += String.fromCharCode(u8[i]);
-    }
-    return btoa(binary);
-  };
+  const uint8ToBase64 = (u8: Uint8Array): string => arrayBufferToBase64(u8);
 
   const base64ToUint8 = (b64: string): Uint8Array => {
     const binary = atob(b64);
@@ -1841,12 +1849,7 @@ export async function signUploadedArPdfBytes(
 
   // 3. Attach cryptographic PNPKI .p12 /Sig dictionary to the exact approval box on the detected page
   if (p12Options?.p12Base64 || p12Options?.profileId || p12Options?.user_Id) {
-    let binary = "";
-    const len = modifiedBytes.byteLength;
-    for (let i = 0; i < len; i++) {
-      binary += String.fromCharCode(modifiedBytes[i]);
-    }
-    const rawPdfBase64 = btoa(binary);
+    const rawPdfBase64 = arrayBufferToBase64(modifiedBytes);
 
     const signResult = await dtrGeneratorApi.signPdfDocument({
       pdfBase64: rawPdfBase64,
@@ -2282,6 +2285,8 @@ export async function signUploadedPersonnelPdfBytes(
     counterSignPosition?: CounterSignPosition;
     signerRoleLabel?: string;
     signerName?: string;
+    preloadedImageBytes?: Uint8Array | null;
+    preloadedImageType?: "png" | "jpg" | null;
   }
 ): Promise<{ bytes: Uint8Array; resolvedSignerName: string; signatureCoordinates: any }> {
   const incomingBytes =
@@ -2336,19 +2341,24 @@ export async function signUploadedPersonnelPdfBytes(
 
       // 1. Left side: Signature image or vector checkmark (width ~14 pt, height ~12 pt)
       let hasDrawnCsImg = false;
-      if (signatureImage) {
+      let csImgBytes: Uint8Array | null = options?.preloadedImageBytes || null;
+      let isCsJpg = options?.preloadedImageType === "jpg";
+      if (!csImgBytes && signatureImage) {
         try {
-          const cleanBase64 = signatureImage.replace(/^data:image\/\w+;base64,/, "");
-          const imgBinary = atob(cleanBase64);
-          const imgBytes = new Uint8Array(imgBinary.length);
-          for (let i = 0; i < imgBinary.length; i++) {
-            imgBytes[i] = imgBinary.charCodeAt(i);
-          }
+          csImgBytes = base64ToUint8Array(signatureImage);
+          isCsJpg = signatureImage.includes("image/jpeg") || signatureImage.includes("image/jpg");
+        } catch (e) {
+          console.warn("Could not decode counter-sign image:", e);
+        }
+      }
+
+      if (csImgBytes) {
+        try {
           let embeddedCsImg;
-          if (signatureImage.includes("image/jpeg") || signatureImage.includes("image/jpg")) {
-            embeddedCsImg = await pdfDoc.embedJpg(imgBytes);
+          if (isCsJpg) {
+            embeddedCsImg = await pdfDoc.embedJpg(csImgBytes);
           } else {
-            embeddedCsImg = await pdfDoc.embedPng(imgBytes);
+            embeddedCsImg = await pdfDoc.embedPng(csImgBytes);
           }
           targetPage.drawImage(embeddedCsImg, {
             x: boxX + 1,
@@ -2412,16 +2422,21 @@ export async function signUploadedPersonnelPdfBytes(
     // 2. Standard signature stamp directly ABOVE the personnel name (border-none per user requirement)
 
     let hasDrawnImage = false;
-    if (signatureImage) {
+    let imgBytes: Uint8Array | null = options?.preloadedImageBytes || null;
+    let isJpg = options?.preloadedImageType === "jpg";
+    if (!imgBytes && signatureImage) {
       try {
-        const cleanBase64 = signatureImage.replace(/^data:image\/\w+;base64,/, "");
-        const imgBinary = atob(cleanBase64);
-        const imgBytes = new Uint8Array(imgBinary.length);
-        for (let i = 0; i < imgBinary.length; i++) {
-          imgBytes[i] = imgBinary.charCodeAt(i);
-        }
+        imgBytes = base64ToUint8Array(signatureImage);
+        isJpg = signatureImage.includes("image/jpeg") || signatureImage.includes("image/jpg");
+      } catch (e) {
+        console.warn("Could not decode signature image:", e);
+      }
+    }
+
+    if (imgBytes) {
+      try {
         let embeddedImg;
-        if (signatureImage.includes("image/jpeg") || signatureImage.includes("image/jpg")) {
+        if (isJpg) {
           embeddedImg = await pdfDoc.embedJpg(imgBytes);
         } else {
           embeddedImg = await pdfDoc.embedPng(imgBytes);
@@ -2501,12 +2516,7 @@ export async function signUploadedPersonnelPdfBytes(
 
   // Cryptographic PNPKI .p12 signing (via backend incremental update to preserve earlier signatures)
   if (p12Options?.p12Base64 || p12Options?.profileId || p12Options?.user_Id) {
-    let binary = "";
-    const len = finalUint8.byteLength;
-    for (let i = 0; i < len; i++) {
-      binary += String.fromCharCode(finalUint8[i]);
-    }
-    const rawPdfBase64 = btoa(binary);
+    const rawPdfBase64 = arrayBufferToBase64(finalUint8);
 
     const reason = isCounter
       ? "Official Counter-Signature - DICT Region V Signing Workspace"
@@ -2533,12 +2543,7 @@ export async function signUploadedPersonnelPdfBytes(
     });
 
     if (signResult.success && signResult.signedPdfBase64) {
-      const signedBinary = atob(signResult.signedPdfBase64);
-      const signedBytes = new Uint8Array(signedBinary.length);
-      for (let i = 0; i < signedBinary.length; i++) {
-        signedBytes[i] = signedBinary.charCodeAt(i);
-      }
-      finalUint8 = signedBytes;
+      finalUint8 = base64ToUint8Array(signResult.signedPdfBase64);
       if (signResult.signerName) {
         resolvedSignerName = signResult.signerName;
       }

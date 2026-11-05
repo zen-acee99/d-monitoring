@@ -88,7 +88,7 @@ app.options("*", cors(corsOptions));
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
-// In-memory rate limiter for authentication & cryptographic signing endpoints
+// In-memory rate limiter for authentication endpoints (strict brute-force defense)
 const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const RATE_LIMIT_MAX_REQUESTS = 25;
@@ -123,7 +123,46 @@ function authRateLimiter(req: express.Request, res: express.Response, next: expr
     res.setHeader("Retry-After", String(retryAfterSec));
     return res.status(429).json({
       success: false,
-      error: "Too many authentication/signing attempts. Please wait a minute before trying again.",
+      error: "Too many authentication attempts. Please wait a minute before trying again.",
+    });
+  }
+
+  return next();
+}
+
+// In-memory rate limiter for cryptographic signing endpoints (supports 100-200 bulk document signing)
+const signingRateLimitStore = new Map<string, { count: number; resetAt: number }>();
+const SIGNING_RATE_LIMIT_MAX_REQUESTS = 600;
+
+function signingRateLimiter(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const clientIp =
+    (req.headers["x-forwarded-for"] ? String(req.headers["x-forwarded-for"]).split(",")[0].trim() : "") ||
+    req.socket?.remoteAddress ||
+    req.ip ||
+    "unknown";
+  const key = `${clientIp}:signing`;
+  const now = Date.now();
+
+  if (signingRateLimitStore.size > 1000) {
+    for (const [k, v] of signingRateLimitStore.entries()) {
+      if (now > v.resetAt) signingRateLimitStore.delete(k);
+    }
+  }
+
+  const entry = signingRateLimitStore.get(key);
+
+  if (!entry || now > entry.resetAt) {
+    signingRateLimitStore.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return next();
+  }
+
+  entry.count += 1;
+  if (entry.count > SIGNING_RATE_LIMIT_MAX_REQUESTS) {
+    const retryAfterSec = Math.max(1, Math.ceil((entry.resetAt - now) / 1000));
+    res.setHeader("Retry-After", String(retryAfterSec));
+    return res.status(429).json({
+      success: false,
+      error: "Too many signing requests in a short period. Please wait a few moments before trying again.",
     });
   }
 
@@ -194,10 +233,16 @@ app.get("/api/health", async (_req, res) => {
   }
 });
 
-// Apply rate limiter on sensitive authentication and PDF signing routes
+// Apply rate limiter on sensitive authentication routes
 app.use(
-  ["/api/users/login", "/api/auth/login", "/api/administration/login", "/api/dtr-generator/sign-pdf"],
+  ["/api/users/login", "/api/auth/login", "/api/administration/login"],
   authRateLimiter
+);
+
+// Apply high-capacity rate limiter on cryptographic PDF signing routes
+app.use(
+  ["/api/dtr-generator/sign-pdf"],
+  signingRateLimiter
 );
 
 // Mount routers on /api
