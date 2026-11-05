@@ -2090,6 +2090,9 @@ export function SigningWorkspace() {
     failedCount: number;
     failedItems: { doc: WorkspaceDocument; file: File; error: string }[];
   } | null>(null);
+  const isBatchUploadingRef = useRef(false);
+  const isSyncingRef = useRef(false);
+  const syncDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Pagination for high document counts (100-200+ docs)
   const [pageSize, setPageSize] = useState<number>(50);
@@ -2116,6 +2119,8 @@ export function SigningWorkspace() {
 
   // 1. Sync helper that pulls the latest documents from backend Turso dtr_storage
   const syncFromRemoteStorage = useCallback(async (silent = true) => {
+    if (isBatchUploadingRef.current || isSyncingRef.current) return;
+    isSyncingRef.current = true;
     try {
       const deletedIds = getDeletedDocIds();
       const records = await dtrStorageApi.getRecords({ module: "SIGNING_WORKSPACE" });
@@ -2145,19 +2150,20 @@ export function SigningWorkspace() {
           });
 
           // ONLY keep local docs that are in active upload/pending sync state
-          // Never resurrect documents that were deleted from remote storage
+          // Place newly uploaded local pending docs at the FRONT so user sees them immediately
+          const pendingLocal: WorkspaceDocument[] = [];
           prev.forEach((pDoc) => {
             if (
               pDoc &&
               !deletedIds.has(pDoc.id) &&
               !nextMap.has(pDoc.id) &&
-              (pDoc.isPendingSync || pDoc.status === "uploading")
+              (pDoc.isPendingSync || pDoc.status === "uploading" || pDoc.id.startsWith("doc-upload-"))
             ) {
-              nextMap.set(pDoc.id, pDoc);
+              pendingLocal.push(pDoc);
             }
           });
 
-          const merged = Array.from(nextMap.values());
+          const merged = [...pendingLocal, ...Array.from(nextMap.values())];
 
           // Check if there are changes before triggering state & storage writes
           const hasDiff =
@@ -2212,8 +2218,24 @@ export function SigningWorkspace() {
       if (!silent) {
         console.warn("Could not sync signing workspace documents from dtr_storage:", err);
       }
+    } finally {
+      isSyncingRef.current = false;
     }
   }, []);
+
+  // Debounced remote sync to coalesce rapid SSE bursts or window focus events
+  const debouncedSyncFromRemoteStorage = useCallback(
+    (delayMs = 1500) => {
+      if (isBatchUploadingRef.current) return;
+      if (syncDebounceTimerRef.current) {
+        clearTimeout(syncDebounceTimerRef.current);
+      }
+      syncDebounceTimerRef.current = setTimeout(() => {
+        syncFromRemoteStorage(true);
+      }, delayMs);
+    },
+    [syncFromRemoteStorage]
+  );
 
   // 2. Real-time hydration, SSE subscription, polling, and tab visibility listeners
   useEffect(() => {
@@ -2238,19 +2260,29 @@ export function SigningWorkspace() {
       if (event.type === "INSERT" || event.type === "UPDATE") {
         const record = event.record;
         if (record && ((record.module as any) === "SIGNING_WORKSPACE" || String(record.module).toUpperCase() === "SIGNING_WORKSPACE")) {
+          // If this is a batch completion notification, refresh remote docs if not uploading
+          if ((record as any).batchCount) {
+            if (!isBatchUploadingRef.current) {
+              debouncedSyncFromRemoteStorage(1000);
+            }
+            return;
+          }
+
           const deleted = getDeletedDocIds();
-          if (!deleted.has(record.id)) {
+          if (record.id && !deleted.has(record.id)) {
             const mapped = mapDtrRecordToWorkspaceDoc(record);
             setDocuments((prev) => {
               const existingIdx = prev.findIndex((d) => d.id === mapped.id);
               let nextList: WorkspaceDocument[];
               if (existingIdx >= 0) {
                 const existing = prev[existingIdx];
+                const statusChanged = mapped.status !== existing.status;
                 const updated = {
                   ...existing,
                   ...mapped,
-                  pdfDataUrl: mapped.pdfDataUrl || existing.pdfDataUrl,
-                  fileObj: existing.fileObj,
+                  // If status changed, clear stale local PDF so fresh signed version will be loaded on demand
+                  pdfDataUrl: mapped.pdfDataUrl || (statusChanged ? undefined : existing.pdfDataUrl),
+                  fileObj: statusChanged ? undefined : existing.fileObj,
                   scannedInfo: mapped.scannedInfo || existing.scannedInfo,
                 };
                 nextList = [...prev];
@@ -2295,27 +2327,32 @@ export function SigningWorkspace() {
       }
     });
 
-    // Fallback background polling every 2 seconds for reactive cross-window / cross-device sync
+    // Fallback background polling every 20 seconds for reactive cross-window / cross-device sync
     const pollInterval = setInterval(() => {
-      syncFromRemoteStorage(true);
-    }, 2000);
+      if (!isBatchUploadingRef.current) {
+        syncFromRemoteStorage(true);
+      }
+    }, 20000);
 
-    // Instant refresh when user returns to this window or tab
+    // Debounced refresh when user returns to this window or tab
     const handleFocusOrVisible = () => {
-      syncFromRemoteStorage(true);
+      if (!isBatchUploadingRef.current) {
+        debouncedSyncFromRemoteStorage(500);
+      }
     };
 
     window.addEventListener("focus", handleFocusOrVisible);
     document.addEventListener("visibilitychange", handleFocusOrVisible);
-    window.addEventListener("dict_dtr_storage_updated", handleFocusOrVisible);
     window.addEventListener("storage", handleFocusOrVisible);
 
     return () => {
       unsubscribeRealtime();
       clearInterval(pollInterval);
+      if (syncDebounceTimerRef.current) {
+        clearTimeout(syncDebounceTimerRef.current);
+      }
       window.removeEventListener("focus", handleFocusOrVisible);
       document.removeEventListener("visibilitychange", handleFocusOrVisible);
-      window.removeEventListener("dict_dtr_storage_updated", handleFocusOrVisible);
       window.removeEventListener("storage", handleFocusOrVisible);
     };
   }, [syncFromRemoteStorage]);
@@ -2924,7 +2961,8 @@ export function SigningWorkspace() {
     // 2. Immediate non-blocking UI update: All 100-200 files display instantly
     setDocuments((prev) => [...newDocs, ...prev]);
 
-    // 3. Initialize High-Speed Batch Tracking Progress
+    // 3. Mark batch upload active so polling & foreign SSE refetches are paused
+    isBatchUploadingRef.current = true;
     setBatchUploadProgress({
       inFlight: true,
       total: newDocs.length,
@@ -2933,89 +2971,129 @@ export function SigningWorkspace() {
       failedItems: [],
     });
 
-    showNotif(`⚡ Queued ${newDocs.length} documents. Background streaming sync active (6 concurrent streams).`);
+    showNotif(`⚡ Queued ${newDocs.length} documents. Turbo batch streaming active (boosted micro-chunks).`);
 
-    // 4. Concurrently convert to data URL and persist with automatic retries (6 parallel workers)
+    // 4. Group items into micro-batches of 4 records
+    // Micro-batching eliminates individual HTTP roundtrips and keeps payloads lean (<10MB)
+    const BATCH_CHUNK_SIZE = 4;
     const itemsToUpload = newDocs.map((doc, idx) => ({
       doc,
       file: scannedEntries[idx].file,
     }));
 
+    const chunks: (typeof itemsToUpload)[] = [];
+    for (let i = 0; i < itemsToUpload.length; i += BATCH_CHUNK_SIZE) {
+      chunks.push(itemsToUpload.slice(i, i + BATCH_CHUNK_SIZE));
+    }
+
     let completedCounter = 0;
     let failedCounter = 0;
     const failedCollector: { doc: WorkspaceDocument; file: File; error: string }[] = [];
+    const activeUserId = String(activeUser?.id || "USER-001");
+    const activeEmpId = String(activeUser?.employeeId || "EMP-001");
 
-    await asyncPool(6, itemsToUpload, async (item) => {
-      let dataUrl: string | undefined = undefined;
-      try {
-        // Native C++ browser FileReader: instant, asynchronous, zero char loops
-        dataUrl = await fileToDataUrl(item.file);
-        item.doc.pdfDataUrl = dataUrl;
-      } catch (err) {
-        console.warn(`Failed reading file data for ${item.doc.fileName}:`, err);
-      }
+    // Process micro-batch chunks with controlled concurrency of 2 parallel workers (8 items in flight max)
+    await asyncPool(2, chunks, async (chunk, chunkIdx) => {
+      const isLastChunk = chunkIdx === chunks.length - 1;
 
-      const uploadPayload = {
-        id: item.doc.id,
-        userId: String(activeUser?.id || "USER-001"),
-        employeeName: item.doc.targetPersonnel,
-        employeeId: String(activeUser?.employeeId || "EMP-001"),
-        module: "SIGNING_WORKSPACE",
-        province: item.doc.province || userProv,
-        sectionDivision: "Regional Office V",
-        periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
-        month: new Date().getMonth() + 1,
-        year: new Date().getFullYear(),
-        scope: "full-month",
-        status: item.doc.status,
-        submittedDate: item.doc.uploadedAt,
-        pdfFileName: item.doc.fileName,
-        pdfFileSize: item.doc.fileSize,
-        pdfDataUrl: dataUrl,
-        docType: "AR",
-        remarks: JSON.stringify({
-          targetPersonnel: item.doc.targetPersonnel,
-          requiredSigners: item.doc.requiredSigners,
-          signers: item.doc.signers,
-          counterSigners: item.doc.counterSigners,
-          scannedInfo: item.doc.scannedInfo,
-          notes: item.doc.notes,
-        }),
-      };
+      // Step A: Read files for this chunk concurrently (ordered mapping, minimal memory)
+      const chunkPayloads = await Promise.all(
+        chunk.map(async (item) => {
+          let dataUrl: string | undefined = undefined;
+          try {
+            dataUrl = await fileToDataUrl(item.file);
+            item.doc.pdfDataUrl = dataUrl;
+          } catch (err) {
+            console.warn(`Failed reading file data for ${item.doc.fileName}:`, err);
+          }
 
-      // Automatic Retry with Exponential Backoff (Up to 3 Attempts)
-      let uploadSuccess = false;
-      let lastErr = "";
-      for (let attempt = 1; attempt <= 3; attempt++) {
+          const uploadPayload = {
+            id: item.doc.id,
+            userId: activeUserId,
+            employeeName: item.doc.targetPersonnel,
+            employeeId: activeEmpId,
+            module: "SIGNING_WORKSPACE",
+            province: item.doc.province || userProv,
+            sectionDivision: "Regional Office V",
+            periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+            month: new Date().getMonth() + 1,
+            year: new Date().getFullYear(),
+            scope: "full-month",
+            status: item.doc.status,
+            submittedDate: item.doc.uploadedAt,
+            pdfFileName: item.doc.fileName,
+            pdfFileSize: item.doc.fileSize,
+            pdfDataUrl: dataUrl,
+            docType: "AR",
+            remarks: JSON.stringify({
+              targetPersonnel: item.doc.targetPersonnel,
+              requiredSigners: item.doc.requiredSigners,
+              signers: item.doc.signers,
+              counterSigners: item.doc.counterSigners,
+              scannedInfo: item.doc.scannedInfo,
+              notes: item.doc.notes,
+            }),
+          };
+
+          return { payload: uploadPayload, doc: item.doc, file: item.file, dataUrl };
+        })
+      );
+
+      // Step B: Send micro-batch via dtrStorageApi.saveBatch with automatic retry
+      let batchSuccess = false;
+      for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          const res = await dtrStorageApi.saveRecord(uploadPayload);
-          if (res && res.success !== false) {
-            uploadSuccess = true;
+          const batchResult = await dtrStorageApi.saveBatch(
+            chunkPayloads.map((c) => c.payload),
+            { isLastChunk }
+          );
+          if (batchResult && batchResult.success !== false) {
+            batchSuccess = true;
             break;
           }
-          lastErr = res?.error || `Upload failed on attempt ${attempt}`;
         } catch (e: any) {
-          lastErr = e?.message || "Network error";
+          console.warn(`saveBatch attempt ${attempt} failed:`, e);
         }
-        if (attempt < 3) {
-          // Exponential backoff: 200ms -> 500ms
-          await new Promise((r) => setTimeout(r, 150 * Math.pow(2, attempt)));
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 200));
         }
       }
 
-      if (uploadSuccess) {
+      if (batchSuccess) {
+        const succeededIds = new Set(chunkPayloads.map((c) => c.doc.id));
         setDocuments((prev) =>
-          prev.map((d) => (d.id === item.doc.id ? { ...d, isPendingSync: false, pdfDataUrl: dataUrl } : d))
+          prev.map((d) => (succeededIds.has(d.id) ? { ...d, isPendingSync: false } : d))
         );
-        broadcastLocalDtrEvent({
-          type: "INSERT",
-          record: uploadPayload as any,
-          id: item.doc.id,
-        });
-        completedCounter++;
+        completedCounter += chunkPayloads.length;
       } else {
-        failedCounter++;
-        failedCollector.push({ doc: item.doc, file: item.file, error: lastErr });
+        // Fallback: Individual upload with retry for items in failed chunk
+        for (const c of chunkPayloads) {
+          let singleSuccess = false;
+          let singleErr = "";
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+              const res = await dtrStorageApi.saveRecord(c.payload);
+              if (res && res.success !== false) {
+                singleSuccess = true;
+                break;
+              }
+              singleErr = res?.error || `Upload failed on attempt ${attempt}`;
+            } catch (e: any) {
+              singleErr = e?.message || "Network error";
+            }
+            if (attempt < 2) await new Promise((r) => setTimeout(r, 150));
+          }
+
+          if (singleSuccess) {
+            setDocuments((prev) =>
+              prev.map((d) => (d.id === c.doc.id ? { ...d, isPendingSync: false } : d))
+            );
+            completedCounter++;
+          } else {
+            failedCounter++;
+            failedCollector.push({ doc: c.doc, file: c.file, error: singleErr });
+          }
+        }
       }
 
       // Smooth progress update
@@ -3029,6 +3107,16 @@ export function SigningWorkspace() {
             }
           : null
       );
+    });
+
+    // 5. Wrap up batch upload
+    isBatchUploadingRef.current = false;
+
+    // Dispatch single local broadcast to notify other tabs without spamming
+    broadcastLocalDtrEvent({
+      type: "INSERT",
+      record: { module: "SIGNING_WORKSPACE", batchCount: completedCounter } as any,
+      id: `batch-${Date.now()}`,
     });
 
     if (failedCounter === 0) {
@@ -3056,6 +3144,7 @@ export function SigningWorkspace() {
     if (!batchUploadProgress || batchUploadProgress.failedItems.length === 0) return;
 
     const toRetry = [...batchUploadProgress.failedItems];
+    isBatchUploadingRef.current = true;
     setBatchUploadProgress((prev) => (prev ? { ...prev, inFlight: true, failedItems: [] } : null));
     showNotif(`Retrying ${toRetry.length} failed upload(s)…`);
 
@@ -3063,67 +3152,111 @@ export function SigningWorkspace() {
     let reFailed = 0;
     const stillFailed: { doc: WorkspaceDocument; file: File; error: string }[] = [];
 
-    await asyncPool(4, toRetry, async (item) => {
-      let dataUrl = item.doc.pdfDataUrl;
-      if (!dataUrl) {
-        try {
-          dataUrl = await fileToDataUrl(item.file);
-          item.doc.pdfDataUrl = dataUrl;
-        } catch {}
-      }
+    const activeUser = getCurrentUser() || currentUser;
+    const userProv = (activeUser as any)?.focalProvince || activeUser?.province || "Regional Office";
+    const activeUserId = String(activeUser?.id || "USER-001");
+    const activeEmpId = String(activeUser?.employeeId || "EMP-001");
 
-      const activeUser = getCurrentUser() || currentUser;
-      const uploadPayload = {
-        id: item.doc.id,
-        userId: String(activeUser?.id || "USER-001"),
-        employeeName: item.doc.targetPersonnel,
-        employeeId: String(activeUser?.employeeId || "EMP-001"),
-        module: "SIGNING_WORKSPACE",
-        province: item.doc.province || "Regional Office",
-        sectionDivision: "Regional Office V",
-        periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
-        month: new Date().getMonth() + 1,
-        year: new Date().getFullYear(),
-        scope: "full-month",
-        status: item.doc.status,
-        submittedDate: item.doc.uploadedAt,
-        pdfFileName: item.doc.fileName,
-        pdfFileSize: item.doc.fileSize,
-        pdfDataUrl: dataUrl,
-        docType: "AR",
-        remarks: JSON.stringify({
-          targetPersonnel: item.doc.targetPersonnel,
-          requiredSigners: item.doc.requiredSigners,
-          signers: item.doc.signers,
-          counterSigners: item.doc.counterSigners,
-          scannedInfo: item.doc.scannedInfo,
-          notes: item.doc.notes,
-        }),
-      };
+    const BATCH_CHUNK_SIZE = 4;
+    const chunks: (typeof toRetry)[] = [];
+    for (let i = 0; i < toRetry.length; i += BATCH_CHUNK_SIZE) {
+      chunks.push(toRetry.slice(i, i + BATCH_CHUNK_SIZE));
+    }
 
-      let success = false;
-      let err = "";
-      for (let attempt = 1; attempt <= 3; attempt++) {
+    await asyncPool(2, chunks, async (chunk, chunkIdx) => {
+      const isLastChunk = chunkIdx === chunks.length - 1;
+
+      const chunkPayloads = await Promise.all(
+        chunk.map(async (item) => {
+          let dataUrl = item.doc.pdfDataUrl;
+          if (!dataUrl && item.file) {
+            try {
+              dataUrl = await fileToDataUrl(item.file);
+              item.doc.pdfDataUrl = dataUrl;
+            } catch {}
+          }
+
+          const uploadPayload = {
+            id: item.doc.id,
+            userId: activeUserId,
+            employeeName: item.doc.targetPersonnel,
+            employeeId: activeEmpId,
+            module: "SIGNING_WORKSPACE",
+            province: item.doc.province || userProv,
+            sectionDivision: "Regional Office V",
+            periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+            month: new Date().getMonth() + 1,
+            year: new Date().getFullYear(),
+            scope: "full-month",
+            status: item.doc.status,
+            submittedDate: item.doc.uploadedAt,
+            pdfFileName: item.doc.fileName,
+            pdfFileSize: item.doc.fileSize,
+            pdfDataUrl: dataUrl,
+            docType: "AR",
+            remarks: JSON.stringify({
+              targetPersonnel: item.doc.targetPersonnel,
+              requiredSigners: item.doc.requiredSigners,
+              signers: item.doc.signers,
+              counterSigners: item.doc.counterSigners,
+              scannedInfo: item.doc.scannedInfo,
+              notes: item.doc.notes,
+            }),
+          };
+
+          return { payload: uploadPayload, doc: item.doc, file: item.file };
+        })
+      );
+
+      let batchSuccess = false;
+      for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          const res = await dtrStorageApi.saveRecord(uploadPayload);
+          const res = await dtrStorageApi.saveBatch(
+            chunkPayloads.map((c) => c.payload),
+            { isLastChunk }
+          );
           if (res && res.success !== false) {
-            success = true;
+            batchSuccess = true;
             break;
           }
-        } catch (e: any) {
-          err = e?.message || "Retry network error";
-        }
-        if (attempt < 3) await new Promise((r) => setTimeout(r, 300));
+        } catch {}
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 200));
       }
 
-      if (success) {
+      if (batchSuccess) {
+        const succeededIds = new Set(chunkPayloads.map((c) => c.doc.id));
         setDocuments((prev) =>
-          prev.map((d) => (d.id === item.doc.id ? { ...d, isPendingSync: false, pdfDataUrl: dataUrl } : d))
+          prev.map((d) => (succeededIds.has(d.id) ? { ...d, isPendingSync: false } : d))
         );
-        reCompleted++;
+        reCompleted += chunkPayloads.length;
       } else {
-        reFailed++;
-        stillFailed.push({ doc: item.doc, file: item.file, error: err });
+        for (const c of chunkPayloads) {
+          let singleSuccess = false;
+          let singleErr = "";
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+              const res = await dtrStorageApi.saveRecord(c.payload);
+              if (res && res.success !== false) {
+                singleSuccess = true;
+                break;
+              }
+              singleErr = res?.error || `Upload failed on attempt ${attempt}`;
+            } catch (e: any) {
+              singleErr = e?.message || "Network error";
+            }
+            if (attempt < 2) await new Promise((r) => setTimeout(r, 150));
+          }
+
+          if (singleSuccess) {
+            setDocuments((prev) =>
+              prev.map((d) => (d.id === c.doc.id ? { ...d, isPendingSync: false } : d))
+            );
+            reCompleted++;
+          } else {
+            reFailed++;
+            stillFailed.push({ doc: c.doc, file: c.file, error: singleErr });
+          }
+        }
       }
 
       setBatchUploadProgress((prev) =>
@@ -3137,6 +3270,8 @@ export function SigningWorkspace() {
           : null
       );
     });
+
+    isBatchUploadingRef.current = false;
 
     if (reFailed === 0) {
       showNotif(`✓ All retried documents successfully synced!`);
@@ -3432,7 +3567,7 @@ export function SigningWorkspace() {
                 <div className="flex items-center gap-2">
                   <h3 className="text-xs sm:text-sm font-bold text-white">
                     {batchUploadProgress.inFlight
-                      ? "High-Speed Batch Sync in Progress (6 Parallel Workers)"
+                      ? "Turbo Batch Sync in Progress (Boosted Micro-Chunks)"
                       : batchUploadProgress.failedCount > 0
                       ? "Batch Upload Finished with Some Network Retries"
                       : "Batch Upload & Sync 100% Completed"}

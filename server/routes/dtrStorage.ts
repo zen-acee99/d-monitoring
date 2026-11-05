@@ -6,12 +6,29 @@ export const dtrStorageRouter = Router();
 // Realtime SSE connected clients across all browser tabs and profiles
 const realtimeClients = new Set<Response>();
 
+export const DTR_STORAGE_LEAN_FIELDS = `
+  id, user_id, employee_name, employee_id, position, employment_status,
+  module, province, section_division, period_text, month, year, scope,
+  regular_hours, saturday_hours, supervisor_name, supervisor_title,
+  total_days_rendered, total_hours_rendered, undertime_hours, undertime_minutes, late_minutes,
+  status, submitted_date, pdf_filename, pdf_filesize,
+  has_p12, signature_image, signer_name,
+  employee_signature_image, employee_has_p12, employee_signer_name,
+  supervisor_signature_image, supervisor_has_p12,
+  rows_json, doc_type, remarks, created_at, updated_at
+`;
+
 export function broadcastDtrRealtimeEvent(event: {
   type: "INSERT" | "UPDATE" | "DELETE";
   record?: any;
   id?: string;
 }) {
-  const payload = `data: ${JSON.stringify(event)}\n\n`;
+  let eventToSend = event;
+  if (event.record && (event.record.pdfDataUrl || event.record.pdf_data)) {
+    const { pdfDataUrl, pdf_data, ...leanRecord } = event.record;
+    eventToSend = { ...event, record: leanRecord };
+  }
+  const payload = `data: ${JSON.stringify(eventToSend)}\n\n`;
   for (const client of realtimeClients) {
     try {
       client.write(payload);
@@ -106,7 +123,7 @@ function formatDtrStorageRow(row: any) {
 dtrStorageRouter.get("/", async (req: Request, res: Response) => {
   try {
     const { module, province, user_id, status, search } = req.query;
-    const includePdf = req.query.include_pdf === "true" || String(module || "").toUpperCase() === "SIGNING_WORKSPACE";
+    const includePdf = req.query.include_pdf === "true";
     const pdfField = includePdf ? "pdf_data," : "";
     let sql = `SELECT 
       id, user_id, employee_name, employee_id, position, employment_status,
@@ -257,136 +274,149 @@ dtrStorageRouter.post("/batch", async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: "Invalid records array" });
     }
 
-    const savedRecords: any[] = [];
+    const isLastChunk = req.body.isLastChunk !== false;
+    const headerUserId = req.headers["x-user-id"] ? String(req.headers["x-user-id"]).trim() : null;
+
+    const savedRecords: { id: string; fileName?: string }[] = [];
     const errors: { id: string; error: string }[] = [];
 
-    // Process records in controlled concurrent micro-chunks of 10 to maximize Turso throughput without overloading
-    const CHUNK_SIZE = 10;
-    for (let i = 0; i < records.length; i += CHUNK_SIZE) {
-      const chunk = records.slice(i, i + CHUNK_SIZE);
+    // Build SQL statements for all records in this micro-batch
+    const preparedItems = records.map((body: any) => {
+      const employeeName = (body.employeeName || body.employee_name || "PERSONNEL").trim().toUpperCase();
+      const cleanUserId = body.userId || body.user_id ? String(body.userId || body.user_id).trim() : headerUserId;
+      const recordId = body.id || `DTR-${body.module || "PROV"}-${Date.now().toString().slice(-6)}-${Math.random().toString(36).substring(2, 6)}`;
+      const submittedDate = body.submittedDate || body.submitted_date || new Date().toISOString();
+      const rowsJson = body.rows ? JSON.stringify(body.rows) : (body.rows_json || "[]");
+
+      const stmt = {
+        sql: `INSERT INTO dtr_storage (
+                id, user_id, employee_name, employee_id, position, employment_status,
+                module, province, section_division, period_text, month, year, scope,
+                regular_hours, saturday_hours, supervisor_name, supervisor_title,
+                total_days_rendered, total_hours_rendered, undertime_hours, undertime_minutes, late_minutes,
+                status, submitted_date, pdf_filename, pdf_filesize, pdf_data,
+                has_p12, signature_image, signer_name,
+                employee_signature_image, employee_has_p12, employee_signer_name,
+                supervisor_signature_image, supervisor_has_p12,
+                rows_json, doc_type, remarks, created_at, updated_at
+              ) VALUES (
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?,
+                ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+              )
+              ON CONFLICT(id) DO UPDATE SET
+                user_id = COALESCE(excluded.user_id, dtr_storage.user_id),
+                employee_name = excluded.employee_name,
+                employee_id = excluded.employee_id,
+                position = excluded.position,
+                employment_status = excluded.employment_status,
+                module = excluded.module,
+                province = excluded.province,
+                section_division = excluded.section_division,
+                period_text = excluded.period_text,
+                month = excluded.month,
+                year = excluded.year,
+                scope = excluded.scope,
+                regular_hours = excluded.regular_hours,
+                saturday_hours = excluded.saturday_hours,
+                supervisor_name = excluded.supervisor_name,
+                supervisor_title = excluded.supervisor_title,
+                total_days_rendered = excluded.total_days_rendered,
+                total_hours_rendered = excluded.total_hours_rendered,
+                undertime_hours = excluded.undertime_hours,
+                undertime_minutes = excluded.undertime_minutes,
+                late_minutes = excluded.late_minutes,
+                status = excluded.status,
+                submitted_date = excluded.submitted_date,
+                pdf_filename = excluded.pdf_filename,
+                pdf_filesize = excluded.pdf_filesize,
+                pdf_data = COALESCE(excluded.pdf_data, dtr_storage.pdf_data),
+                has_p12 = excluded.has_p12,
+                signature_image = COALESCE(excluded.signature_image, dtr_storage.signature_image),
+                signer_name = COALESCE(excluded.signer_name, dtr_storage.signer_name),
+                employee_signature_image = COALESCE(excluded.employee_signature_image, dtr_storage.employee_signature_image),
+                employee_has_p12 = COALESCE(excluded.employee_has_p12, dtr_storage.employee_has_p12),
+                employee_signer_name = COALESCE(excluded.employee_signer_name, dtr_storage.employee_signer_name),
+                supervisor_signature_image = COALESCE(excluded.supervisor_signature_image, dtr_storage.supervisor_signature_image),
+                supervisor_has_p12 = COALESCE(excluded.supervisor_has_p12, dtr_storage.supervisor_has_p12),
+                rows_json = excluded.rows_json,
+                doc_type = COALESCE(excluded.doc_type, dtr_storage.doc_type),
+                remarks = excluded.remarks,
+                updated_at = CURRENT_TIMESTAMP`,
+        args: [
+          recordId,
+          cleanUserId,
+          employeeName,
+          body.employeeId || body.employee_id || `DICT-R5-${body.year || 2026}-${Math.floor(100 + Math.random() * 900)}`,
+          body.position || "Technical Specialist / Engineer",
+          body.employmentStatus || body.employment_status || "Regular",
+          (body.module || "PROVINCIAL").toUpperCase(),
+          body.province || null,
+          body.sectionDivision || body.section_division || (body.province ? `${body.province} Provincial Operations` : "Regional Operations (RO)"),
+          body.periodText || body.period_text || "AUGUST 01-31, 2026",
+          body.month !== undefined ? Number(body.month) : 7,
+          body.year !== undefined ? Number(body.year) : 2026,
+          body.scope || "full",
+          body.regularHours || body.regular_hours || "",
+          body.saturdayHours || body.saturday_hours || "",
+          body.supervisorName || body.supervisor_name || "NORLY A. TABO",
+          body.supervisorTitle || body.supervisor_title || "OIC Chief - Technical Operations Division",
+          Number(body.totalDaysRendered || body.total_days_rendered) || 0,
+          Number(body.totalHoursRendered || body.total_hours_rendered) || 0,
+          Number(body.undertimeHours || body.undertime_hours) || 0,
+          Number(body.undertimeMinutes || body.undertime_minutes) || 0,
+          Number(body.lateMinutes || body.late_minutes) || 0,
+          body.status || "Submitted",
+          submittedDate,
+          body.pdfFileName || body.pdf_filename || `DTR_${employeeName.replace(/[^a-zA-Z0-9]/g, "_")}.pdf`,
+          body.pdfFileSize || body.pdf_filesize || "325 KB",
+          body.pdfDataUrl || body.pdf_data || null,
+          body.hasP12 ? 1 : 0,
+          body.signatureImage || body.signature_image || null,
+          body.signerName || body.signer_name || null,
+          body.employeeSignatureImage || body.employee_signature_image || body.signatureImage || null,
+          body.employeeHasP12 !== undefined ? (body.employeeHasP12 ? 1 : 0) : (body.hasP12 ? 1 : 0),
+          body.employeeSignerName || body.employee_signer_name || employeeName,
+          body.supervisorSignatureImage || body.supervisor_signature_image || null,
+          body.supervisorHasP12 ? 1 : 0,
+          rowsJson,
+          body.docType || body.doc_type || (body.pdfFileName?.toUpperCase().startsWith("AR_") ? "AR" : "DTR"),
+          body.remarks || `Generated for ${body.province || "Regional Office"}`,
+        ],
+      };
+
+      return { recordId, body, stmt };
+    });
+
+    // Strategy: First attempt fast atomic transaction via db.batch() in a single network roundtrip
+    try {
+      await db.batch(preparedItems.map((item) => item.stmt), "write");
+      for (const item of preparedItems) {
+        savedRecords.push({ id: item.recordId, fileName: item.body.pdfFileName });
+      }
+    } catch (batchErr: any) {
+      console.warn("db.batch atomic execution failed, falling back to individual inserts:", batchErr?.message);
+      // Fallback: Individual inserts with error isolation
       await Promise.all(
-        chunk.map(async (body: any) => {
+        preparedItems.map(async (item) => {
           try {
-            const employeeName = (body.employeeName || body.employee_name || "PERSONNEL").trim().toUpperCase();
-            const headerUserId = req.headers["x-user-id"] ? String(req.headers["x-user-id"]).trim() : null;
-            let cleanUserId = body.userId || body.user_id ? String(body.userId || body.user_id).trim() : headerUserId;
-
-            const recordId = body.id || `DTR-${body.module || "PROV"}-${Date.now().toString().slice(-6)}-${Math.random().toString(36).substring(2, 6)}`;
-            const submittedDate = body.submittedDate || body.submitted_date || new Date().toISOString();
-            const rowsJson = body.rows ? JSON.stringify(body.rows) : (body.rows_json || "[]");
-
-            await db.execute({
-              sql: `INSERT INTO dtr_storage (
-                      id, user_id, employee_name, employee_id, position, employment_status,
-                      module, province, section_division, period_text, month, year, scope,
-                      regular_hours, saturday_hours, supervisor_name, supervisor_title,
-                      total_days_rendered, total_hours_rendered, undertime_hours, undertime_minutes, late_minutes,
-                      status, submitted_date, pdf_filename, pdf_filesize, pdf_data,
-                      has_p12, signature_image, signer_name,
-                      employee_signature_image, employee_has_p12, employee_signer_name,
-                      supervisor_signature_image, supervisor_has_p12,
-                      rows_json, doc_type, remarks, created_at, updated_at
-                    ) VALUES (
-                      ?, ?, ?, ?, ?, ?,
-                      ?, ?, ?, ?, ?, ?, ?,
-                      ?, ?, ?, ?,
-                      ?, ?, ?, ?, ?,
-                      ?, ?, ?, ?, ?,
-                      ?, ?, ?,
-                      ?, ?, ?,
-                      ?, ?,
-                      ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                    )
-                    ON CONFLICT(id) DO UPDATE SET
-                      user_id = COALESCE(excluded.user_id, dtr_storage.user_id),
-                      employee_name = excluded.employee_name,
-                      employee_id = excluded.employee_id,
-                      position = excluded.position,
-                      employment_status = excluded.employment_status,
-                      module = excluded.module,
-                      province = excluded.province,
-                      section_division = excluded.section_division,
-                      period_text = excluded.period_text,
-                      month = excluded.month,
-                      year = excluded.year,
-                      scope = excluded.scope,
-                      regular_hours = excluded.regular_hours,
-                      saturday_hours = excluded.saturday_hours,
-                      supervisor_name = excluded.supervisor_name,
-                      supervisor_title = excluded.supervisor_title,
-                      total_days_rendered = excluded.total_days_rendered,
-                      total_hours_rendered = excluded.total_hours_rendered,
-                      undertime_hours = excluded.undertime_hours,
-                      undertime_minutes = excluded.undertime_minutes,
-                      late_minutes = excluded.late_minutes,
-                      status = excluded.status,
-                      submitted_date = excluded.submitted_date,
-                      pdf_filename = excluded.pdf_filename,
-                      pdf_filesize = excluded.pdf_filesize,
-                      pdf_data = COALESCE(excluded.pdf_data, dtr_storage.pdf_data),
-                      has_p12 = excluded.has_p12,
-                      signature_image = COALESCE(excluded.signature_image, dtr_storage.signature_image),
-                      signer_name = COALESCE(excluded.signer_name, dtr_storage.signer_name),
-                      employee_signature_image = COALESCE(excluded.employee_signature_image, dtr_storage.employee_signature_image),
-                      employee_has_p12 = COALESCE(excluded.employee_has_p12, dtr_storage.employee_has_p12),
-                      employee_signer_name = COALESCE(excluded.employee_signer_name, dtr_storage.employee_signer_name),
-                      supervisor_signature_image = COALESCE(excluded.supervisor_signature_image, dtr_storage.supervisor_signature_image),
-                      supervisor_has_p12 = COALESCE(excluded.supervisor_has_p12, dtr_storage.supervisor_has_p12),
-                      rows_json = excluded.rows_json,
-                      doc_type = COALESCE(excluded.doc_type, dtr_storage.doc_type),
-                      remarks = excluded.remarks,
-                      updated_at = CURRENT_TIMESTAMP`,
-              args: [
-                recordId,
-                cleanUserId,
-                employeeName,
-                body.employeeId || body.employee_id || `DICT-R5-${body.year || 2026}-${Math.floor(100 + Math.random() * 900)}`,
-                body.position || "Technical Specialist / Engineer",
-                body.employmentStatus || body.employment_status || "Regular",
-                (body.module || "PROVINCIAL").toUpperCase(),
-                body.province || null,
-                body.sectionDivision || body.section_division || (body.province ? `${body.province} Provincial Operations` : "Regional Operations (RO)"),
-                body.periodText || body.period_text || "AUGUST 01-31, 2026",
-                body.month !== undefined ? Number(body.month) : 7,
-                body.year !== undefined ? Number(body.year) : 2026,
-                body.scope || "full",
-                body.regularHours || body.regular_hours || "",
-                body.saturdayHours || body.saturday_hours || "",
-                body.supervisorName || body.supervisor_name || "NORLY A. TABO",
-                body.supervisorTitle || body.supervisor_title || "OIC Chief - Technical Operations Division",
-                Number(body.totalDaysRendered || body.total_days_rendered) || 0,
-                Number(body.totalHoursRendered || body.total_hours_rendered) || 0,
-                Number(body.undertimeHours || body.undertime_hours) || 0,
-                Number(body.undertimeMinutes || body.undertime_minutes) || 0,
-                Number(body.lateMinutes || body.late_minutes) || 0,
-                body.status || "Submitted",
-                submittedDate,
-                body.pdfFileName || body.pdf_filename || `DTR_${employeeName.replace(/[^a-zA-Z0-9]/g, "_")}.pdf`,
-                body.pdfFileSize || body.pdf_filesize || "325 KB",
-                body.pdfDataUrl || body.pdf_data || null,
-                body.hasP12 ? 1 : 0,
-                body.signatureImage || body.signature_image || null,
-                body.signerName || body.signer_name || null,
-                body.employeeSignatureImage || body.employee_signature_image || body.signatureImage || null,
-                body.employeeHasP12 !== undefined ? (body.employeeHasP12 ? 1 : 0) : (body.hasP12 ? 1 : 0),
-                body.employeeSignerName || body.employee_signer_name || employeeName,
-                body.supervisorSignatureImage || body.supervisor_signature_image || null,
-                body.supervisorHasP12 ? 1 : 0,
-                rowsJson,
-                body.docType || body.doc_type || (body.pdfFileName?.toUpperCase().startsWith("AR_") ? "AR" : "DTR"),
-                body.remarks || `Generated for ${body.province || "Regional Office"}`,
-              ],
-            });
-
-            savedRecords.push({ id: recordId, fileName: body.pdfFileName });
+            await db.execute(item.stmt);
+            savedRecords.push({ id: item.recordId, fileName: item.body.pdfFileName });
           } catch (err: any) {
-            errors.push({ id: body.id, error: err.message });
+            errors.push({ id: item.recordId, error: err.message });
           }
         })
       );
     }
 
-    if (savedRecords.length > 0) {
+    // Only broadcast SSE event on the last chunk (or standalone batch) to prevent thundering herds on other clients
+    if (savedRecords.length > 0 && isLastChunk) {
       broadcastDtrRealtimeEvent({
         type: "INSERT",
         record: { module: "SIGNING_WORKSPACE", batchCount: savedRecords.length } as any,
@@ -545,12 +575,48 @@ dtrStorageRouter.post("/", async (req: Request, res: Response) => {
       ],
     });
 
-    const saved = await db.execute({
-      sql: "SELECT * FROM dtr_storage WHERE id = ?",
-      args: [recordId],
-    });
-
-    const formattedRecord = formatDtrStorageRow(saved.rows[0]);
+    const formattedRecord = {
+      id: recordId,
+      userId: cleanUserId || "",
+      employeeName,
+      employeeId: body.employeeId || body.employee_id || `DICT-R5-${body.year || 2026}-${Math.floor(100 + Math.random() * 900)}`,
+      position: body.position || "Technical Specialist / Engineer",
+      employmentStatus: body.employmentStatus || body.employment_status || "Regular",
+      module: (body.module || "PROVINCIAL").toUpperCase(),
+      province: body.province || undefined,
+      sectionDivision: body.sectionDivision || body.section_division || (body.province ? `${body.province} Provincial Operations` : "Regional Operations (RO)"),
+      periodText: body.periodText || body.period_text || "AUGUST 01-31, 2026",
+      month: body.month !== undefined ? Number(body.month) : 7,
+      year: body.year !== undefined ? Number(body.year) : 2026,
+      scope: body.scope || "full",
+      regularHours: body.regularHours || body.regular_hours || "",
+      saturdayHours: body.saturdayHours || body.saturday_hours || "",
+      supervisorName: body.supervisorName || body.supervisor_name || "NORLY A. TABO",
+      supervisorTitle: body.supervisorTitle || body.supervisor_title || "OIC Chief - Technical Operations Division",
+      signerName: body.signerName || body.signer_name || undefined,
+      employeeSignatureImage: body.employeeSignatureImage || body.signatureImage || undefined,
+      employeeHasP12: Boolean(body.employeeHasP12 !== undefined ? body.employeeHasP12 : body.hasP12),
+      employeeSignerName: body.employeeSignerName || employeeName,
+      supervisorSignatureImage: body.supervisorSignatureImage || undefined,
+      supervisorHasP12: Boolean(body.supervisorHasP12),
+      totalDaysRendered: Number(body.totalDaysRendered || body.total_days_rendered) || 0,
+      totalHoursRendered: Number(body.totalHoursRendered || body.total_hours_rendered) || 0,
+      undertimeHours: Number(body.undertimeHours || body.undertime_hours) || 0,
+      undertimeMinutes: Number(body.undertimeMinutes || body.undertime_minutes) || 0,
+      lateMinutes: Number(body.lateMinutes || body.late_minutes) || 0,
+      status: body.status || "Submitted",
+      submittedDate,
+      pdfFileName: body.pdfFileName || body.pdf_filename || `DTR_${employeeName.replace(/[^a-zA-Z0-9]/g, "_")}.pdf`,
+      pdfFileSize: body.pdfFileSize || body.pdf_filesize || "325 KB",
+      pdfDataUrl: undefined,
+      hasP12: Boolean(body.hasP12 || body.employeeHasP12),
+      signatureImage: body.signatureImage || body.employeeSignatureImage || undefined,
+      rows: body.rows || (body.rows_json ? JSON.parse(body.rows_json) : []),
+      docType: body.docType || body.doc_type || (body.pdfFileName?.toUpperCase().startsWith("AR_") ? "AR" : "DTR"),
+      remarks: body.remarks || `Generated for ${body.province || "Regional Office"}`,
+      createdAt: nowStr,
+      updatedAt: nowStr,
+    };
 
     // Broadcast INSERT realtime event to all connected browser clients & profiles
     broadcastDtrRealtimeEvent({
@@ -586,7 +652,7 @@ dtrStorageRouter.patch("/:id", async (req: Request, res: Response) => {
     });
 
     const updated = await db.execute({
-      sql: "SELECT * FROM dtr_storage WHERE id = ?",
+      sql: `SELECT ${DTR_STORAGE_LEAN_FIELDS} FROM dtr_storage WHERE id = ?`,
       args: [id],
     });
 

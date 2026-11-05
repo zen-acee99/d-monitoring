@@ -1202,13 +1202,30 @@ export const dtrStorageApi = {
   },
 
   // High-speed batch save for 100-200 files in micro-chunks with automatic retry
-  async saveBatch(records: Record<string, any>[]): Promise<{ success: boolean; savedCount?: number; error?: string }> {
+  async saveBatch(
+    records: Record<string, any>[],
+    options?: { isLastChunk?: boolean }
+  ): Promise<{
+    success: boolean;
+    savedCount?: number;
+    errorsCount?: number;
+    savedRecords?: { id: string; fileName?: string }[];
+    errors?: { id: string; error: string }[];
+    error?: string;
+  }> {
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
+      const firstUserId = records[0]?.userId;
+      if (firstUserId) {
+        headers["x-user-id"] = String(firstUserId);
+      }
       const res = await apiFetch(`${API_BASE}/dtr-storage/batch`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ records }),
+        body: JSON.stringify({
+          records,
+          isLastChunk: options?.isLastChunk ?? true,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP error ${res.status}`);
