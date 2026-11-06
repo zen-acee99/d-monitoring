@@ -158,8 +158,8 @@ export function detectSignatureCoordinatesForReneJane(
         }
       }
 
-      const boxW = 125;
-      const boxH = 26;
+      const boxW = 195;
+      const boxH = 32;
 
       if (isDual) {
         const halfW = width / 2;
@@ -243,8 +243,8 @@ export function detectSignatureCoordinatesForReneJane(
         );
       });
 
-      const boxW = 125;
-      const boxH = 30;
+      const boxW = 195;
+      const boxH = 32;
       let targetX = Math.round(width * 0.58);
       let targetY = 90;
 
@@ -285,8 +285,8 @@ export function detectSignatureCoordinatesForReneJane(
       const isProvincialOfficer = u.includes("PROVINCIAL OFFICER") && item.x > width * 0.3;
 
       if (isSupervisorName || isApprovedBy || isProvincialOfficer) {
-        const boxW = 125;
-        const boxH = 26;
+        const boxW = 195;
+        const boxH = 32;
         let boxX = Math.round(item.x);
         let boxY = Math.round(item.y + 12);
         if (isApprovedBy) {
@@ -309,9 +309,9 @@ export function detectSignatureCoordinatesForReneJane(
   const lastPageIdx = pageCount - 1;
   const lastPage = pdfDoc.getPage(lastPageIdx);
   const { width, height } = lastPage.getSize();
-  const boxW = 125;
-  const boxH = 26;
-  const boxX = Math.round(width * 0.52);
+  const boxW = 195;
+  const boxH = 32;
+  const boxX = Math.round(width * 0.50);
   const boxY = Math.round(height * 0.16);
 
   return {

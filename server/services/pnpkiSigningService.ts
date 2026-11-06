@@ -553,10 +553,21 @@ export async function appendSignatureIncremental(
     const rh = rectCoords[3];
     const minX = Math.min(rx, rx + rw);
     const minY = Math.min(ry, ry + rh);
-    const maxX = Math.max(rx, rx + rw);
+    let maxX = Math.max(rx, rx + rw);
     const maxY = Math.max(ry, ry + rh);
-    const bboxW = Math.max(20, maxX - minX);
-    const bboxH = Math.max(14, maxY - minY);
+    let bboxW = Math.max(20, maxX - minX);
+    let bboxH = Math.max(14, maxY - minY);
+
+    if (!isCounter) {
+      // Ensure the visual bounding box is ALWAYS wide enough to fit long names (e.g. Annabel C. Odoño-Calimpong) without any clipping
+      if (bboxW < 195) {
+        bboxW = 195;
+        maxX = minX + bboxW;
+      }
+      if (bboxH < 32) {
+        bboxH = 32;
+      }
+    }
 
     const sigIndex = existingSigCount + 1 + idx;
     const defaultFieldName = isCounter
@@ -592,13 +603,25 @@ export async function appendSignatureIncremental(
       // ── Standard Signature Stamp ABOVE Personnel Name ──
       if (imgObjNum) {
         const drawH = Math.max(10, bboxH - 6);
-        streamContent += `q\n38 0 0 ${drawH} 2 3 cm\n/SigImg Do\nQ\n`;
+        streamContent += `q\n34 0 0 ${drawH} 2 3 cm\n/SigImg Do\nQ\n`;
       }
-      const textX = imgObjNum ? 44 : 6;
+      const textX = imgObjNum ? 38 : 6;
       const escapedSigner = signerName.replace(/[()\\]/g, "\\$&");
+      const signerFullText = `by ${escapedSigner}`;
+
+      // Dynamic font size calculation to guarantee long names (e.g. Annabel C. Odoño-Calimpong) are NEVER cut off
+      const availW = Math.max(50, bboxW - textX - 6);
+      let signerFontSize = signerFullText.length > 24 ? 5.8 : 6.2;
+      const charWidthFactor = 0.58;
+      let estimatedTextWidth = signerFullText.length * (signerFontSize * charWidthFactor);
+      while (signerFontSize > 3.4 && estimatedTextWidth > availW) {
+        signerFontSize -= 0.1;
+        estimatedTextWidth = signerFullText.length * (signerFontSize * charWidthFactor);
+      }
+      signerFontSize = Math.round(signerFontSize * 10) / 10;
 
       // Per user explicit instruction: Black text, normal font (not bold), no date/time
-      streamContent += `q\nBT\n/Helv 6.5 Tf\n0 0 0 rg\n${textX} 15 Td\n(Digitally signed) Tj\n0 -8 Td\n(by ${escapedSigner}) Tj\nET\nQ\nQ\n`;
+      streamContent += `q\nBT\n/Helv 6.0 Tf\n0 0 0 rg\n${textX} 15 Td\n(Digitally signed) Tj\n0 -7.5 Td\n/Helv ${signerFontSize} Tf\n(${signerFullText}) Tj\nET\nQ\nQ\n`;
     }
 
     const streamLen = Buffer.from(streamContent, "binary").length;

@@ -224,6 +224,53 @@ export function isUserProvincialOfficer(user: any): boolean {
   return isPoRole || isPoByName || isProvincialHead;
 }
 
+export function isUserRegionalDirectorOrAssistant(user: any): boolean {
+  if (!user || user.status === "inactive") return false;
+  const role = (user.role || "").trim().toLowerCase();
+  const position = ((user as any).position || "").trim().toLowerCase();
+  const designation = ((user as any).designation || "").trim().toLowerCase();
+  const title = ((user as any).title || "").trim().toLowerCase();
+  const name = (user.name || "").trim().toLowerCase();
+  const email = (user.email || "").trim().toLowerCase();
+
+  const combined = `${role} ${position} ${designation} ${title}`.toLowerCase();
+
+  const isRd =
+    combined.includes("regional director") ||
+    combined.includes("director iv") ||
+    combined.includes("director 4") ||
+    combined.includes("director-iv") ||
+    combined.includes("oic-rd") ||
+    combined.includes("oic - rd") ||
+    combined.includes("oic-regional director") ||
+    combined.includes("oic - regional director") ||
+    role === "rd" ||
+    position === "rd" ||
+    designation === "rd" ||
+    name.includes("annabel") ||
+    name.includes("calimpong") ||
+    email.includes("annabel") ||
+    email.includes("calimpong");
+
+  const isArd =
+    combined.includes("assistant regional director") ||
+    combined.includes("asst. regional director") ||
+    combined.includes("asst regional director") ||
+    combined.includes("director iii") ||
+    combined.includes("director 3") ||
+    combined.includes("director-iii") ||
+    combined.includes("oic-ard") ||
+    combined.includes("oic - ard") ||
+    combined.includes("oic-assistant regional director") ||
+    combined.includes("oic - assistant regional director") ||
+    combined.includes("ard") ||
+    role === "ard" ||
+    position === "ard" ||
+    designation === "ard";
+
+  return isRd || isArd;
+}
+
 export function getUserDesignatedProvince(user: any): string {
   if (!user) return "";
   const rawScope = ((user.focalProvince || user.province || "")).trim().toLowerCase();
@@ -355,8 +402,20 @@ export function isUserAuthorizedToSignDoc(doc: WorkspaceDocument, user: any): bo
   if (!user || user.status === "inactive") return false;
   if (isUserSuperAdmin(user)) return true;
 
+  // Regional Director & Assistant Regional Director have executive regional authority to sign and bulk sign across workspace documents
+  if (isUserRegionalDirectorOrAssistant(user)) {
+    return true;
+  }
+
+  const userCombinedRole = [
+    user.role,
+    (user as any).position,
+    (user as any).designation,
+    (user as any).title,
+  ].filter(Boolean).join(" ");
+
   // 1. Direct name match or role match in required signers
-  if (isUserInRequiredSigners(doc, user.name, user.role)) {
+  if (isUserInRequiredSigners(doc, user.name, userCombinedRole)) {
     return true;
   }
 
@@ -369,7 +428,7 @@ export function isUserAuthorizedToSignDoc(doc: WorkspaceDocument, user: any): bo
         return true;
       }
       // Also check notes, fileName, or targetPersonnel for province match
-      const text = `${doc.fileName} ${doc.notes || ""} ${doc.targetPersonnel}`.toLowerCase();
+      const text = `${doc.fileObj?.name || doc.fileName} ${doc.notes || ""} ${doc.targetPersonnel}`.toLowerCase();
       if (text.includes(userProv)) {
         return true;
       }
@@ -394,6 +453,45 @@ function hasUserAlreadySigned(doc: WorkspaceDocument, userName?: string): boolea
   return inSigners || inCounter;
 }
 
+export function computeEffectiveDocStatus(doc: WorkspaceDocument): SigningStatus {
+  if (!doc) return "pending";
+  if (doc.status === "failed") return "failed";
+
+  const reqSigners = doc.requiredSigners || [];
+  const signers = doc.signers || [];
+  const counterSigners = doc.counterSigners || [];
+
+  if (reqSigners.length === 0) {
+    if (signers.length > 0) {
+      const allSigned = signers.every((s) => s.status === "signed" || s.status === "counter-signed");
+      const someSigned = signers.some((s) => s.status === "signed" || s.status === "counter-signed");
+      if (allSigned) return "signed";
+      if (someSigned) return "partially_signed";
+    }
+    return doc.status || "pending";
+  }
+
+  const completedCount = reqSigners.filter((reqName) => {
+    const sObj = signers.find(
+      (s) => matchNames(s.name, reqName) || normalizeName(s.name) === normalizeName(reqName)
+    );
+    return sObj?.status === "signed" || sObj?.status === "counter-signed";
+  }).length;
+
+  if (completedCount >= reqSigners.length) {
+    return "signed";
+  }
+  if (completedCount > 0) {
+    return "partially_signed";
+  }
+
+  if (counterSigners.length > 0) {
+    return "partially_signed";
+  }
+
+  return "pending";
+}
+
 const statusConfig: Record<
   SigningStatus,
   { label: string; color: string; bg: string; icon: React.ReactNode }
@@ -411,7 +509,7 @@ const statusConfig: Record<
     icon: <Users className="w-3 h-3" />,
   },
   signed: {
-    label: "Fully Signed",
+    label: "Signed",
     color: "text-emerald-400",
     bg: "bg-emerald-500/10 border-emerald-500/30",
     icon: <CheckCircle2 className="w-3 h-3" />,
@@ -452,6 +550,7 @@ function DocumentPreviewModal({
 }) {
   const [zoom, setZoom] = useState(100);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [isLoadingPdf, setIsLoadingPdf] = useState(false);
   const [activeTab, setActiveTab] = useState<"viewer" | "signatures">("viewer");
   const [selectedCounterPos, setSelectedCounterPos] = useState<CounterSignPosition>("auto");
 
@@ -470,95 +569,124 @@ function DocumentPreviewModal({
   useEffect(() => {
     if (!rawDoc) {
       setBlobUrl(null);
+      setIsLoadingPdf(false);
       return;
     }
+
+    const safeCreateBlobUrl = (dataUrl: string): string | null => {
+      try {
+        if (!dataUrl) return null;
+        let base64 = dataUrl;
+        if (dataUrl.includes(",")) {
+          base64 = dataUrl.split(",")[1];
+        }
+        const clean = base64.replace(/\s+/g, "");
+        const binary = atob(clean);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: "application/pdf" });
+        return URL.createObjectURL(blob);
+      } catch (err) {
+        console.warn("Could not create Blob URL from base64 PDF:", err);
+        return null;
+      }
+    };
 
     // Always check for signed/updated PDF first so changes are immediately visible
     if (rawDoc.pdfDataUrl) {
-      let url = rawDoc.pdfDataUrl;
+      let created: string | null = null;
       if (rawDoc.pdfDataUrl.startsWith("data:")) {
-        try {
-          const base64 = rawDoc.pdfDataUrl.includes(",")
-            ? rawDoc.pdfDataUrl.split(",")[1]
-            : rawDoc.pdfDataUrl;
-          const binary = atob(base64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) {
-            bytes[i] = binary.charCodeAt(i);
-          }
-          const blob = new Blob([bytes], { type: "application/pdf" });
-          const created = URL.createObjectURL(blob);
-          setBlobUrl(created);
-          return () => URL.revokeObjectURL(created);
-        } catch {
-          setBlobUrl(rawDoc.pdfDataUrl);
-        }
+        created = safeCreateBlobUrl(rawDoc.pdfDataUrl);
+      } else if (rawDoc.pdfDataUrl.startsWith("blob:")) {
+        created = rawDoc.pdfDataUrl;
       } else {
-        setBlobUrl(rawDoc.pdfDataUrl);
+        created = safeCreateBlobUrl(`data:application/pdf;base64,${rawDoc.pdfDataUrl}`);
       }
-      return;
+
+      if (created) {
+        setBlobUrl(created);
+        setIsLoadingPdf(false);
+        return () => {
+          if (created && created.startsWith("blob:") && created !== rawDoc.pdfDataUrl) {
+            URL.revokeObjectURL(created);
+          }
+        };
+      }
     }
 
     if (rawDoc.fileObj) {
-      const url = URL.createObjectURL(rawDoc.fileObj);
-      setBlobUrl(url);
-      return () => URL.revokeObjectURL(url);
+      try {
+        const url = URL.createObjectURL(rawDoc.fileObj);
+        setBlobUrl(url);
+        setIsLoadingPdf(false);
+        return () => URL.revokeObjectURL(url);
+      } catch (e) {
+        console.warn("Failed creating object URL from fileObj:", e);
+      }
     }
 
     // If PDF binary data is not loaded yet in memory, fetch it on-demand from database
     let isCancelled = false;
+    let createdUrl: string | null = null;
+    setIsLoadingPdf(true);
+
     dtrStorageApi
       .getRecord(rawDoc.id)
       .then((fullRec) => {
         if (!isCancelled && fullRec && fullRec.pdfDataUrl) {
           rawDoc.pdfDataUrl = fullRec.pdfDataUrl;
-          try {
-            const base64 = fullRec.pdfDataUrl.includes(",")
-              ? fullRec.pdfDataUrl.split(",")[1]
-              : fullRec.pdfDataUrl;
-            const binary = atob(base64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) {
-              bytes[i] = binary.charCodeAt(i);
-            }
-            const blob = new Blob([bytes], { type: "application/pdf" });
-            const created = URL.createObjectURL(blob);
-            setBlobUrl(created);
-          } catch {
-            setBlobUrl(fullRec.pdfDataUrl);
+          createdUrl = safeCreateBlobUrl(fullRec.pdfDataUrl);
+          if (createdUrl) {
+            setBlobUrl(createdUrl);
           }
         }
       })
-      .catch((e) => console.warn("Failed to fetch full PDF record for preview:", e));
+      .catch((e) => console.warn("Failed to fetch full PDF record for preview:", e))
+      .finally(() => {
+        if (!isCancelled) {
+          setIsLoadingPdf(false);
+        }
+      });
 
     return () => {
       isCancelled = true;
+      if (createdUrl) {
+        URL.revokeObjectURL(createdUrl);
+      }
     };
   }, [rawDoc]);
 
   if (!doc) return null;
 
-  const sc = statusConfig[doc.status];
-  const userIsRequired = isUserInRequiredSigners(doc, currentUser?.name, currentUser?.role);
+  const effectiveStatus = computeEffectiveDocStatus(doc);
+  const sc = statusConfig[effectiveStatus] || statusConfig.pending;
+  const userIsRequired = isUserAuthorizedToSignDoc(doc, currentUser);
   const userHasSigned = hasUserAlreadySigned(doc, currentUser?.name);
+  const isAllRequiredSigned = effectiveStatus === "signed";
+
+  const signersList = doc.signers || [];
+  const requiredList = doc.requiredSigners || [];
+  const allCounterSigners = doc.counterSigners || [];
 
   // Group signers matching DICT standard layout (PREPARED BY, REVIEWED BY, NOTED BY, ARD, REGIONAL DIRECTOR)
-  const prepSigner = doc.signers.find(
+  const prepSigner = signersList.find(
     (s) =>
       s.role?.toUpperCase().includes("PREPARED") ||
       matchNames(s.name, doc.targetPersonnel)
-  ) || doc.signers[0];
+  ) || signersList[0];
 
-  const revSigner = doc.signers.find(
+  const revSigner = signersList.find(
     (s) =>
       s !== prepSigner &&
       (s.role?.toUpperCase().includes("REVIEWED") ||
         s.role?.toUpperCase().includes("SUPERVISOR") ||
         s.role?.toUpperCase().includes("CERTIF") ||
         s.name.includes("BUENA"))
-  ) || doc.signers.find((s) => s !== prepSigner);
+  ) || signersList.find((s) => s !== prepSigner);
 
-  const rdSigner = doc.signers.find(
+  const rdSigner = signersList.find(
     (s) =>
       s !== prepSigner &&
       s !== revSigner &&
@@ -568,7 +696,7 @@ function DocumentPreviewModal({
         s.name.toUpperCase().includes("ODO"))
   );
 
-  const ardSigner = doc.signers.find(
+  const ardSigner = signersList.find(
     (s) =>
       s !== prepSigner &&
       s !== revSigner &&
@@ -579,7 +707,7 @@ function DocumentPreviewModal({
         s.role?.toUpperCase().includes("ARD"))
   );
 
-  const notedSigner = doc.signers.find(
+  const notedSigner = signersList.find(
     (s) =>
       s !== prepSigner &&
       s !== revSigner &&
@@ -588,14 +716,33 @@ function DocumentPreviewModal({
       (s.role?.toUpperCase().includes("NOTED") ||
         s.role?.toUpperCase().includes("CHIEF") ||
         s.name.includes("TABO"))
-  ) || (doc.signers.length > 2 && doc.signers[2] !== prepSigner && doc.signers[2] !== revSigner && doc.signers[2] !== rdSigner && doc.signers[2] !== ardSigner ? doc.signers[2] : undefined);
+  ) || (signersList.length > 2 && signersList[2] !== prepSigner && signersList[2] !== revSigner && signersList[2] !== rdSigner && signersList[2] !== ardSigner ? signersList[2] : undefined);
 
   const handledSet = new Set(
     [prepSigner, revSigner, notedSigner, ardSigner, rdSigner].filter(Boolean) as DocumentSigner[]
   );
-  const otherSigners = doc.signers.filter((s) => !handledSet.has(s));
+  const otherSigners = signersList.filter((s) => !handledSet.has(s));
 
-  const allCounterSigners = doc.counterSigners || [];
+  const uniqueSigners = useMemo(() => {
+    const seen = new Set<string>();
+    return signersList.filter((s) => {
+      const key = `${normalizeName(s.name)}_${s.status}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [signersList]);
+
+  const uniqueSignedSigners = useMemo(() => {
+    const seen = new Set<string>();
+    return signersList.filter((s) => {
+      if (s.status !== "signed") return false;
+      const key = normalizeName(s.name);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [signersList]);
 
   const renderSignerCard = (
     signer?: DocumentSigner,
@@ -734,8 +881,8 @@ function DocumentPreviewModal({
               </div>
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                  <h3 className="text-xs sm:text-sm font-bold text-white truncate max-w-[200px] sm:max-w-xs md:max-w-sm" title={doc.fileName}>
-                    {doc.fileName}
+                  <h3 className="text-xs sm:text-sm font-bold text-white truncate max-w-[200px] sm:max-w-xs md:max-w-sm" title={doc.fileObj?.name || doc.fileName}>
+                    {doc.fileObj?.name || doc.fileName}
                   </h3>
                   <span
                     className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${sc.bg} ${sc.color}`}
@@ -744,7 +891,7 @@ function DocumentPreviewModal({
                     {sc.label}
                   </span>
                   <span className="hidden sm:inline-flex text-[10px] px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-300 border border-violet-500/20 font-mono">
-                    {doc.requiredSigners.length} Signatories
+                    {requiredList.length} Signatories
                   </span>
                 </div>
                 <p className="text-[10px] text-slate-400 font-mono truncate">
@@ -790,7 +937,7 @@ function DocumentPreviewModal({
                 }`}
               >
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                <span>P12 Signatures ({doc.signers.filter((s) => s.status === "signed").length + allCounterSigners.length})</span>
+                <span>P12 Signatures ({uniqueSignedSigners.length + allCounterSigners.length})</span>
               </button>
             </div>
 
@@ -854,7 +1001,12 @@ function DocumentPreviewModal({
             {userHasSigned ? (
               <span className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-1.5">
                 <BadgeCheck className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Signed</span>
+                <span>Signed by You</span>
+              </span>
+            ) : isAllRequiredSigned ? (
+              <span className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Fully Signed</span>
               </span>
             ) : userIsRequired ? (
               onSign && (
@@ -932,7 +1084,7 @@ function DocumentPreviewModal({
                   <div className="sm:text-right">
                     <span className="text-xs text-slate-400 block">Total Signatures:</span>
                     <span className="text-lg font-black text-white font-mono">
-                      {doc.signers.filter((s) => s.status === "signed").length + allCounterSigners.length} / {doc.requiredSigners.length}
+                      {uniqueSignedSigners.length + allCounterSigners.length} / {requiredList.length}
                     </span>
                   </div>
                 </div>
@@ -941,11 +1093,11 @@ function DocumentPreviewModal({
                 <div className="space-y-3 pt-2">
                   <h5 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
                     <Users className="w-3.5 h-3.5 text-blue-400" />
-                    Scanned Required Signers Chain ({doc.requiredSigners.length} Signatories)
+                    Scanned Required Signers Chain ({requiredList.length} Signatories)
                   </h5>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {doc.signers.map((sObj, idx) => {
+                    {uniqueSigners.map((sObj, idx) => {
                       const isSigned = sObj.status === "signed";
 
                       return (
@@ -1045,6 +1197,11 @@ function DocumentPreviewModal({
                 )}
               </div>
             </div>
+          ) : isLoadingPdf ? (
+            <div className="w-full h-full min-h-[60vh] flex flex-col items-center justify-center gap-3 text-slate-400">
+              <Loader2 className="w-8 h-8 text-violet-400 animate-spin" />
+              <p className="text-sm font-semibold text-slate-300">Loading document preview…</p>
+            </div>
           ) : blobUrl ? (
             /* PDF Iframe Viewer */
             <div
@@ -1053,7 +1210,7 @@ function DocumentPreviewModal({
             >
               <iframe
                 src={`${blobUrl}#toolbar=1&navpanes=1`}
-                title={doc.fileName}
+                title={doc.fileObj?.name || doc.fileName}
                 className="w-full h-full min-h-[75vh] rounded-xl border border-[#1A2235] bg-white shadow-2xl"
               />
             </div>
@@ -1071,7 +1228,7 @@ function DocumentPreviewModal({
                   <span>Region V</span>
                 </div>
                 <h1 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight text-center uppercase py-3 font-sans break-words">
-                  {doc.fileName.replace(/\.[^/.]+$/, "").replace(/_/g, " ")}
+                  {(doc.fileObj?.name || doc.fileName).replace(/\.[^/.]+$/, "").replace(/_/g, " ")}
                 </h1>
                 <div className="flex flex-col sm:flex-row justify-between items-center text-xs text-slate-500 border-t border-slate-200 pt-2 font-mono gap-1">
                   <span>Tracking Ref: {doc.id}</span>
@@ -1104,7 +1261,7 @@ function DocumentPreviewModal({
                 )}
 
                 {/* Row 2: Middle Tier (Noted by / ARD / Regional Director / Recommending Approval) */}
-                {doc.signers.length <= 3 ? (
+                {signersList.length <= 3 ? (
                   /* 3-Signer Mode (Faithfully matching Image 2 with Noted By or Regional Director centered) */
                   (rdSigner || notedSigner || ardSigner || otherSigners[0]) &&
                     renderSignerCard(
@@ -1118,7 +1275,7 @@ function DocumentPreviewModal({
                         : "AUTHORIZED SIGNATORY:",
                       "center"
                     )
-                ) : doc.signers.length === 4 ? (
+                ) : signersList.length === 4 ? (
                   /* 4-Signer Mode: 2 Columns (Noted by / ARD on Left, Regional Director / Approved on Right) */
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 sm:gap-12">
                     {notedSigner && renderSignerCard(notedSigner, "NOTED BY:", "left")}
@@ -1575,9 +1732,61 @@ function mapDtrRecordToWorkspaceDoc(record: any): WorkspaceDocument {
   ];
   const counterSigners: DocumentSigner[] = remarksData.counterSigners || [];
 
+  // Retain authentic original file name:
+  // 1. remarksData.originalFileName (persisted during upload)
+  // 2. remarksData.fileName
+  // 3. record.pdfFileName
+  // 4. Fallback to record.id
+  let resolvedFileName =
+    remarksData.originalFileName ||
+    remarksData.fileName ||
+    record.pdfFileName ||
+    `${record.id}.pdf`;
+
+  // Safeguard: ONLY if a SIGNING_WORKSPACE document was previously tagged with an auto-generated
+  // DTR employee fallback name (e.g. DTR_ANNABEL_C__ODO_O_CALIMPONG.pdf), revert to clean document name
+  const autoGeneratedDtr = `DTR_${String(record.employeeName || "").replace(/[^a-zA-Z0-9]/g, "_")}.pdf`;
+  const autoGeneratedTarget = `DTR_${String(target || "").replace(/[^a-zA-Z0-9]/g, "_")}.pdf`;
+  const isCorruptedEmployeeDtr =
+    (record.module === "SIGNING_WORKSPACE" || String(record.module).toUpperCase() === "SIGNING_WORKSPACE") &&
+    !remarksData.originalFileName &&
+    (resolvedFileName === autoGeneratedDtr || resolvedFileName === autoGeneratedTarget || resolvedFileName.startsWith("DTR_ANNABEL_C"));
+
+  if (isCorruptedEmployeeDtr) {
+    resolvedFileName = `Document_${String(record.id).replace(/^doc-upload-/, "").slice(0, 15)}.pdf`;
+  }
+
+  // Purge any spurious or cross-contaminated signers (e.g. DE LEON or ACE MALTO on RAOD / Annabel docs)
+  const isRaodDoc = resolvedFileName.toUpperCase().includes("RAOD");
+  const isAnnabelDoc = resolvedFileName.toUpperCase().includes("ANNABEL") || String(target).toUpperCase().includes("ANNABEL");
+
+  let sanitizedRequired: string[] = Array.isArray(remarksData.requiredSigners)
+    ? [...remarksData.requiredSigners]
+    : record.signerName ? [record.signerName] : (target && target !== "PERSONNEL" ? [target] : []);
+
+  let sanitizedSigners: DocumentSigner[] = Array.isArray(remarksData.signers)
+    ? [...remarksData.signers]
+    : sanitizedRequired.map((r) => ({
+        name: r,
+        role: "Signatory",
+        status: record.status === "signed" ? "signed" : "pending",
+        position: "above",
+      }));
+
+  if (isRaodDoc || isAnnabelDoc) {
+    sanitizedRequired = sanitizedRequired.filter((r) => {
+      const u = r.toUpperCase();
+      return !u.includes("DE LEON") && !u.includes("KEN MATTHEW") && !u.includes("ACE MALTO");
+    });
+    sanitizedSigners = sanitizedSigners.filter((s) => {
+      const u = String(s?.name || "").toUpperCase();
+      return !u.includes("DE LEON") && !u.includes("KEN MATTHEW") && !u.includes("ACE MALTO");
+    });
+  }
+
   const initialDoc: WorkspaceDocument = {
     id: record.id,
-    fileName: record.pdfFileName || `${record.id}.pdf`,
+    fileName: resolvedFileName,
     fileSize: record.pdfFileSize || "1.2 MB",
     uploadedAt: record.submittedDate || new Date().toISOString(),
     uploadedBy: record.employeeName || "User",
@@ -1587,20 +1796,23 @@ function mapDtrRecordToWorkspaceDoc(record: any): WorkspaceDocument {
       ? "partially_signed"
       : "pending") as SigningStatus,
     targetPersonnel: target,
-    requiredSigners: required,
-    signers,
+    requiredSigners: sanitizedRequired,
+    signers: sanitizedSigners,
     counterSigners,
-    fileType: record.pdfFileName?.endsWith(".docx") ? "docx" : "pdf",
+    fileType: resolvedFileName.endsWith(".docx") ? "docx" : "pdf",
     notes: remarksData.notes || record.remarks,
     pdfDataUrl: record.pdfDataUrl,
     scannedInfo: remarksData.scannedInfo || undefined,
     province: record.province || remarksData.province || "",
   };
 
+  initialDoc.status = computeEffectiveDocStatus(initialDoc);
+
   // Dynamically re-evaluate against latest User List to recognize any newly registered users
   try {
     const freshUsers = getStoredUsers().map((u) => ({ name: u.name, role: u.role, email: u.email }));
     const { updatedDoc } = recheckDocWithLatestUsers(initialDoc, freshUsers);
+    updatedDoc.status = computeEffectiveDocStatus(updatedDoc);
     return updatedDoc as WorkspaceDocument;
   } catch {
     return initialDoc;
@@ -1706,8 +1918,8 @@ function SingleCounterSignModal({
             </div>
             <div>
               <h2 className="text-sm font-bold text-white">Counter-Sign Document</h2>
-              <p className="text-[10px] sm:text-[11px] text-slate-400 truncate max-w-[220px]">
-                {doc.fileName}
+              <p className="text-[10px] sm:text-[11px] text-slate-400 truncate max-w-[220px]" title={doc.fileObj?.name || doc.fileName}>
+                {doc.fileObj?.name || doc.fileName}
               </p>
             </div>
           </div>
@@ -2585,11 +2797,16 @@ export function SigningWorkspace() {
   const [pageSize, setPageSize] = useState<number>(50);
   const [currentPage, setCurrentPage] = useState<number>(1);
 
-  // Bulk signing is strictly applicable ONLY if the user is:
+  // Bulk signing is strictly applicable if the user is:
   // 1. SuperAdmin (universal authority across all workspace documents)
   // 2. Provincial Officer - PO
+  // 3. Regional Director (RD) or Assistant Regional Director (ARD)
   const isBulkSigningAuthorized = useMemo(() => {
-    return isUserSuperAdmin(currentUser) || isUserProvincialOfficer(currentUser);
+    return (
+      isUserSuperAdmin(currentUser) ||
+      isUserProvincialOfficer(currentUser) ||
+      isUserRegionalDirectorOrAssistant(currentUser)
+    );
   }, [currentUser]);
 
 
@@ -2632,9 +2849,17 @@ export function SigningWorkspace() {
           remoteDocs.forEach((rDoc) => {
             const localDoc = prev.find((p) => p.id === rDoc.id);
             if (localDoc) {
+              const isLocalCorrupted = localDoc.fileName && (localDoc.fileName.startsWith("DTR_ANNABEL_C") || localDoc.fileName === "DTR_ANNABEL_C__ODO_O_CALIMPONG.pdf");
+              const preservedFileName =
+                localDoc.fileObj?.name ||
+                (!isLocalCorrupted ? localDoc.fileName : null) ||
+                rDoc.fileName ||
+                localDoc.fileName;
+
               nextMap.set(rDoc.id, {
                 ...localDoc,
                 ...rDoc,
+                fileName: preservedFileName,
                 // Prefer remote pdfDataUrl (e.g. if newly signed on another device)
                 pdfDataUrl: rDoc.pdfDataUrl || localDoc.pdfDataUrl,
                 fileObj: localDoc.fileObj,
@@ -2779,9 +3004,17 @@ export function SigningWorkspace() {
               if (existingIdx >= 0) {
                 const existing = prev[existingIdx];
                 const statusChanged = mapped.status !== existing.status;
+                const isExistingCorrupted = existing.fileName && (existing.fileName.startsWith("DTR_ANNABEL_C") || existing.fileName === "DTR_ANNABEL_C__ODO_O_CALIMPONG.pdf");
+                const preservedFileName =
+                  existing.fileObj?.name ||
+                  (!isExistingCorrupted ? existing.fileName : null) ||
+                  mapped.fileName ||
+                  existing.fileName;
+
                 const updated = {
                   ...existing,
                   ...mapped,
+                  fileName: preservedFileName,
                   // If status changed, clear stale local PDF so fresh signed version will be loaded on demand
                   pdfDataUrl: mapped.pdfDataUrl || (statusChanged ? undefined : existing.pdfDataUrl),
                   fileObj: statusChanged ? undefined : existing.fileObj,
@@ -2890,7 +3123,7 @@ export function SigningWorkspace() {
       }
     }
 
-    const targetFilename = doc.fileName || doc.fileObj?.name || `document_${doc.id}.pdf`;
+    const targetFilename = doc.fileObj?.name || doc.fileName || `document_${doc.id}.pdf`;
 
     // 1. Download cryptographically signed PDF if available
     if (pdfUrl) {
@@ -2979,7 +3212,7 @@ export function SigningWorkspace() {
           bytes[i] = binary.charCodeAt(i);
         }
         return {
-          fileName: doc.fileName || doc.fileObj?.name || `document_${doc.id}.pdf`,
+          fileName: doc.fileObj?.name || doc.fileName || `document_${doc.id}.pdf`,
           blob: new Blob([bytes], { type: "application/pdf" }),
         };
       } catch (e) {
@@ -2989,12 +3222,12 @@ export function SigningWorkspace() {
 
     if (doc.fileObj) {
       return {
-        fileName: doc.fileName || doc.fileObj.name,
+        fileName: doc.fileObj.name || doc.fileName,
         blob: doc.fileObj,
       };
     }
 
-    const targetFilename = doc.fileName || doc.fileObj?.name || `${doc.id}`;
+    const targetFilename = doc.fileObj?.name || doc.fileName || `${doc.id}`;
     const sampleContent = `Republic of the Philippines\nDEPARTMENT OF INFORMATION AND COMMUNICATIONS TECHNOLOGY\nRegion V - Bicol Region\n\nOFFICIAL DOCUMENT: ${targetFilename}\nTracking ID: ${doc.id}\nPrimary Subject: ${doc.targetPersonnel}\nUploaded By: ${doc.uploadedBy}\nUploaded At: ${doc.uploadedAt}\nSigning Status: ${doc.status.toUpperCase()}\n\nScanned Required Signers (${doc.requiredSigners.length}):\n${doc.requiredSigners.map((s, i) => `  ${i + 1}. ${s}`).join("\n")}\n\nCompleted Signatures:\n${doc.signers.filter((s) => s.status === "signed").map((s) => `  ✓ ${s.name} (${s.role || "Signer"}) - Placed Above Name`).join("\n")}\n${(doc.counterSigners || []).map((c) => `  ✓ ${c.name} - Counter-Signed Beside Name (${c.position || "beside"})`).join("\n")}\n\nThis electronic document has been verified under the DICT Signing Workspace.`;
     return {
       fileName: targetFilename.replace(/\.pdf$/i, ".txt"),
@@ -3226,9 +3459,27 @@ export function SigningWorkspace() {
       const matchedRequiredSigner = doc.requiredSigners.find((req) =>
         matchNames(req, effectiveSignerName) || matchNames(req, currentUserName)
       );
-      const targetPersonnelName = isCounter
+      let targetPersonnelName = isCounter
         ? (options?.counterSignTargetPersonnel || doc.targetPersonnel || currentUserName).trim()
         : (matchedRequiredSigner || doc.targetPersonnel || currentUserName).trim();
+
+      // If user is Regional Director / ARD, or signing on behalf of RD/ARD, target the RD/ARD signatory line
+      if (!isCounter && (!matchedRequiredSigner || !matchNames(matchedRequiredSigner, effectiveSignerName))) {
+        if (isUserRegionalDirectorOrAssistant(liveUser || currentUser)) {
+          const rdSigner = doc.signers.find(
+            (s) =>
+              s.status !== "signed" &&
+              ((s.role || "").toUpperCase().includes("REGIONAL DIRECTOR") ||
+                (s.role || "").toUpperCase().includes("DIRECTOR") ||
+                (s.role || "").toUpperCase().includes("ARD") ||
+                (s.role || "").toUpperCase().includes("NOTED BY") ||
+                (s.role || "").toUpperCase().includes("APPROVED BY"))
+          );
+          if (rdSigner && rdSigner.name) {
+            targetPersonnelName = rdSigner.name.trim();
+          }
+        }
+      }
 
       let signedPdfDataUrl = doc.pdfDataUrl;
       let signedFileObj: File | null = null;
@@ -3277,7 +3528,7 @@ export function SigningWorkspace() {
 
           signatureCoords = signatureCoordinates;
           signedPdfDataUrl = `data:application/pdf;base64,${arrayBufferToBase64(bytes)}`;
-          signedFileObj = new File([bytes], doc.fileName, { type: "application/pdf" });
+          signedFileObj = new File([bytes], doc.fileObj?.name || doc.fileName, { type: "application/pdf" });
         }
       }
 
@@ -3339,8 +3590,11 @@ export function SigningWorkspace() {
         ? `Counter-signed placed ${signatureCoords?.appliedPosition || counterPos} personnel "${targetPersonnelName}"`
         : `Signed directly ABOVE personnel "${targetPersonnelName}"`;
 
+      const originalFileName = doc.fileObj?.name || doc.fileName;
+
       const updatedDoc: WorkspaceDocument & { storagePayload?: any } = {
         ...doc,
+        fileName: originalFileName,
         fileObj: signedFileObj || doc.fileObj,
         status: newStatus,
         signers: updatedSigners,
@@ -3367,13 +3621,14 @@ export function SigningWorkspace() {
         scope: "full-month",
         status: newStatus,
         submittedDate: updatedDoc.uploadedAt,
-        pdfFileName: updatedDoc.fileName,
+        pdfFileName: originalFileName,
         pdfFileSize: updatedDoc.fileSize,
         pdfDataUrl: signedPdfDataUrl,
         docType: "AR",
         hasP12: Boolean(p12Options),
         signerName: effectiveSignerName,
         remarks: JSON.stringify({
+          originalFileName: originalFileName,
           targetPersonnel: updatedDoc.targetPersonnel,
           requiredSigners: updatedDoc.requiredSigners,
           signers: updatedDoc.signers,
@@ -3441,7 +3696,9 @@ export function SigningWorkspace() {
 
   const persistDocSignatoryUpdate = async (doc: WorkspaceDocument) => {
     try {
+      const originalFileName = doc.fileObj?.name || doc.fileName;
       const remarksPayload = {
+        originalFileName: originalFileName,
         targetPersonnel: doc.targetPersonnel,
         requiredSigners: doc.requiredSigners,
         signers: doc.signers,
@@ -3453,12 +3710,22 @@ export function SigningWorkspace() {
         id: doc.id,
         employeeName: doc.targetPersonnel,
         module: "SIGNING_WORKSPACE",
+        pdfFileName: originalFileName,
+        pdfFileSize: doc.fileSize,
+        status: doc.status,
+        submittedDate: doc.uploadedAt,
         remarks: JSON.stringify(remarksPayload),
       } as any);
 
       broadcastLocalDtrEvent({
         type: "UPDATE",
-        record: { id: doc.id, remarks: JSON.stringify(remarksPayload) } as any,
+        record: {
+          id: doc.id,
+          module: "SIGNING_WORKSPACE",
+          pdfFileName: originalFileName,
+          status: doc.status,
+          remarks: JSON.stringify(remarksPayload),
+        } as any,
         id: doc.id,
       });
     } catch (e) {
@@ -3547,21 +3814,29 @@ export function SigningWorkspace() {
   const selectedDocs = documents.filter((d) => d.selected);
 
   const userRequiredDocs = documents.filter(
-    (d) => isUserAuthorizedToSignDoc(d, currentUser) && !hasUserAlreadySigned(d, currentUser?.name)
+    (d) =>
+      computeEffectiveDocStatus(d) !== "signed" &&
+      isUserAuthorizedToSignDoc(d, currentUser) &&
+      !hasUserAlreadySigned(d, currentUser?.name)
   );
 
   const userCounterDocs = documents.filter(
     (d) =>
+      computeEffectiveDocStatus(d) !== "signed" &&
       (isCurrentUserSuperAdmin || !isUserAuthorizedToSignDoc(d, currentUser)) &&
       !hasUserAlreadySigned(d, currentUser?.name)
   );
 
   const selectedUserRequiredDocs = selectedDocs.filter(
-    (d) => isUserAuthorizedToSignDoc(d, currentUser) && !hasUserAlreadySigned(d, currentUser?.name)
+    (d) =>
+      computeEffectiveDocStatus(d) !== "signed" &&
+      isUserAuthorizedToSignDoc(d, currentUser) &&
+      !hasUserAlreadySigned(d, currentUser?.name)
   );
 
   const selectedUserCounterDocs = selectedDocs.filter(
     (d) =>
+      computeEffectiveDocStatus(d) !== "signed" &&
       (isCurrentUserSuperAdmin || !isUserAuthorizedToSignDoc(d, currentUser)) &&
       !hasUserAlreadySigned(d, currentUser?.name)
   );
@@ -3726,13 +4001,13 @@ export function SigningWorkspace() {
               position: "above",
             }));
 
-      return {
+      const docItem: WorkspaceDocument = {
         id: `doc-upload-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`,
         fileName: entry.file.name,
         fileSize: formatFileSize(entry.file.size),
         uploadedAt: now,
         uploadedBy: activeUser?.name || "Unknown User",
-        status: "pending" as SigningStatus,
+        status: "pending",
         targetPersonnel: primary,
         requiredSigners: required,
         signers: docSigners,
@@ -3749,6 +4024,9 @@ export function SigningWorkspace() {
         isPendingSync: true,
         province: userProv,
       };
+
+      docItem.status = computeEffectiveDocStatus(docItem);
+      return docItem;
     });
 
     // 2. Immediate non-blocking UI update: All 100-200 files display instantly
@@ -3800,6 +4078,9 @@ export function SigningWorkspace() {
             console.warn(`Failed reading file data for ${item.doc.fileName}:`, err);
           }
 
+          const originalFileName = item.file?.name || item.doc.fileName;
+          item.doc.fileName = originalFileName;
+
           const uploadPayload = {
             id: item.doc.id,
             userId: activeUserId,
@@ -3814,11 +4095,12 @@ export function SigningWorkspace() {
             scope: "full-month",
             status: item.doc.status,
             submittedDate: item.doc.uploadedAt,
-            pdfFileName: item.doc.fileName,
+            pdfFileName: originalFileName,
             pdfFileSize: item.doc.fileSize,
             pdfDataUrl: dataUrl,
             docType: "AR",
             remarks: JSON.stringify({
+              originalFileName: originalFileName,
               targetPersonnel: item.doc.targetPersonnel,
               requiredSigners: item.doc.requiredSigners,
               signers: item.doc.signers,
@@ -3969,6 +4251,9 @@ export function SigningWorkspace() {
             } catch {}
           }
 
+          const originalFileName = item.file?.name || item.doc.fileName;
+          item.doc.fileName = originalFileName;
+
           const uploadPayload = {
             id: item.doc.id,
             userId: activeUserId,
@@ -3983,11 +4268,12 @@ export function SigningWorkspace() {
             scope: "full-month",
             status: item.doc.status,
             submittedDate: item.doc.uploadedAt,
-            pdfFileName: item.doc.fileName,
+            pdfFileName: originalFileName,
             pdfFileSize: item.doc.fileSize,
             pdfDataUrl: dataUrl,
             docType: "AR",
             remarks: JSON.stringify({
+              originalFileName: originalFileName,
               targetPersonnel: item.doc.targetPersonnel,
               requiredSigners: item.doc.requiredSigners,
               signers: item.doc.signers,
@@ -4180,7 +4466,7 @@ export function SigningWorkspace() {
 
         if (signed.status === "failed") {
           failedCount++;
-          console.warn(`Error bulk signing ${doc.fileName}: ${signed.notes}`);
+          console.warn(`Error bulk signing ${doc.fileObj?.name || doc.fileName}: ${signed.notes}`);
         } else {
           signedDocMap.set(signed.id, signed);
           if ((signed as any).storagePayload) {
@@ -4190,7 +4476,7 @@ export function SigningWorkspace() {
           completedCount++;
         }
       } catch (err: any) {
-        console.error(`Error bulk signing ${doc.fileName}:`, err);
+        console.error(`Error bulk signing ${doc.fileObj?.name || doc.fileName}:`, err);
         failedCount++;
       } finally {
         const currentProgress = {
@@ -4271,7 +4557,7 @@ export function SigningWorkspace() {
 
   const handleBulkSign = async () => {
     if (!isBulkSigningAuthorized) {
-      showNotif("⚠️ Bulk signing is restricted: Exclusively authorized for SuperAdmin and Provincial Officers (PO).");
+      showNotif("⚠️ Bulk signing is restricted: Exclusively authorized for SuperAdmin, Regional Director / ARD, and Provincial Officers (PO).");
       return;
     }
 
@@ -4294,7 +4580,7 @@ export function SigningWorkspace() {
 
   const handleBulkCounterSign = () => {
     if (!isBulkSigningAuthorized) {
-      showNotif("⚠️ Bulk counter-signing is restricted: Exclusively authorized for SuperAdmin and Provincial Officers (PO).");
+      showNotif("⚠️ Bulk counter-signing is restricted: Exclusively authorized for SuperAdmin, Regional Director / ARD, and Provincial Officers (PO).");
       return;
     }
 
@@ -4372,11 +4658,12 @@ export function SigningWorkspace() {
     return documents.filter((d) => {
       const matchSearch =
         !searchQuery ||
-        d.fileName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (d.fileObj?.name || d.fileName).toLowerCase().includes(searchQuery.toLowerCase()) ||
         d.targetPersonnel.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (d.uploadedBy || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
         d.requiredSigners.some((s) => s.toLowerCase().includes(searchQuery.toLowerCase()));
-      const matchStatus = statusFilter === "all" || d.status === statusFilter;
+      const effectiveStatus = computeEffectiveDocStatus(d);
+      const matchStatus = statusFilter === "all" || effectiveStatus === statusFilter;
       return matchSearch && matchStatus;
     });
   }, [documents, searchQuery, statusFilter]);
@@ -4395,13 +4682,20 @@ export function SigningWorkspace() {
 
   // ─── Stats ───────────────────────────────────────────────────────────────────
 
-  const stats = {
-    total: documents.length,
-    pending: documents.filter((d) => d.status === "pending").length,
-    partially_signed: documents.filter((d) => d.status === "partially_signed").length,
-    signed: documents.filter((d) => d.status === "signed").length,
-    failed: documents.filter((d) => d.status === "failed").length,
-  };
+  const stats = useMemo(() => {
+    let pending = 0;
+    let partially_signed = 0;
+    let signed = 0;
+    let failed = 0;
+    documents.forEach((d) => {
+      const st = computeEffectiveDocStatus(d);
+      if (st === "signed") signed++;
+      else if (st === "partially_signed") partially_signed++;
+      else if (st === "failed") failed++;
+      else pending++;
+    });
+    return { total: documents.length, pending, partially_signed, signed, failed };
+  }, [documents]);
 
   return (
     <div className="space-y-4 sm:space-y-5 max-w-[1920px] mx-auto text-slate-200 w-full min-w-0">
@@ -4439,7 +4733,7 @@ export function SigningWorkspace() {
               </div>
             )}
 
-            {/* Bulk Actions (Exclusively for SuperAdmin and Provincial Officers - PO) */}
+            {/* Bulk Actions (Exclusively for SuperAdmin, Regional Director, ARD, and Provincial Officers - PO) */}
             {isBulkSigningAuthorized && (
               <>
                 {/* Bulk Sign Button */}
@@ -4991,7 +5285,8 @@ export function SigningWorkspace() {
                 }`}
               >
                 {paginatedDocs.map((doc) => {
-                  const sc = statusConfig[doc.status];
+                  const effectiveStatus = computeEffectiveDocStatus(doc);
+                  const sc = statusConfig[effectiveStatus];
                   const userIsReq = isUserAuthorizedToSignDoc(doc, currentUser);
                   const userSigned = hasUserAlreadySigned(doc, currentUser?.name);
                   const completedSignersCount = (doc.requiredSigners || []).filter((reqName) => {
@@ -5000,6 +5295,9 @@ export function SigningWorkspace() {
                     );
                     return sObj?.status === "signed";
                   }).length;
+                  const isAllRequiredSigned =
+                    effectiveStatus === "signed" ||
+                    (doc.requiredSigners.length > 0 && completedSignersCount >= doc.requiredSigners.length);
 
                   return (
                     <div
@@ -5021,8 +5319,8 @@ export function SigningWorkspace() {
                             <FileKey className="w-4 h-4 text-violet-400" />
                           </div>
                           <div className="min-w-0 flex-1">
-                            <p className="font-bold text-white text-xs truncate" title={doc.fileName}>
-                              {doc.fileName}
+                            <p className="font-bold text-white text-xs truncate" title={doc.fileObj?.name || doc.fileName}>
+                              {doc.fileObj?.name || doc.fileName}
                             </p>
                             <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-slate-400 mt-0.5">
                               <span>Personnel: <strong className="text-slate-200">{doc.targetPersonnel || doc.requiredSigners?.[0] || currentUser?.name || "Personnel"}</strong></span>
@@ -5121,6 +5419,11 @@ export function SigningWorkspace() {
                               <BadgeCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                               <span>Signed by You</span>
                             </span>
+                          ) : isAllRequiredSigned ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 text-xs font-bold">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                              <span>Fully Signed</span>
+                            </span>
                           ) : userIsReq ? (
                             <button
                               type="button"
@@ -5218,7 +5521,8 @@ export function SigningWorkspace() {
                   </thead>
                   <tbody className="divide-y divide-[#111728]">
                     {paginatedDocs.map((doc) => {
-                    const sc = statusConfig[doc.status];
+                    const effectiveStatus = computeEffectiveDocStatus(doc);
+                    const sc = statusConfig[effectiveStatus];
                     const userIsReq = isUserAuthorizedToSignDoc(doc, currentUser);
                     const userSigned = hasUserAlreadySigned(doc, currentUser?.name);
 
@@ -5228,6 +5532,10 @@ export function SigningWorkspace() {
                       );
                       return sObj?.status === "signed";
                     }).length;
+
+                    const isAllRequiredSigned =
+                      effectiveStatus === "signed" ||
+                      (doc.requiredSigners.length > 0 && completedSignersCount >= doc.requiredSigners.length);
 
                     return (
                       <tr
@@ -5253,8 +5561,8 @@ export function SigningWorkspace() {
                               <FileKey className="w-3.5 h-3.5 text-violet-400" />
                             </div>
                             <div className="min-w-0">
-                              <p className="font-semibold text-white truncate max-w-xs">
-                                {doc.fileName}
+                              <p className="font-semibold text-white truncate max-w-xs" title={doc.fileObj?.name || doc.fileName}>
+                                {doc.fileObj?.name || doc.fileName}
                               </p>
                               <p className="text-[10px] text-slate-400 truncate max-w-xs mt-0.5">
                                 Personnel:{" "}
@@ -5363,6 +5671,11 @@ export function SigningWorkspace() {
                             <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 text-[11px] font-bold">
                               <BadgeCheck className="w-3.5 h-3.5 text-emerald-400" />
                               Signed by You
+                            </span>
+                          ) : isAllRequiredSigned ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 text-[11px] font-bold">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                              Fully Signed
                             </span>
                           ) : userIsReq ? (
                             <button

@@ -641,6 +641,33 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
       });
     }
 
+    // Inspect certificate identity to strictly prevent signing under another person's credentials
+    let extractedIdentity: any = null;
+    try {
+      extractedIdentity = getSignerIdentityFromP12(p12ToUse, passwordToUse);
+    } catch (err: any) {
+      return res.status(400).json({
+        success: false,
+        error: err.message || "Failed to unlock .p12 keystore. Check password.",
+      });
+    }
+
+    const certCommonName = (extractedIdentity?.commonName || "").trim();
+    if (signerName && certCommonName) {
+      const requestedSigner = String(signerName).trim();
+      const isIdentityMatch =
+        matchNames(certCommonName, requestedSigner) ||
+        matchNames(requestedSigner, certCommonName) ||
+        certCommonName.toLowerCase() === requestedSigner.toLowerCase();
+
+      if (!isIdentityMatch) {
+        return res.status(400).json({
+          success: false,
+          error: `Cryptographic identity mismatch: The active PNPKI .p12 certificate belongs to "${certCommonName}", but the document is being signed as "${requestedSigner}". Digital signatures cannot be applied using another employee's certificate.`,
+        });
+      }
+    }
+
     const pdfBuffer = Buffer.from(pdfBase64, "base64");
     // Sign PDF - Identity is derived STRICTLY from the P12 certificate
     const { signedBuffer, signerName: signedBy, certificateInfo, signerIdentity } = await signPdfBuffer(

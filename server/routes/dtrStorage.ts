@@ -106,7 +106,18 @@ function formatDtrStorageRow(row: any) {
     lateMinutes: Number(row.late_minutes) || 0,
     status: row.status || "Submitted",
     submittedDate: row.submitted_date || "",
-    pdfFileName: row.pdf_filename || "",
+    pdfFileName: (() => {
+      let resolved = row.pdf_filename || "";
+      if (!resolved && row.remarks && typeof row.remarks === "string" && (row.remarks.startsWith("{") || row.remarks.startsWith("["))) {
+        try {
+          const rObj = JSON.parse(row.remarks);
+          if (rObj && (rObj.originalFileName || rObj.fileName)) {
+            resolved = String(rObj.originalFileName || rObj.fileName).trim();
+          }
+        } catch {}
+      }
+      return resolved;
+    })(),
     pdfFileSize: row.pdf_filesize || "",
     pdfDataUrl: row.pdf_data || undefined,
     hasP12: Boolean(row.has_p12 || row.employee_has_p12),
@@ -280,6 +291,26 @@ dtrStorageRouter.post("/batch", async (req: Request, res: Response) => {
     const savedRecords: { id: string; fileName?: string }[] = [];
     const errors: { id: string; error: string }[] = [];
 
+    // Pre-fetch any existing records for these IDs so we preserve their authentic existing pdf_filename on partial updates
+    const recordIds = records.map((b: any) => b?.id).filter(Boolean);
+    const existingFileNamesMap = new Map<string, string>();
+    if (recordIds.length > 0) {
+      try {
+        const placeholders = recordIds.map(() => "?").join(",");
+        const existingRows = await db.execute({
+          sql: `SELECT id, pdf_filename FROM dtr_storage WHERE id IN (${placeholders})`,
+          args: recordIds,
+        });
+        for (const row of existingRows.rows) {
+          if (row.id && row.pdf_filename) {
+            existingFileNamesMap.set(String(row.id), String(row.pdf_filename));
+          }
+        }
+      } catch (e) {
+        console.warn("Failed pre-fetching existing pdf_filenames for batch:", e);
+      }
+    }
+
     // Build SQL statements for all records in this micro-batch
     const preparedItems = records.map((body: any) => {
       const employeeName = (body.employeeName || body.employee_name || "PERSONNEL").trim().toUpperCase();
@@ -287,6 +318,33 @@ dtrStorageRouter.post("/batch", async (req: Request, res: Response) => {
       const recordId = body.id || `DTR-${body.module || "PROV"}-${Date.now().toString().slice(-6)}-${Math.random().toString(36).substring(2, 6)}`;
       const submittedDate = body.submittedDate || body.submitted_date || new Date().toISOString();
       const rowsJson = body.rows ? JSON.stringify(body.rows) : (body.rows_json || "[]");
+
+      const isSigningWorkspace = String(body.module || "").toUpperCase() === "SIGNING_WORKSPACE";
+
+      // 1. Explicitly provided filename on body
+      const explicitFileName = body.pdfFileName || body.pdf_filename || null;
+
+      // 2. Filename embedded in remarks JSON (e.g. originalFileName)
+      let remarksFileName: string | null = null;
+      if (body.remarks && typeof body.remarks === "string" && (body.remarks.startsWith("{") || body.remarks.startsWith("["))) {
+        try {
+          const rObj = JSON.parse(body.remarks);
+          if (rObj && (rObj.originalFileName || rObj.fileName)) {
+            remarksFileName = String(rObj.originalFileName || rObj.fileName).trim();
+          }
+        } catch {}
+      }
+
+      // 3. Existing filename from database for this record
+      const existingDbFileName = existingFileNamesMap.get(recordId) || null;
+
+      // Resolved batch filename: explicit -> remarks -> existing DB -> only then fallback for brand new insert
+      let resolvedBatchFileName = explicitFileName || remarksFileName || existingDbFileName;
+      if (!resolvedBatchFileName) {
+        resolvedBatchFileName = isSigningWorkspace
+          ? `${recordId}.pdf`
+          : `DTR_${employeeName.replace(/[^a-zA-Z0-9]/g, "_")}.pdf`;
+      }
 
       const stmt = {
         sql: `INSERT INTO dtr_storage (
@@ -334,7 +392,10 @@ dtrStorageRouter.post("/batch", async (req: Request, res: Response) => {
                 late_minutes = excluded.late_minutes,
                 status = excluded.status,
                 submitted_date = excluded.submitted_date,
-                pdf_filename = excluded.pdf_filename,
+                pdf_filename = CASE 
+                  WHEN excluded.pdf_filename IS NOT NULL AND excluded.pdf_filename != '' THEN excluded.pdf_filename
+                  ELSE dtr_storage.pdf_filename
+                END,
                 pdf_filesize = excluded.pdf_filesize,
                 pdf_data = COALESCE(excluded.pdf_data, dtr_storage.pdf_data),
                 has_p12 = excluded.has_p12,
@@ -374,7 +435,7 @@ dtrStorageRouter.post("/batch", async (req: Request, res: Response) => {
           Number(body.lateMinutes || body.late_minutes) || 0,
           body.status || "Submitted",
           submittedDate,
-          body.pdfFileName || body.pdf_filename || `DTR_${employeeName.replace(/[^a-zA-Z0-9]/g, "_")}.pdf`,
+          resolvedBatchFileName,
           body.pdfFileSize || body.pdf_filesize || "325 KB",
           body.pdfDataUrl || body.pdf_data || null,
           body.hasP12 ? 1 : 0,
@@ -386,19 +447,19 @@ dtrStorageRouter.post("/batch", async (req: Request, res: Response) => {
           body.supervisorSignatureImage || body.supervisor_signature_image || null,
           body.supervisorHasP12 ? 1 : 0,
           rowsJson,
-          body.docType || body.doc_type || (body.pdfFileName?.toUpperCase().startsWith("AR_") ? "AR" : "DTR"),
+          body.docType || body.doc_type || (resolvedBatchFileName.toUpperCase().startsWith("AR_") ? "AR" : String(body.module || "").toUpperCase() === "SIGNING_WORKSPACE" ? "AR" : "DTR"),
           body.remarks || `Generated for ${body.province || "Regional Office"}`,
         ],
       };
 
-      return { recordId, body, stmt };
+      return { recordId, body, stmt, resolvedBatchFileName };
     });
 
     // Strategy: First attempt fast atomic transaction via db.batch() in a single network roundtrip
     try {
       await db.batch(preparedItems.map((item) => item.stmt), "write");
       for (const item of preparedItems) {
-        savedRecords.push({ id: item.recordId, fileName: item.body.pdfFileName });
+        savedRecords.push({ id: item.recordId, fileName: item.resolvedBatchFileName });
       }
     } catch (batchErr: any) {
       console.warn("db.batch atomic execution failed, falling back to individual inserts:", batchErr?.message);
@@ -407,7 +468,7 @@ dtrStorageRouter.post("/batch", async (req: Request, res: Response) => {
         preparedItems.map(async (item) => {
           try {
             await db.execute(item.stmt);
-            savedRecords.push({ id: item.recordId, fileName: item.body.pdfFileName });
+            savedRecords.push({ id: item.recordId, fileName: item.resolvedBatchFileName });
           } catch (err: any) {
             errors.push({ id: item.recordId, error: err.message });
           }
@@ -472,6 +533,40 @@ dtrStorageRouter.post("/", async (req: Request, res: Response) => {
     const submittedDate = body.submittedDate || body.submitted_date || nowStr;
     const rowsJson = body.rows ? JSON.stringify(body.rows) : (body.rows_json || "[]");
 
+    const isSigningWorkspace = String(body.module || "").toUpperCase() === "SIGNING_WORKSPACE";
+
+    // 1. Explicitly provided filename on body
+    const explicitFileName = body.pdfFileName || body.pdf_filename || null;
+
+    // 2. Filename embedded in remarks JSON (e.g. originalFileName)
+    let remarksFileName: string | null = null;
+    if (body.remarks && typeof body.remarks === "string" && (body.remarks.startsWith("{") || body.remarks.startsWith("["))) {
+      try {
+        const rObj = JSON.parse(body.remarks);
+        if (rObj && (rObj.originalFileName || rObj.fileName)) {
+          remarksFileName = String(rObj.originalFileName || rObj.fileName).trim();
+        }
+      } catch {}
+    }
+
+    let finalFileName = explicitFileName || remarksFileName || null;
+    if (!finalFileName) {
+      try {
+        const existingRow = await db.execute({
+          sql: "SELECT pdf_filename FROM dtr_storage WHERE id = ?",
+          args: [recordId],
+        });
+        if (existingRow.rows.length > 0 && existingRow.rows[0].pdf_filename) {
+          finalFileName = String(existingRow.rows[0].pdf_filename);
+        }
+      } catch {}
+    }
+    if (!finalFileName) {
+      finalFileName = isSigningWorkspace
+        ? `${recordId}.pdf`
+        : `DTR_${employeeName.replace(/[^a-zA-Z0-9]/g, "_")}.pdf`;
+    }
+
     await db.execute({
       sql: `INSERT INTO dtr_storage (
               id, user_id, employee_name, employee_id, position, employment_status,
@@ -518,7 +613,10 @@ dtrStorageRouter.post("/", async (req: Request, res: Response) => {
               late_minutes = excluded.late_minutes,
               status = excluded.status,
               submitted_date = excluded.submitted_date,
-              pdf_filename = excluded.pdf_filename,
+              pdf_filename = CASE 
+                WHEN excluded.pdf_filename IS NOT NULL AND excluded.pdf_filename != '' THEN excluded.pdf_filename
+                ELSE dtr_storage.pdf_filename
+              END,
               pdf_filesize = excluded.pdf_filesize,
               pdf_data = COALESCE(excluded.pdf_data, dtr_storage.pdf_data),
               has_p12 = excluded.has_p12,
@@ -558,7 +656,7 @@ dtrStorageRouter.post("/", async (req: Request, res: Response) => {
         Number(body.lateMinutes || body.late_minutes) || 0,
         body.status || "Submitted",
         submittedDate,
-        body.pdfFileName || body.pdf_filename || `DTR_${employeeName.replace(/[^a-zA-Z0-9]/g, "_")}.pdf`,
+        finalFileName,
         body.pdfFileSize || body.pdf_filesize || "325 KB",
         body.pdfDataUrl || body.pdf_data || null,
         body.hasP12 ? 1 : 0,
@@ -570,7 +668,7 @@ dtrStorageRouter.post("/", async (req: Request, res: Response) => {
         body.supervisorSignatureImage || body.supervisor_signature_image || null,
         body.supervisorHasP12 ? 1 : 0,
         rowsJson,
-        body.docType || body.doc_type || (body.pdfFileName?.toUpperCase().startsWith("AR_") ? "AR" : "DTR"),
+        body.docType || body.doc_type || (finalFileName?.toUpperCase().startsWith("AR_") ? "AR" : isSigningWorkspace ? "AR" : "DTR"),
         body.remarks || `Generated for ${body.province || "Regional Office"}`,
       ],
     });
@@ -606,13 +704,13 @@ dtrStorageRouter.post("/", async (req: Request, res: Response) => {
       lateMinutes: Number(body.lateMinutes || body.late_minutes) || 0,
       status: body.status || "Submitted",
       submittedDate,
-      pdfFileName: body.pdfFileName || body.pdf_filename || `DTR_${employeeName.replace(/[^a-zA-Z0-9]/g, "_")}.pdf`,
+      pdfFileName: finalFileName,
       pdfFileSize: body.pdfFileSize || body.pdf_filesize || "325 KB",
       pdfDataUrl: undefined,
       hasP12: Boolean(body.hasP12 || body.employeeHasP12),
       signatureImage: body.signatureImage || body.employeeSignatureImage || undefined,
       rows: body.rows || (body.rows_json ? JSON.parse(body.rows_json) : []),
-      docType: body.docType || body.doc_type || (body.pdfFileName?.toUpperCase().startsWith("AR_") ? "AR" : "DTR"),
+      docType: body.docType || body.doc_type || (finalFileName?.toUpperCase().startsWith("AR_") ? "AR" : isSigningWorkspace ? "AR" : "DTR"),
       remarks: body.remarks || `Generated for ${body.province || "Regional Office"}`,
       createdAt: nowStr,
       updatedAt: nowStr,

@@ -171,6 +171,7 @@ export function DtrUploadModal({
 
         const safeEmployeeName = (currentUser?.name || employeeName || "PERSONNEL").trim().toUpperCase();
         const generatedFileName =
+          pdfFile?.name ||
           pdfFileName ||
           `AR_${safeEmployeeName.replace(/[^a-zA-Z0-9]/g, "_")}_${MONTH_NAMES[currentMonth]}_${currentYear}.pdf`;
         const generatedFileSize = pdfFileSize || "320 KB";
@@ -264,6 +265,7 @@ export function DtrUploadModal({
       const currentUser = getCurrentUser();
       const safeEmployeeName = employeeName.trim().toUpperCase();
       const generatedFileName =
+        pdfFile?.name ||
         pdfFileName ||
         `DTR_${safeEmployeeName.replace(/[^a-zA-Z0-9]/g, "_")}_${MONTH_NAMES[month]}_${year}.pdf`;
       const generatedFileSize = pdfFileSize || "320 KB";

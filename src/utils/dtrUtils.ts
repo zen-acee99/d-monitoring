@@ -37,15 +37,47 @@ export interface DtrConfig {
   pdfFileName?: string;
 }
 
-export function formatPnpkiDate(d: Date = new Date()): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const y = d.getFullYear();
-  const m = pad(d.getMonth() + 1);
-  const day = pad(d.getDate());
-  const h = pad(d.getHours());
-  const min = pad(d.getMinutes());
-  const s = pad(d.getSeconds());
-  return `${y}.${m}.${day} ${h}:${min}:${s} +08'00'`;
+export function formatPnpkiDate(dateInput: Date | string = new Date()): string {
+  try {
+    if (!dateInput) return "";
+    if (dateInput instanceof Date) {
+      if (isNaN(dateInput.getTime())) return "";
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const y = dateInput.getFullYear();
+      const m = pad(dateInput.getMonth() + 1);
+      const day = pad(dateInput.getDate());
+      const h = pad(dateInput.getHours());
+      const min = pad(dateInput.getMinutes());
+      const s = pad(dateInput.getSeconds());
+      return `${y}.${m}.${day} ${h}:${min}:${s} +08'00'`;
+    }
+
+    const str = String(dateInput).trim();
+    if (!str) return "";
+
+    // Support Adobe Acrobat signature date format: D:YYYYMMDDHHmmSS+08'00'
+    const acrobatMatch = str.match(/^D:(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
+    if (acrobatMatch) {
+      const [, y, m, day, h, min, s] = acrobatMatch;
+      return `${y}.${m}.${day} ${h}:${min}:${s} +08'00'`;
+    }
+
+    const parsed = new Date(str);
+    if (!isNaN(parsed.getTime())) {
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const y = parsed.getFullYear();
+      const m = pad(parsed.getMonth() + 1);
+      const day = pad(parsed.getDate());
+      const h = pad(parsed.getHours());
+      const min = pad(parsed.getMinutes());
+      const s = pad(parsed.getSeconds());
+      return `${y}.${m}.${day} ${h}:${min}:${s} +08'00'`;
+    }
+
+    return str;
+  } catch {
+    return String(dateInput || "");
+  }
 }
 
 export const DTR_PROVINCE_OPTIONS = [

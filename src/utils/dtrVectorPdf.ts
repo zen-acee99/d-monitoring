@@ -563,8 +563,9 @@ export function generateDtrVectorPdf(
     ).trim();
 
     if (empSignatureImg || empHasCert) {
-      const boxW = 120;
-      const boxH = config.includeDateTime ? 25 : 22;
+      const empNameLen = (empSigner || "").length;
+      const boxW = Math.max(185, Math.min(220, Math.round(44 + empNameLen * 5.2)));
+      const boxH = config.includeDateTime ? 28 : 24;
       const boxX = formX + (formWidth - boxW) / 2;
       const boxY = empSigY - boxH - 4;
 
@@ -587,9 +588,12 @@ export function generateDtrVectorPdf(
       }
 
       setSansBold();
-      doc.setFontSize(6.8);
+      let empFontSize = 6.8;
+      if (empSigner.length > 24) empFontSize = 5.8;
+      if (empSigner.length > 28) empFontSize = 5.2;
+      doc.setFontSize(empFontSize);
       doc.setTextColor(0, 0, 0);
-      const textX = empSignatureImg ? boxX + 48 : boxX + boxW / 2;
+      const textX = empSignatureImg ? boxX + 42 : boxX + boxW / 2;
       const textAlign = empSignatureImg ? "left" : "center";
 
       if (config.includeDateTime) {
@@ -650,8 +654,9 @@ export function generateDtrVectorPdf(
 
     if (isSupervisorSigned && (supSignatureImg || config.supervisorHasP12 || (isSupervisorOnly && (hasP12 || Boolean(p12SignerName))))) {
       // Official Digital Signature Appearance in Supervisor Area (above Supervisor Name matching Image 2)
-      const boxW = 120;
-      const boxH = config.includeDateTime ? 25 : 22;
+      const supNameLen = (supSigner || "").length;
+      const boxW = Math.max(185, Math.min(220, Math.round(44 + supNameLen * 5.2)));
+      const boxH = config.includeDateTime ? 28 : 24;
       const boxX = formX + (formWidth - boxW) / 2;
       const boxY = supSigY - boxH - 4;
 
@@ -674,9 +679,12 @@ export function generateDtrVectorPdf(
       }
 
       setSansBold();
-      doc.setFontSize(6.8);
+      let supFontSize = 6.8;
+      if (supSigner.length > 24) supFontSize = 5.8;
+      if (supSigner.length > 28) supFontSize = 5.2;
+      doc.setFontSize(supFontSize);
       doc.setTextColor(0, 0, 0);
-      const textX = supSignatureImg ? boxX + 48 : boxX + boxW / 2;
+      const textX = supSignatureImg ? boxX + 42 : boxX + boxW / 2;
       const textAlign = supSignatureImg ? "left" : "center";
 
       const isReneJaneSup =
@@ -1665,7 +1673,7 @@ export function findApprovalSectionCoordinates(
   const pageCount = pages.length;
 
   if (pageCount === 0) {
-    return { pageIndex: 0, boxX: 320, boxY: 80, boxW: 125, boxH: 26, detectedReason: "default" };
+    return { pageIndex: 0, boxX: 320, boxY: 80, boxW: 195, boxH: 32, detectedReason: "default" };
   }
 
   const normalizedSupName = (supervisorName || "").trim().toUpperCase();
@@ -1695,9 +1703,10 @@ export function findApprovalSectionCoordinates(
         upper.includes("MARIA ELENA SANTOS");
 
       if (isNameMatch && item.x > width * 0.35) {
-        const boxW = 125;
-        const boxH = 26;
-        const boxX = Math.max(20, Math.min(width - boxW - 20, Math.round(item.x - 6)));
+        const nameLen = (supervisorName || item.text || "").length;
+        const boxW = Math.max(195, Math.min(230, Math.round(44 + nameLen * 5.2)));
+        const boxH = 32;
+        const boxX = Math.max(15, Math.min(width - boxW - 15, Math.round(item.x - 6)));
         const boxY = Math.round(item.y + 10);
 
         return {
@@ -1715,9 +1724,10 @@ export function findApprovalSectionCoordinates(
     for (const item of textItems) {
       const upper = item.text.toUpperCase();
       if ((upper.includes("APPROVED BY") || upper.includes("APPROVED BY:")) && item.x > width * 0.35) {
-        const boxW = 125;
-        const boxH = 26;
-        const boxX = Math.max(20, Math.min(width - boxW - 20, Math.round(item.x + 2)));
+        const nameLen = (supervisorName || "").length;
+        const boxW = Math.max(195, Math.min(230, Math.round(44 + nameLen * 5.2)));
+        const boxH = 32;
+        const boxX = Math.max(15, Math.min(width - boxW - 15, Math.round(item.x - 4)));
         const boxY = Math.max(30, Math.round(item.y - 48));
 
         return {
@@ -1747,9 +1757,10 @@ export function findApprovalSectionCoordinates(
           upper.includes("DIVISION CHIEF")) &&
         item.x > width * 0.35
       ) {
-        const boxW = 125;
-        const boxH = 26;
-        const boxX = Math.max(20, Math.min(width - boxW - 20, Math.round(item.x - 6)));
+        const nameLen = (supervisorName || "").length;
+        const boxW = Math.max(195, Math.min(230, Math.round(44 + nameLen * 5.2)));
+        const boxH = 32;
+        const boxX = Math.max(15, Math.min(width - boxW - 15, Math.round(item.x - 6)));
         const boxY = Math.round(item.y + 26);
 
         return {
@@ -1767,9 +1778,10 @@ export function findApprovalSectionCoordinates(
     for (const item of textItems) {
       const upper = item.text.toUpperCase();
       if (upper.includes("PREPARED BY") || upper.includes("PREPARED BY:")) {
-        const boxW = 125;
-        const boxH = 26;
-        const boxX = Math.round(width * 0.52);
+        const nameLen = (supervisorName || "").length;
+        const boxW = Math.max(195, Math.min(230, Math.round(44 + nameLen * 5.2)));
+        const boxH = 32;
+        const boxX = Math.max(15, Math.min(width - boxW - 15, Math.round(width * 0.50)));
         const boxY = Math.max(30, Math.round(item.y - 48));
 
         return {
@@ -1788,9 +1800,10 @@ export function findApprovalSectionCoordinates(
   const lastPageIdx = pageCount - 1;
   const lastPage = pages[lastPageIdx];
   const { width, height } = lastPage.getSize();
-  const boxW = 125;
-  const boxH = 26;
-  const boxX = Math.round(width * 0.52);
+  const nameLen = (supervisorName || "").length;
+  const boxW = Math.max(195, Math.min(230, Math.round(44 + nameLen * 5.2)));
+  const boxH = 32;
+  const boxX = Math.max(15, Math.min(width - boxW - 15, Math.round(width * 0.50)));
   const boxY = Math.round(height * 0.22);
 
   return {
@@ -1897,24 +1910,38 @@ export async function signUploadedArPdfBytes(
   // 2. Draw official DTR-style "Digitally signed by <Name>" typography
   try {
     const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const textX = signatureImage ? boxX + 48 : boxX + 4;
+    const textX = signatureImage ? boxX + 38 : boxX + 4;
 
     const isReneJaneAr =
       resolvedSignerName.toLowerCase().includes("buena") ||
       resolvedSignerName.toLowerCase().includes("rene jane");
 
+    const signerText = isReneJaneAr ? "Buena Rene Jane Rosendo" : `by ${resolvedSignerName}`;
+    const availW = Math.max(50, boxW - (textX - boxX) - 4);
+    let signerFontSize = signerText.length > 22 ? 5.6 : 6.2;
+    try {
+      while (signerFontSize > 3.8 && helvetica.widthOfTextAtSize(signerText, signerFontSize) > availW) {
+        signerFontSize -= 0.1;
+      }
+    } catch {
+      if (signerText.length * 3.6 > availW) {
+        signerFontSize = Math.max(3.8, Math.min(6.2, availW / (signerText.length * 0.58)));
+      }
+    }
+    signerFontSize = Math.round(signerFontSize * 10) / 10;
+
     targetPage.drawText(isReneJaneAr ? "Digitally signed by" : "Digitally signed", {
       x: textX,
       y: boxY + 13.5,
-      size: 6.8,
+      size: 6.0,
       font: helvetica,
       color: rgb(0, 0, 0),
     });
 
-    targetPage.drawText(isReneJaneAr ? "Buena Rene Jane Rosendo" : `by ${resolvedSignerName}`, {
+    targetPage.drawText(signerText, {
       x: textX,
       y: boxY + 5.5,
-      size: 6.8,
+      size: signerFontSize,
       font: helvetica,
       color: rgb(0, 0, 0),
     });
@@ -2064,8 +2091,35 @@ export function detectExistingPdfSignatures(pdfDoc: PDFDocument): DetectedPdfSig
             }
           }
 
+          // Inspect /AP /N Form XObject stream if signerName is not in /V dictionary
+          if (!signerName) {
+            try {
+              const apDict = annot.lookup(PDFName.of("AP"));
+              if (apDict instanceof PDFDict) {
+                const nRef = apDict.lookup(PDFName.of("N"));
+                if (nRef) {
+                  const nObj = page.node.context.lookup(nRef);
+                  if (nObj && typeof (nObj as any).getContents === "function") {
+                    const bytes = (nObj as any).getContents();
+                    const text = new TextDecoder("latin1").decode(bytes);
+                    const match = text.match(/by\s+([A-Za-z\s\.,\-]+)/i) || text.match(/Digitally signed\s+by\s+([A-Za-z\s\.,\-]+)/i);
+                    if (match) {
+                      signerName = match[1].replace(/[()\\]/g, "").trim();
+                    }
+                  }
+                }
+              }
+            } catch {}
+          }
+
           const tObj = annot.lookup(PDFName.of("T"));
           const fieldName = tObj ? ((tObj as any).decodeText ? (tObj as any).decodeText() : tObj.toString().replace(/[()]/g, "")) : "";
+          if (!signerName && fieldName) {
+            const fMatch = fieldName.match(/Signed by\s+([A-Za-z\s\.,\-]+)/i) || fieldName.match(/by\s+([A-Za-z\s\.,\-]+)/i);
+            if (fMatch) {
+              signerName = fMatch[1].trim();
+            }
+          }
 
           detected.push({
             pageIndex: pIdx,
@@ -2078,6 +2132,51 @@ export function detectExistingPdfSignatures(pdfDoc: PDFDocument): DetectedPdfSig
       } catch {}
     }
   }
+
+  // Also check AcroForm fields
+  try {
+    const acroForm = pdfDoc.catalog.lookup(PDFName.of("AcroForm"));
+    if (acroForm instanceof PDFDict) {
+      const fields = acroForm.lookup(PDFName.of("Fields"));
+      if (fields && (fields as any).asArray) {
+        const fArr = (fields as any).asArray();
+        for (const fRef of fArr) {
+          const fDict = pdfDoc.context.lookup(fRef);
+          if (fDict instanceof PDFDict) {
+            const ft = fDict.lookup(PDFName.of("FT"))?.toString();
+            const vRef = fDict.lookup(PDFName.of("V"));
+            if (ft === "/Sig" || vRef) {
+              const tObj = fDict.lookup(PDFName.of("T"));
+              const fieldName = tObj ? ((tObj as any).decodeText ? (tObj as any).decodeText() : tObj.toString().replace(/[()]/g, "")) : "";
+              let sName = "";
+              if (vRef) {
+                const vDict = pdfDoc.context.lookup(vRef);
+                if (vDict instanceof PDFDict) {
+                  const nameObj = vDict.lookup(PDFName.of("Name"));
+                  if (nameObj) {
+                    sName = (nameObj as any).decodeText ? (nameObj as any).decodeText() : nameObj.toString().replace(/[()]/g, "");
+                  }
+                }
+              }
+              if (!sName && fieldName) {
+                const m = fieldName.match(/Signed by\s+([A-Za-z\s\.,\-]+)/i) || fieldName.match(/by\s+([A-Za-z\s\.,\-]+)/i);
+                if (m) sName = m[1].trim();
+              }
+              if (sName && !detected.some((d) => matchNames(d.signerName, sName))) {
+                detected.push({
+                  pageIndex: 0,
+                  rect: [0, 0, 0, 0],
+                  signerName: sName.trim(),
+                  signDate: "",
+                  fieldName: fieldName.trim(),
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch {}
 
   return detected;
 }
@@ -2125,9 +2224,9 @@ export async function scanPdfForSigners(
     const page = pages[pIdx];
     const { width, height } = page.getSize();
     const isLandscape = width > height || width >= 800;
-    // In landscape RAOD sheets, signature blocks are located at y ≈ 190..260 pt.
-    // Above y = 280 pt is the accounting table (obligations/disbursements) where transaction payees appear.
-    const maxSigY = isLandscape ? 270 : Math.min(270, height * 0.40);
+    // In landscape RAOD sheets, signature blocks are located at y ≈ 25..120 pt.
+    // Above y = 125 pt is the accounting table (obligations/disbursements) where transaction payees appear.
+    const maxSigY = isLandscape ? 120 : Math.min(220, height * 0.35);
 
     const sBytes = extractPageContentStreamBytes(pdfDoc, page);
     if (sBytes.length === 0) continue;
@@ -2211,16 +2310,25 @@ export async function scanPdfForSigners(
           if (!userSig) {
             userSig = existingSignatures.find((sig) => {
               if (sig.pageIndex === pIdx && sig.rect) {
+                // If this signature belongs to another registered user, do not attribute it here
+                if (sig.signerName && !matchNames(sig.signerName, u.name)) {
+                  const matchesOtherUser = effectiveUsers.some(
+                    (other) => other.name !== u.name && matchNames(sig.signerName, other.name)
+                  );
+                  if (matchesOtherUser) return false;
+                }
                 const [rx1, ry1, rx2, ry2] = sig.rect;
                 const sigCenterX = (rx1 + rx2) / 2;
-                const isXDirect = (item.x >= rx1 - 15 && item.x <= rx2 + 15) || Math.abs(sigCenterX - item.x) < 50;
-                const isYAbove = ry1 >= item.y - 10 && ry1 <= item.y + 65;
+                const isXDirect = (item.x >= rx1 - 25 && item.x <= rx2 + 25) || Math.abs(sigCenterX - item.x) < 70;
+                const isYAbove = ry1 >= item.y - 15 && ry1 <= item.y + 110;
                 return isXDirect && isYAbove;
               }
               return false;
             });
           }
 
+          // A signatory is only marked as signed if an authentic Adobe Acrobat P12 / digital signature
+          // covers this signatory. Static printed text on an unsigned template does NOT constitute a signature.
           const isAlreadySigned = Boolean(userSig);
           const cleanName = u.name.toUpperCase().replace(/^(ENGR\.?|ATTY\.?|DIR\.?|DR\.?)\s+/i, "").trim();
 
@@ -2248,11 +2356,10 @@ export async function scanPdfForSigners(
   // Sort by Y position descending (top-to-bottom order in signature section)
   detectedSigners.sort((a, b) => b.y - a.y);
 
-  // Filter required signers: strictly those registered users who still NEED TO SIGN (have not signed yet)
+  // Required signers chain includes all detected official signatories in the document
+  const requiredSigners = detectedSigners.map((s) => s.name);
   const pendingSigners = detectedSigners.filter((s) => s.status === "pending");
-  // If all detected registered users have already signed, preserve their records
-  const requiredSigners = (pendingSigners.length > 0 ? pendingSigners : detectedSigners).map((s) => s.name);
-  const primaryPersonnel = pendingSigners[0]?.name || detectedSigners[0]?.name || "PERSONNEL";
+  const primaryPersonnel = pendingSigners[0]?.name || (detectedSigners.length > 0 ? detectedSigners[0]?.name : "");
 
   return {
     primaryPersonnel,
@@ -2353,8 +2460,7 @@ export function recheckDocWithLatestUsers(
     candidateTexts.push(...doc.scannedInfo.signers.map((s: any) => s.name));
   }
   if (doc.fileName) candidateTexts.push(doc.fileName);
-  if (doc.notes) candidateTexts.push(doc.notes);
-  if (doc.targetPersonnel) candidateTexts.push(doc.targetPersonnel);
+  // Do NOT add doc.notes or unverified doc.targetPersonnel to prevent cross-contamination
 
   const matchedUsers = detectMatchingUsersFromText(candidateTexts, latestUsers);
 
@@ -2400,22 +2506,40 @@ export function recheckDocWithLatestUsers(
   // "if the name is not include in the userlist dont show"
   // "since theres only 1 signer need base in the 2nd image only annabel will show here not ace since 1 user havent signed yet"
   const isRaod = (doc.fileName || "").toUpperCase().includes("RAOD");
+  const isAnnabelDoc = (doc.fileName || "").toUpperCase().includes("ANNABEL") || (doc.targetPersonnel || "").toUpperCase().includes("ANNABEL");
+
   const filteredRequired = nextRequired.filter((req) => {
     const norm = normalizeNameForMatch(req);
 
-    // 1. Must be genuinely detected in the document
+    // 1. Spurious match exclusion: De Leon or Ace Malto must be authentically present in PDF detected texts
+    const isSpuriousCandidate =
+      norm.includes("DE LEON") ||
+      norm.includes("KEN MATTHEW") ||
+      norm.includes("ACE MALTO") ||
+      norm === "ACE" ||
+      norm === "MALTO";
+    if (isSpuriousCandidate) {
+      const genuineTexts = doc.scannedInfo?.detectedTexts || [];
+      const isAuthentic = genuineTexts.some((dt: string) => {
+        const n = normalizeNameForMatch(dt);
+        return n.includes("DE LEON") || n.includes("KEN MATTHEW") || n.includes("ACE MALTO");
+      });
+      if (!isAuthentic) return false;
+    }
+
+    // 2. Must be genuinely detected in the document
     const isDetectedInDoc =
       validSignerNames.has(norm) ||
       Array.from(validSignerNames).some((vn) => matchNames(vn, req));
     if (!isDetectedInDoc) return false;
 
-    // 2. Must be registered in latest active User List
+    // 3. Must be registered in latest active User List
     const isRegistered = latestUsers.some(
       (u) => matchNames(u.name, req) || normalizeNameForMatch(u.name) === norm
     );
     if (!isRegistered) return false;
 
-    // 3. For RAOD sheets, must be an authentic signatory, not a table payee or unassigned placeholder
+    // 4. For RAOD sheets, must be an authentic signatory, not a table payee or unassigned placeholder
     if (isRaod) {
       const isKnownRaodSigner =
         norm.includes("CALIMPONG") ||
@@ -2425,14 +2549,8 @@ export function recheckDocWithLatestUsers(
       if (!isKnownRaodSigner) return false;
     }
 
-    // 4. If registered signatory has already signed in the PDF, they do not need to sign again
-    const sObj = nextSigners.find(
-      (s: any) => matchNames(s.name, req) || normalizeNameForMatch(s.name) === norm
-    );
-    if (sObj?.status === "signed") {
-      // If there are other pending signers on the document, only show those who still need to sign
-      const hasOtherPending = nextSigners.some((s: any) => s.status === "pending" && !matchNames(s.name, req));
-      if (hasOtherPending) return false;
+    if (isAnnabelDoc && (norm.includes("DE LEON") || norm.includes("KEN MATTHEW") || norm.includes("ACE MALTO"))) {
+      return false;
     }
 
     return true;
@@ -2440,6 +2558,20 @@ export function recheckDocWithLatestUsers(
 
   const filteredSigners = nextSigners.filter((s: any) => {
     const norm = normalizeNameForMatch(s.name);
+    const isSpuriousCandidate =
+      norm.includes("DE LEON") ||
+      norm.includes("KEN MATTHEW") ||
+      norm.includes("ACE MALTO") ||
+      norm === "ACE" ||
+      norm === "MALTO";
+    if (isSpuriousCandidate) {
+      const genuineTexts = doc.scannedInfo?.detectedTexts || [];
+      const isAuthentic = genuineTexts.some((dt: string) => {
+        const n = normalizeNameForMatch(dt);
+        return n.includes("DE LEON") || n.includes("KEN MATTHEW") || n.includes("ACE MALTO");
+      });
+      if (!isAuthentic) return false;
+    }
     const isDetected =
       validSignerNames.has(norm) ||
       Array.from(validSignerNames).some((vn) => matchNames(vn, s.name));
@@ -2447,6 +2579,9 @@ export function recheckDocWithLatestUsers(
     const isReg = latestUsers.some((u) => matchNames(u.name, s.name) || normalizeNameForMatch(u.name) === norm);
     if (!isReg) return false;
     if (isRaod && !norm.includes("CALIMPONG") && !norm.includes("ANNABEL") && !norm.includes("DY") && !norm.includes("LEAH")) {
+      return false;
+    }
+    if (isAnnabelDoc && (norm.includes("DE LEON") || norm.includes("KEN MATTHEW") || norm.includes("ACE MALTO"))) {
       return false;
     }
     return true;
@@ -2621,8 +2756,8 @@ export function findPersonnelSignatureCoordinates(
   const requestedPos = options?.counterSignPosition || "auto";
 
   if (pageCount === 0) {
-    const boxW = isCounter ? 38 : 125;
-    const boxH = isCounter ? 14 : 28;
+    const boxW = isCounter ? 38 : 195;
+    const boxH = isCounter ? 14 : 32;
     const boxX = isCounter ? 220 + (csIndex * 42) : 70;
     const boxY = 80;
     return {
@@ -2690,46 +2825,55 @@ export function findPersonnelSignatureCoordinates(
 
       if (isAnnabelOrDirector || existingSigWidgets.length >= 3) {
         // Column 4: Approved / Noted by Regional Director ANNABEL C. ODOÑO-CALIMPONG
+        // Box width of 190 pt ensures long name "by Annabel C. Odoño-Calimpong" is completely visible without any clipping
+        const boxW = 190;
+        const boxX = Math.max(15, Math.min(width - boxW - 15, 600));
         return {
           pageIndex: pIdx,
-          boxX: 619,
+          boxX,
           boxY: refSigY,
-          boxW: 125,
+          boxW,
           boxH: 38,
-          detectedReason: `RAOD Column 4 above Regional Director ANNABEL C. ODOÑO-CALIMPONG on page ${pIdx + 1} at (619, ${refSigY})`,
+          detectedReason: `RAOD Column 4 above Regional Director ANNABEL C. ODOÑO-CALIMPONG on page ${pIdx + 1} at (${boxX}, ${refSigY})`,
           appliedPosition: "above",
         };
       } else if (lowerName.includes("leah") || lowerName.includes("dy") || existingSigWidgets.length === 2) {
         // Column 3: Certified Correct by LEAH B. DY
+        const boxW = 175;
+        const boxX = Math.max(15, Math.min(width - boxW - 15, 375));
         return {
           pageIndex: pIdx,
-          boxX: 381,
+          boxX,
           boxY: refSigY,
-          boxW: 125,
+          boxW,
           boxH: 38,
-          detectedReason: `RAOD Column 3 above LEAH B. DY on page ${pIdx + 1} at (381, ${refSigY})`,
+          detectedReason: `RAOD Column 3 above LEAH B. DY on page ${pIdx + 1} at (${boxX}, ${refSigY})`,
           appliedPosition: "above",
         };
       } else if (lowerName.includes("carla") || lowerName.includes("cabredo") || existingSigWidgets.length === 1) {
         // Column 2: Certified Correct by CARLA MAE R. CABREDO
+        const boxW = 175;
+        const boxX = Math.max(15, Math.min(width - boxW - 15, 205));
         return {
           pageIndex: pIdx,
-          boxX: 215,
+          boxX,
           boxY: refSigY,
-          boxW: 125,
+          boxW,
           boxH: 38,
-          detectedReason: `RAOD Column 2 above CARLA MAE R. CABREDO on page ${pIdx + 1} at (215, ${refSigY})`,
+          detectedReason: `RAOD Column 2 above CARLA MAE R. CABREDO on page ${pIdx + 1} at (${boxX}, ${refSigY})`,
           appliedPosition: "above",
         };
       } else if (lowerName.includes("danrev") || lowerName.includes("balana") || existingSigWidgets.length === 0) {
         // Column 1: Prepared by DANREV A. BALANA
+        const boxW = 175;
+        const boxX = Math.max(15, Math.min(width - boxW - 15, 20));
         return {
           pageIndex: pIdx,
-          boxX: 20,
+          boxX,
           boxY: refSigY,
-          boxW: 125,
+          boxW,
           boxH: 38,
-          detectedReason: `RAOD Column 1 above DANREV A. BALANA on page ${pIdx + 1} at (20, ${refSigY})`,
+          detectedReason: `RAOD Column 1 above DANREV A. BALANA on page ${pIdx + 1} at (${boxX}, ${refSigY})`,
           appliedPosition: "above",
         };
       }
@@ -2813,10 +2957,15 @@ export function findPersonnelSignatureCoordinates(
             appliedPosition: effectivePos,
           };
         } else {
-          // Normal sign: placed directly ABOVE the name
-          const boxW = 125;
-          const boxH = 28;
-          const boxX = Math.max(15, Math.min(width - boxW - 15, Math.round(item.x - 4)));
+          // Normal sign: placed directly ABOVE the name (generous width up to 230 pt so long names like Annabel C. Odoño-Calimpong never cut off)
+          const rawTargetName = (personnelName || item.text || "").trim();
+          const nameLen = rawTargetName.length;
+          const boxW = Math.max(195, Math.min(230, Math.round(44 + nameLen * 5.2)));
+          const boxH = 32;
+          let boxX = Math.round(item.x - 4);
+          if (boxX + boxW > width - 15) {
+            boxX = Math.max(15, width - boxW - 15);
+          }
           const boxY = Math.min(height - boxH - 10, Math.round(item.y + 14));
 
           return {
@@ -2862,9 +3011,14 @@ export function findPersonnelSignatureCoordinates(
       appliedPosition: effectivePos,
     };
   } else {
-    const boxW = 125;
-    const boxH = 28;
-    const boxX = Math.round(width * 0.55);
+    const rawTargetName = (personnelName || "").trim();
+    const nameLen = rawTargetName.length;
+    const boxW = Math.max(195, Math.min(230, Math.round(44 + nameLen * 5.2)));
+    const boxH = 32;
+    let boxX = Math.round(width * 0.50);
+    if (boxX + boxW > width - 15) {
+      boxX = Math.max(15, width - boxW - 15);
+    }
     const boxY = Math.round(height * 0.18 + 24);
     return {
       pageIndex: lastPageIdx,
@@ -3111,7 +3265,7 @@ export async function signUploadedPersonnelPdfBytes(
         targetPage.drawImage(embeddedImg, {
           x: boxX + 3,
           y: boxY + 3,
-          width: 38,
+          width: 34,
           height: boxH - 6,
         });
         hasDrawnImage = true;
@@ -3122,10 +3276,25 @@ export async function signUploadedPersonnelPdfBytes(
 
     try {
       const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const textX = hasDrawnImage ? boxX + 44 : boxX + 5;
+      const textX = hasDrawnImage ? boxX + 38 : boxX + 5;
       const isReneJane =
         resolvedSignerName.toLowerCase().includes("buena") ||
         resolvedSignerName.toLowerCase().includes("rene jane");
+
+      const signerText = isReneJane ? "Buena Rene Jane Rosendo" : `by ${resolvedSignerName}`;
+      const availW = Math.max(60, boxW - (textX - boxX) - 4);
+      let signerFontSize = 6.2;
+
+      try {
+        while (signerFontSize > 3.4 && helvetica.widthOfTextAtSize(signerText, signerFontSize) > availW) {
+          signerFontSize -= 0.1;
+        }
+      } catch {
+        if (signerText.length * 3.6 > availW) {
+          signerFontSize = Math.max(3.4, Math.min(6.2, availW / (signerText.length * 0.58)));
+        }
+      }
+      signerFontSize = Math.round(signerFontSize * 10) / 10;
 
       if (isReneJane) {
         targetPage.drawText("Digitally signed by", {
@@ -3136,10 +3305,10 @@ export async function signUploadedPersonnelPdfBytes(
           color: rgb(0.0, 0.0, 0.0),
         });
 
-        targetPage.drawText("Buena Rene Jane Rosendo", {
+        targetPage.drawText(signerText, {
           x: textX,
           y: boxY + 6.5,
-          size: 6.2,
+          size: signerFontSize,
           font: helvetica,
           color: rgb(0.0, 0.0, 0.0),
         });
@@ -3152,10 +3321,10 @@ export async function signUploadedPersonnelPdfBytes(
           color: rgb(0.0, 0.0, 0.0),
         });
 
-        targetPage.drawText(`by ${resolvedSignerName}`, {
+        targetPage.drawText(signerText, {
           x: textX,
           y: boxY + 6.5,
-          size: 6.5,
+          size: signerFontSize,
           font: helvetica,
           color: rgb(0.0, 0.0, 0.0),
         });
