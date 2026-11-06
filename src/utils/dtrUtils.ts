@@ -33,6 +33,8 @@ export interface DtrConfig {
   hasP12?: boolean;
   includeDateTime?: boolean;
   signingDateTime?: string;
+  fileName?: string;
+  pdfFileName?: string;
 }
 
 export function formatPnpkiDate(d: Date = new Date()): string {

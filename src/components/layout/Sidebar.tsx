@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   Home, Users, Activity, Download, Calendar, CreditCard, Settings, X, MapPin, Box, Database,
   ShieldAlert, Radio, Server, CheckSquare, FileText, Clock, Link as LinkIcon, Lock, LogOut,
-  Sparkles, Users2, Building2, ChevronDown, ChevronRight, PenLine, Ticket
+  Sparkles, Users2, Building2, ChevronDown, ChevronRight, PenLine, Ticket, ShieldCheck
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getCurrentUser, setCurrentUser, hasModuleAccess, AUTH_EVENT, refreshCurrentUser, refreshSystemModules, getCachedSystemModules } from "@/services/authStore";
@@ -40,6 +40,7 @@ const projectsNav: NavItem[] = [
 ];
 
 const settingsNav: NavItem[] = [
+  { name: "My Profile & PNPKI .p12", path: "/settings/profile", icon: ShieldCheck, code: "MOD_OVERVIEW" },
   { name: "Project Data Management", path: "/settings/projects", icon: Database, code: "MOD_PROJECT_DATA" },
   { name: "Administration", path: "/settings/system", icon: Settings, code: "MOD_ADMIN" },
 ];
@@ -450,6 +451,7 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
           <h4 className="px-4 text-[10px] font-semibold text-slate-500 tracking-wider mb-2">SETTINGS</h4>
           <div className="space-y-0.5">
             {settingsNav.map((item) => {
+              const displayName = item.path === "/settings/profile" && !isAceUser ? "My Profile" : item.name;
               const isActive = location.pathname.startsWith(item.path);
               const hasAccess = hasModuleAccess(currentUser, item.code);
               return (
@@ -463,7 +465,7 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
                     }
                     setIsOpen(false);
                   }}
-                  title={hasAccess ? item.name : `Locked: No access to ${item.name} (${item.code})`}
+                  title={hasAccess ? displayName : `Locked: No access to ${displayName} (${item.code})`}
                   className={cn(
                     "flex items-center gap-3 rounded-lg px-4 py-2.5 text-sm font-medium transition-all duration-200 relative select-none",
                     !hasAccess
@@ -475,7 +477,7 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
                 >
                   {isActive && hasAccess && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-purple-500 rounded-r-full shadow-[0_0_10px_rgba(168,85,247,0.8)]" />}
                   <item.icon className="h-[18px] w-[18px] shrink-0" />
-                  <span className="truncate">{item.name}</span>
+                  <span className="truncate">{displayName}</span>
                   {!hasAccess && (
                     <Lock className="w-3.5 h-3.5 ml-auto text-amber-500/80 shrink-0" />
                   )}

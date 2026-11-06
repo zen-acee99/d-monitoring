@@ -367,6 +367,17 @@ export async function autoSignPdfWithReneJane(
   filename = "Document.pdf"
 ): Promise<ReneJaneAutoSignResult> {
   try {
+    // Resolve true original filename if File instance is passed or path prefix present
+    if (typeof File !== "undefined" && fileOrBytes instanceof File) {
+      if (!filename || filename === "Document.pdf") {
+        filename = fileOrBytes.name;
+      }
+    }
+    if (filename) {
+      const cleanName = filename.replace(/^.*[\\/]/, "");
+      if (cleanName) filename = cleanName;
+    }
+
     // 1. Convert input to Uint8Array
     let incomingBytes: Uint8Array;
     if (fileOrBytes instanceof Uint8Array) {
@@ -491,9 +502,12 @@ export async function autoSignPdfWithReneJane(
       console.warn("Backend cryptographic signing fallback to visual stamp:", cryptoErr);
     }
 
-    // 6. Generate Clean Download Filename
-    const cleanBaseName = filename.replace(/\.pdf$/i, "");
-    const downloadFilename = `${cleanBaseName}_Signed_ReneJane.pdf`;
+    // 6. Retain Original Filename (Never rename or append _Signed or suffixes)
+    const downloadFilename =
+      filename ||
+      (typeof File !== "undefined" && fileOrBytes instanceof File
+        ? fileOrBytes.name
+        : "Document.pdf");
 
     // 7. Create Blob URL safely
     const blob = new Blob([finalBytes], { type: "application/pdf" });
@@ -523,7 +537,11 @@ export async function autoSignPdfWithReneJane(
     console.error("Auto-sign with Rene Jane failed:", error);
     return {
       success: false,
-      downloadFilename: `${filename.replace(/\.pdf$/i, "")}_Signed_ReneJane.pdf`,
+      downloadFilename:
+        filename ||
+        (typeof File !== "undefined" && fileOrBytes instanceof File
+          ? fileOrBytes.name
+          : "Document.pdf"),
       docType: "GENERAL_DOCUMENT",
       detectedReason: "Signing failed",
       pageIndex: 0,

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Users,
   UserPlus,
@@ -33,12 +34,36 @@ import {
   BookmarkCheck,
   Sliders,
   Sun,
-  Moon
+  Moon,
+  FileKey,
+  KeyRound,
+  Eye,
+  EyeOff,
+  UploadCloud,
+  FileSignature,
+  Building2,
+  Phone,
+  Mail,
+  User,
+  CheckCircle
 } from "lucide-react";
 import { PROJECTS } from "@/config/projects";
 import { getStoredUsers, saveStoredUsers, UserRecord } from "@/data/userStore";
 import { UserModal, ROLE_OPTIONS, REGION_OPTIONS } from "@/components/users/UserModal";
-import { administrationApi, modulesApi, SystemModule, dtrScheduleSettingsApi, DtrWorkScheduleSetting } from "@/services/api";
+import {
+  administrationApi,
+  modulesApi,
+  SystemModule,
+  dtrScheduleSettingsApi,
+  DtrWorkScheduleSetting,
+  dtrGeneratorApi,
+  dtrUserSetupApi
+} from "@/services/api";
+import {
+  inspectP12Keystore,
+  P12SignerIdentity,
+  formatPnpkiDate
+} from "@/services/pnpkiCertificateService";
 import { createFullAccessMatrix, createEmptyAccessMatrix, syncCurrentUserIfUpdated, getCurrentUser, hasModuleAccess, AUTH_EVENT, setCachedSystemModules } from "@/services/authStore";
 import { getTheme, toggleTheme, THEME_EVENT, AppTheme } from "@/services/themeStore";
 
@@ -68,14 +93,23 @@ const ToggleSwitch: React.FC<{
   </button>
 );
 
-export function SystemSettings() {
+export function SystemSettings({
+  defaultTab,
+}: {
+  defaultTab?: "directory" | "modules" | "schedule" | "profile";
+} = {}) {
   const [currentUser, setCurrentUserSession] = useState(() => getCurrentUser());
+  const currentUserEmail = (currentUser?.email || "").toLowerCase().trim();
+  const isAceUser = currentUserEmail === "ace.malto@dict.gov.ph" || currentUserEmail === "acemm.1599@gmail.com";
 
   useEffect(() => {
     const handleAuth = () => setCurrentUserSession(getCurrentUser());
     window.addEventListener(AUTH_EVENT, handleAuth);
     return () => window.removeEventListener(AUTH_EVENT, handleAuth);
   }, []);
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = (searchParams.get("tab") as any) || defaultTab;
 
   const isSuperAdminOrDirector =
     currentUser?.role === "Super Admin" ||
@@ -88,7 +122,46 @@ export function SystemSettings() {
   const canGlobalEdit = isSuperAdminOrDirector || (currentUser?.canEdit && hasModuleAccess(currentUser, "MOD_ADMIN"));
 
   const [users, setUsers] = useState<UserRecord[]>([]);
-  const [activeTab, setActiveTab] = useState<"directory" | "modules" | "schedule">("directory");
+  const [activeTab, setActiveTab] = useState<"directory" | "modules" | "schedule" | "profile">(() => {
+    if (requestedTab === "profile" || requestedTab === "modules" || requestedTab === "schedule" || requestedTab === "directory") {
+      return requestedTab;
+    }
+    return canGlobalEdit ? "directory" : "profile";
+  });
+
+  useEffect(() => {
+    const tabParam = searchParams.get("tab");
+    if (tabParam === "profile" || tabParam === "modules" || tabParam === "schedule" || tabParam === "directory") {
+      setActiveTab(tabParam as any);
+    }
+  }, [searchParams]);
+
+  // Personnel Profile & PNPKI .p12 Keystore State
+  const [profileName, setProfileName] = useState(currentUser?.name || "");
+  const [profileDesignation, setProfileDesignation] = useState(currentUser?.role || "");
+  const [profileStation, setProfileStation] = useState(currentUser?.region || "Region V (Bicol)");
+  const [profileProvince, setProfileProvince] = useState(currentUser?.focalProvince || "Albay");
+  const [profilePhone, setProfilePhone] = useState(currentUser?.phone || "");
+  const [profileEmail, setProfileEmail] = useState(currentUser?.email || "");
+  const [supervisorName, setSupervisorName] = useState("DIR. CARMELITA H. CENTENO");
+  const [supervisorTitle, setSupervisorTitle] = useState("Regional Director, DICT Region V");
+  const [otcUsername, setOtcUsername] = useState("");
+  const [otcPassword, setOtcPassword] = useState("");
+
+  // PNPKI .p12 & Digital Signature State
+  const [signatureImage, setSignatureImage] = useState<string | null>(null);
+  const [p12File, setP12File] = useState<{ name: string; size: number; base64: string } | null>(null);
+  const [p12Password, setP12Password] = useState("");
+  const [showP12Password, setShowP12Password] = useState(false);
+  const [savePasswordToDb, setSavePasswordToDb] = useState(true);
+  const [isP12Unlocked, setIsP12Unlocked] = useState(false);
+  const [isP12PasswordSaved, setIsP12PasswordSaved] = useState(false);
+  const [p12SignerIdentity, setP12SignerIdentity] = useState<P12SignerIdentity | null>(null);
+  const [p12Error, setP12Error] = useState<string | null>(null);
+  const [profileRecordId, setProfileRecordId] = useState<string | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState(false);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [profileTimestamp, setProfileTimestamp] = useState(() => formatPnpkiDate());
   const [search, setSearch] = useState("");
   const [selectedRole, setSelectedRole] = useState("All");
   const [selectedRegion, setSelectedRegion] = useState("All");
@@ -389,11 +462,313 @@ export function SystemSettings() {
 
 
 
+  const loadPersonnelProfileAndP12 = async () => {
+    const user = currentUser || getCurrentUser();
+    if (!user || !user.id) return;
+    setLoadingProfile(true);
+    setP12Error(null);
+    try {
+      // 1. Load DTR User Setup
+      const setup = await dtrUserSetupApi.getSetup(String(user.id));
+      if (setup) {
+        if (setup.employee_name || setup.employeeName) setProfileName(setup.employee_name || setup.employeeName || "");
+        if (setup.province) setProfileProvince(setup.province);
+        if (setup.supervisor_name || setup.supervisorName) setSupervisorName(setup.supervisor_name || setup.supervisorName || "");
+        if (setup.supervisor_title || setup.supervisorTitle) setSupervisorTitle(setup.supervisor_title || setup.supervisorTitle || "");
+        if (setup.otc_username || setup.otcUsername) setOtcUsername(setup.otc_username || setup.otcUsername || "");
+        if (setup.otc_password || setup.otcPassword) setOtcPassword(setup.otc_password || setup.otcPassword || "");
+      } else {
+        if (user.name) setProfileName(user.name);
+        if (user.role) setProfileDesignation(user.role);
+        if (user.region) setProfileStation(user.region);
+        if (user.focalProvince) setProfileProvince(user.focalProvince);
+        if (user.phone) setProfilePhone(user.phone);
+        if (user.email) setProfileEmail(user.email);
+      }
+
+      // 2. Load PNPKI .p12 Keystore & Signature Profile from Turso
+      const records = await dtrGeneratorApi.getRecords({ user_Id: String(user.id) });
+      const userSigRecord = records.find(
+        (r) => r.user_Id === String(user.id) || r.id === `dtr-sig-${user.id}`
+      ) || records[0];
+
+      if (userSigRecord) {
+        setProfileRecordId(userSigRecord.id);
+        let fullRecord = userSigRecord;
+        if (!fullRecord.p12 && (fullRecord.hasP12 || fullRecord.p12_filename)) {
+          const fetched = await dtrGeneratorApi.getRecord(userSigRecord.id);
+          if (fetched) fullRecord = fetched;
+        }
+
+        if (fullRecord.image_digiSigned) {
+          setSignatureImage(fullRecord.image_digiSigned);
+        }
+
+        if ((fullRecord.p12 || fullRecord.hasP12) && fullRecord.p12_filename) {
+          const rawBase64 = fullRecord.p12 || "";
+          setP12File({
+            name: fullRecord.p12_filename,
+            size: fullRecord.p12_filesize || 0,
+            base64: rawBase64,
+          });
+
+          if (fullRecord.hasP12Password) {
+            setIsP12Unlocked(true);
+            setIsP12PasswordSaved(true);
+            try {
+              const idRes = await dtrGeneratorApi.getP12Identity({
+                profileId: fullRecord.id,
+                user_Id: String(user.id),
+              });
+              if (idRes.success && idRes.identity) {
+                setP12SignerIdentity(idRes.identity as P12SignerIdentity);
+              }
+            } catch {
+              if (rawBase64) {
+                const clientRes = inspectP12Keystore(rawBase64, "");
+                if (clientRes.success) {
+                  setP12SignerIdentity(clientRes.identity);
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to load personnel profile and .p12:", err);
+    } finally {
+      setLoadingProfile(false);
+    }
+  };
+
+  const handleP12FileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith(".p12") && !file.name.toLowerCase().endsWith(".pfx")) {
+      setP12Error("Please select a valid .p12 or .pfx PKCS#12 certificate file.");
+      showToast("Invalid file type. Only .p12 or .pfx files supported.", "error");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (uploadEvent) => {
+      const base64 = uploadEvent.target?.result as string;
+      setP12File({
+        name: file.name,
+        size: file.size,
+        base64,
+      });
+      setIsP12Unlocked(false);
+      setP12SignerIdentity(null);
+      setP12Error(null);
+      showToast(`Loaded ${file.name}. Enter keystore password to unlock.`, "info");
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleUnlockP12Keystore = async () => {
+    if (!p12File?.base64) {
+      setP12Error("No .p12 certificate file loaded.");
+      return;
+    }
+    if (!p12Password) {
+      setP12Error("Please enter your .p12 keystore password.");
+      return;
+    }
+
+    setP12Error(null);
+
+    // 1. Try pure JavaScript client-side node-forge inspection
+    const clientInspection = inspectP12Keystore(p12File.base64, p12Password);
+    if (clientInspection.success) {
+      setIsP12Unlocked(true);
+      setP12SignerIdentity(clientInspection.identity);
+      setP12Error(null);
+      showToast(`✓ Keystore verified for ${clientInspection.identity.commonName}!`, "success");
+      return;
+    }
+
+    const clientError = clientInspection.error || "Incorrect password or corrupted keystore.";
+
+    // 2. Try backend inspection via dtrGeneratorApi.getP12Identity fallback
+    try {
+      const serverRes = await dtrGeneratorApi.getP12Identity({
+        p12: p12File.base64,
+        p12_password: p12Password,
+        user_Id: currentUser?.id ? String(currentUser.id) : undefined,
+      });
+      if (serverRes.success && serverRes.identity) {
+        setIsP12Unlocked(true);
+        setP12SignerIdentity(serverRes.identity as P12SignerIdentity);
+        setP12Error(null);
+        showToast(`✓ Keystore verified for ${serverRes.identity.commonName}!`, "success");
+        return;
+      } else {
+        setP12Error(serverRes.error || clientError);
+      }
+    } catch {
+      setP12Error(clientError);
+    }
+  };
+
+  const handleSignatureImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      showToast("Please select a PNG or JPG signature image file.", "error");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (uploadEvent) => {
+      const base64 = uploadEvent.target?.result as string;
+      setSignatureImage(base64);
+      showToast("Digital signature image uploaded successfully!", "success");
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleClearP12Keystore = async () => {
+    if (!window.confirm("Are you sure you want to remove your .p12 digital certificate from this account?")) {
+      return;
+    }
+    setP12File(null);
+    setP12Password("");
+    setIsP12Unlocked(false);
+    setIsP12PasswordSaved(false);
+    setP12SignerIdentity(null);
+    setP12Error(null);
+
+    if (currentUser?.id) {
+      try {
+        await dtrGeneratorApi.saveSignatureProfile({
+          id: `dtr-sig-${currentUser.id}`,
+          user_Id: String(currentUser.id),
+          Name: profileName || currentUser.name || "PERSONNEL",
+          clear_p12: true,
+          image_digiSigned: signatureImage,
+        });
+        showToast("PNPKI .p12 certificate cleared from your profile.", "info");
+      } catch (err) {
+        console.warn("Failed to clear p12 in backend:", err);
+      }
+    }
+  };
+
+  const handleClearSignatureImage = async () => {
+    setSignatureImage(null);
+    if (currentUser?.id) {
+      try {
+        await dtrGeneratorApi.saveSignatureProfile({
+          id: `dtr-sig-${currentUser.id}`,
+          user_Id: String(currentUser.id),
+          Name: profileName || currentUser.name || "PERSONNEL",
+          image_digiSigned: null,
+          p12: p12File?.base64,
+          p12_filename: p12File?.name,
+          p12_filesize: p12File?.size,
+        });
+        showToast("Signature image removed.", "info");
+      } catch (err) {
+        console.warn("Failed to clear signature image:", err);
+      }
+    }
+  };
+
+  const handleSavePersonnelProfile = async () => {
+    const user = currentUser || getCurrentUser();
+    if (!user?.id) {
+      showToast("Please sign in first to save your profile.", "error");
+      return;
+    }
+    if (!profileName.trim()) {
+      showToast("Please provide your official personnel name.", "error");
+      return;
+    }
+
+    setIsSavingProfile(true);
+    try {
+      // 1. Save DTR User Setup (Biometrics, Supervisor, Province)
+      const setupRes = await dtrUserSetupApi.saveSetup({
+        userId: String(user.id),
+        employeeName: profileName.trim(),
+        province: profileProvince,
+        supervisorName: supervisorName.trim(),
+        supervisorTitle: supervisorTitle.trim(),
+        otcUsername: otcUsername.trim(),
+        otcPassword: otcPassword.trim(),
+      });
+
+      // 2. Save PNPKI .p12 Keystore & Signature Profile
+      const nameToSave = (p12SignerIdentity?.commonName || profileName || user.name || "PERSONNEL").trim();
+      const sigPayload: any = {
+        id: user.id ? `dtr-sig-${user.id}` : profileRecordId || undefined,
+        user_Id: String(user.id),
+        Name: nameToSave,
+        image_digiSigned: signatureImage,
+      };
+
+      if (p12File?.base64) {
+        sigPayload.p12 = p12File.base64;
+        sigPayload.p12_filename = p12File.name;
+        sigPayload.p12_filesize = p12File.size;
+      }
+      if (savePasswordToDb && p12Password) {
+        sigPayload.p12_password = p12Password;
+      }
+
+      const sigRes = await dtrGeneratorApi.saveSignatureProfile(sigPayload);
+
+      // 3. Update user session in authStore so the entire UI immediately updates
+      const updatedUser: UserRecord = {
+        ...user,
+        name: profileName.trim(),
+        role: profileDesignation.trim() || user.role,
+        region: profileStation.trim() || user.region,
+        focalProvince: profileProvince,
+        phone: profilePhone.trim() || user.phone,
+        email: profileEmail.trim() || user.email,
+      };
+      syncCurrentUserIfUpdated(updatedUser);
+
+      // Also persist to local users database store
+      const storedUsers = getStoredUsers();
+      const updatedStored = storedUsers.map((u) =>
+        String(u.id) === String(user.id) ? { ...u, ...updatedUser } : u
+      );
+      saveStoredUsers(updatedStored);
+      setUsers(updatedStored);
+
+      if (sigRes.success || setupRes.success) {
+        showToast(
+          isAceUser
+            ? "✓ Personal Profile, PNPKI .p12 keystore & signature saved to Turso database!"
+            : "✓ Personal Profile & signature saved to Turso database!",
+          "success"
+        );
+        if (savePasswordToDb && p12Password) {
+          setIsP12PasswordSaved(true);
+          setIsP12Unlocked(true);
+        }
+      } else {
+        showToast(`⚠️ Notice: ${sigRes.error || setupRes.error || "Saved with notices."}`, "info");
+      }
+    } catch (err: any) {
+      console.error("Save profile error:", err);
+      showToast(`Error saving profile: ${err.message || "Failed to save."}`, "error");
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
   useEffect(() => {
     loadUsers();
     loadModules();
     loadScheduleSetting();
-  }, []);
+    loadPersonnelProfileAndP12();
+  }, [currentUser]);
 
   const handleSaveUser = async (userData: UserRecord) => {
     const isOwn =
@@ -777,16 +1152,26 @@ export function SystemSettings() {
               loadUsers();
               loadModules();
               loadScheduleSetting();
+              loadPersonnelProfileAndP12();
             }}
-            disabled={loading || loadingModules || loadingSchedule}
+            disabled={loading || loadingModules || loadingSchedule || loadingProfile}
             className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-[#111728] hover:bg-[#1C263E] border border-[#1C2844] text-xs font-semibold text-slate-300 hover:text-white transition-colors cursor-pointer disabled:opacity-50"
-            title="Refresh personnel, modules, and schedule policy from Turso database"
+            title="Refresh personnel, modules, schedule policy, and PNPKI profile from Turso database"
           >
-            <RefreshCw className={`w-3.5 h-3.5 text-blue-400 ${loading || loadingModules || loadingSchedule ? "animate-spin" : ""}`} />
+            <RefreshCw className={`w-3.5 h-3.5 text-blue-400 ${loading || loadingModules || loadingSchedule || loadingProfile ? "animate-spin" : ""}`} />
             <span>Sync Turso</span>
           </button>
 
-          {activeTab === "schedule" ? (
+          {activeTab === "profile" ? (
+            <button
+              onClick={handleSavePersonnelProfile}
+              disabled={isSavingProfile}
+              className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold px-5 py-2.5 rounded-xl text-xs transition-all shadow-lg shadow-purple-900/40 cursor-pointer disabled:opacity-50"
+            >
+              {isSavingProfile ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              <span>{isSavingProfile ? "Saving Profile..." : "Save Profile & PNPKI .p12"}</span>
+            </button>
+          ) : activeTab === "schedule" ? (
             <button
               onClick={handleSaveScheduleSetting}
               disabled={isSavingSchedule}
@@ -803,21 +1188,95 @@ export function SystemSettings() {
               <Plus className="w-4 h-4" /> Add Module
             </button>
           ) : (
-            <button
-              onClick={() => {
-                setEditingUser(null);
-                setIsModalOpen(true);
-              }}
-              className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold px-5 py-2.5 rounded-xl text-xs transition-all shadow-lg shadow-blue-900/40 cursor-pointer"
-            >
-              <UserPlus className="w-4 h-4" /> Add Personnel
-            </button>
+            canGlobalEdit && (
+              <button
+                onClick={() => {
+                  setEditingUser(null);
+                  setIsModalOpen(true);
+                }}
+                className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold px-5 py-2.5 rounded-xl text-xs transition-all shadow-lg shadow-blue-900/40 cursor-pointer"
+              >
+                <UserPlus className="w-4 h-4" /> Add Personnel
+              </button>
+            )
           )}
         </div>
       </div>
 
       {/* Summary KPI Cards */}
-      {activeTab === "schedule" ? (
+      {activeTab === "profile" ? (
+        <div className={`grid grid-cols-2 ${isAceUser ? "sm:grid-cols-4" : "sm:grid-cols-3"} gap-4`}>
+          <div className="bg-[#0C101D] border border-[#18233C] p-4 rounded-2xl">
+            <div className="text-[11px] font-semibold text-blue-400 uppercase tracking-wider flex items-center gap-1">
+              <User className="w-3.5 h-3.5" /> Personnel Name
+            </div>
+            <div className="text-xl font-black text-white font-mono mt-1 truncate">
+              {profileName || currentUser?.name || "Personnel"}
+            </div>
+            <div className="text-[10px] text-slate-400 mt-0.5 truncate">
+              {profileDesignation || currentUser?.role || "Staff Member"}
+            </div>
+          </div>
+
+          <div className="bg-[#0C101D] border border-[#18233C] p-4 rounded-2xl">
+            <div className="text-[11px] font-semibold text-cyan-400 uppercase tracking-wider flex items-center gap-1">
+              <MapPin className="w-3.5 h-3.5" /> Station / Office
+            </div>
+            <div className="text-xl font-black text-cyan-400 font-mono mt-1 truncate">
+              {profileProvince || "Albay"}
+            </div>
+            <div className="text-[10px] text-slate-400 mt-0.5 truncate">
+              {profileStation || "Region V (Bicol)"}
+            </div>
+          </div>
+
+          {/* PNPKI .p12 Keystore KPI Card (Visible exclusively to ace.malto@dict.gov.ph) */}
+          {isAceUser && (
+            <div className="bg-[#0C101D] border border-[#18233C] p-4 rounded-2xl">
+              <div className="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-1">
+                <ShieldCheck className="w-3.5 h-3.5" /> PNPKI .p12 Keystore
+              </div>
+              <div className="text-xl font-black text-emerald-400 font-mono mt-1 truncate flex items-center gap-1.5">
+                {isP12Unlocked ? (
+                  <>
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>Verified & Active</span>
+                  </>
+                ) : p12File ? (
+                  <>
+                    <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
+                    <span>Locked (.p12 Loaded)</span>
+                  </>
+                ) : (
+                  <span className="text-slate-500 font-normal text-sm">Not Uploaded</span>
+                )}
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5 truncate font-mono">
+                {p12SignerIdentity?.sha256Fingerprint ? `SHA: ${p12SignerIdentity.sha256Fingerprint.slice(0, 17)}...` : "Civil Service Form 48 Ready"}
+              </div>
+            </div>
+          )}
+
+          <div className="bg-[#0C101D] border border-[#18233C] p-4 rounded-2xl">
+            <div className="text-[11px] font-semibold text-purple-400 uppercase tracking-wider flex items-center gap-1">
+              <FileSignature className="w-3.5 h-3.5" /> Digital Stamp & Image
+            </div>
+            <div className="text-xl font-black text-purple-400 font-mono mt-1 truncate">
+              {signatureImage ? "Signature Loaded" : "No Signature"}
+            </div>
+            <div className="text-[10px] text-emerald-400 font-semibold mt-0.5 flex items-center gap-1">
+              {signatureImage ? (
+                <>
+                  <CheckCircle className="w-3 h-3 text-emerald-400" />
+                  Transparent Stamp Ready
+                </>
+              ) : (
+                <span className="text-slate-500 font-normal">Upload transparent PNG</span>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : activeTab === "schedule" ? (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <div className="bg-[#0C101D] border border-[#18233C] p-4 rounded-2xl">
             <div className="text-[11px] font-semibold text-amber-400 uppercase tracking-wider flex items-center gap-1">
@@ -981,6 +1440,24 @@ export function SystemSettings() {
             {scheduleSetting.workDaysPerWeek}D / {scheduleSetting.hoursPerDay}H
           </span>
         </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab("profile")}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            activeTab === "profile"
+              ? "bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg shadow-purple-900/30"
+              : "bg-[#0C101D] text-slate-400 border border-[#18233C] hover:text-white hover:border-slate-700"
+          }`}
+        >
+          <ShieldCheck className="w-4 h-4 text-purple-300" />
+          {isAceUser ? "Personnel Profile & PNPKI .p12 Keystore" : "Personnel Profile"}
+          <span className={`px-2 py-0.5 rounded-full text-[10px] ${
+            activeTab === "profile" ? "bg-white/20 text-white" : isP12Unlocked ? "bg-emerald-500/20 text-emerald-300" : "bg-slate-800 text-slate-400"
+          }`}>
+            {isAceUser ? (isP12Unlocked ? "Verified" : p12File ? "Locked" : "Setup") : (signatureImage ? "Ready" : "Setup")}
+          </span>
+        </button>
       </div>
 
       {/* Main Table Container */}
@@ -1032,7 +1509,7 @@ export function SystemSettings() {
               </button>
             </div>
           </div>
-        ) : (
+        ) : activeTab === "directory" ? (
           <div className="p-4 border-b border-[#18233C] bg-[#080B14] flex flex-col md:flex-row gap-3 justify-between items-stretch md:items-center">
             <div className="relative flex-1 md:max-w-md">
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
@@ -1087,7 +1564,7 @@ export function SystemSettings() {
               </select>
             </div>
           </div>
-        )}
+        ) : null}
 
         {/* View 1: Users & Access Directory (Last Activity column removed) */}
         {activeTab === "directory" && (
@@ -1869,6 +2346,524 @@ export function SystemSettings() {
                   {isSavingSchedule ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                   <span>{isSavingSchedule ? "Saving..." : "Save Policy to Turso"}</span>
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* View 4: Personnel Profile & PNPKI .p12 Keystore */}
+        {activeTab === "profile" && (
+          <div className="flex flex-col">
+            {/* Header / Intro bar */}
+            <div className="p-5 bg-[#0A0E1A] border-b border-[#18233C] flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+              <div className="flex items-center gap-3.5">
+                <div className="w-10 h-10 rounded-2xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400 shrink-0">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-white uppercase tracking-wider">
+                      {isAceUser ? "Personal Credentials & PNPKI Certificate Keystore" : "Personal Credentials & Signature Setup"}
+                    </span>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                      Turso Cloud: dtr_user_setup & dtr_generator
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {isAceUser
+                      ? "Manage your official personnel identity, designation, provincial station, supervisor presets, biometric credentials, signature image, and PNPKI .p12 digital certificate."
+                      : "Manage your official personnel identity, designation, provincial station, supervisor presets, biometric credentials, and digital signature image."}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleSavePersonnelProfile}
+                  disabled={isSavingProfile}
+                  className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold px-5 py-2.5 rounded-xl text-xs transition-all shadow-lg shadow-purple-900/40 cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingProfile ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  <span>{isSavingProfile ? "Saving Profile..." : "Save Personnel Profile & .p12"}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6 space-y-6">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                
+                {/* Left 6 Columns: Personal Information & Presets */}
+                <div className="lg:col-span-6 space-y-5">
+                  <div className="bg-[#111728] border border-[#1C2844] p-5 rounded-2xl space-y-4">
+                    <div className="flex items-center justify-between border-b border-[#18233C] pb-3">
+                      <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                        <User className="w-4 h-4 text-blue-400" />
+                        Official Personnel Profile
+                      </h4>
+                      <span className="text-[10px] text-slate-400">Used across DTR, UAT & Signatures</span>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-semibold text-slate-300">
+                          Official Full Name <span className="text-purple-400">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={profileName}
+                          onChange={(e) => setProfileName(e.target.value)}
+                          placeholder="e.g. Engr. Ace M. Malto"
+                          className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-purple-500 font-medium"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-slate-300">
+                            Position / Designation
+                          </label>
+                          <input
+                            type="text"
+                            value={profileDesignation}
+                            onChange={(e) => setProfileDesignation(e.target.value)}
+                            placeholder="e.g. Engineer II / Provincial Officer"
+                            className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-purple-500 font-medium"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-slate-300">
+                            Station / Provincial Office
+                          </label>
+                          <select
+                            value={profileProvince}
+                            onChange={(e) => setProfileProvince(e.target.value)}
+                            className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-purple-500 cursor-pointer"
+                          >
+                            <option value="Albay">Albay Provincial Office</option>
+                            <option value="Camarines Norte">Camarines Norte Provincial Office</option>
+                            <option value="Camarines Sur">Camarines Sur Provincial Office</option>
+                            <option value="Catanduanes">Catanduanes Provincial Office</option>
+                            <option value="Masbate">Masbate Provincial Office</option>
+                            <option value="Sorsogon">Sorsogon Provincial Office</option>
+                            <option value="Regional Office">DICT Region V - Regional Office (Legazpi)</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
+                            <Phone className="w-3 h-3 text-cyan-400" />
+                            <span>Contact Phone</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={profilePhone}
+                            onChange={(e) => setProfilePhone(e.target.value)}
+                            placeholder="+63 9XX XXX XXXX"
+                            className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-purple-500 font-mono"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
+                            <Mail className="w-3 h-3 text-blue-400" />
+                            <span>Official Email Address</span>
+                          </label>
+                          <input
+                            type="email"
+                            value={profileEmail}
+                            onChange={(e) => setProfileEmail(e.target.value)}
+                            placeholder="name@dict.gov.ph"
+                            className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-purple-500 font-mono"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Immediate Supervisor Presets */}
+                  <div className="bg-[#111728] border border-[#1C2844] p-5 rounded-2xl space-y-4">
+                    <div className="flex items-center justify-between border-b border-[#18233C] pb-3">
+                      <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                        <Crown className="w-4 h-4 text-amber-400" />
+                        Immediate Supervisor Presets (Civil Service Form 48)
+                      </h4>
+                      <span className="text-[10px] text-amber-400/80">Auto-filled in verified DTR</span>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-semibold text-slate-300">
+                          Supervisor Full Name
+                        </label>
+                        <input
+                          type="text"
+                          value={supervisorName}
+                          onChange={(e) => setSupervisorName(e.target.value)}
+                          placeholder="e.g. DIR. CARMELITA H. CENTENO"
+                          className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-purple-500 font-medium"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-semibold text-slate-300">
+                          Supervisor Official Title / Designation
+                        </label>
+                        <input
+                          type="text"
+                          value={supervisorTitle}
+                          onChange={(e) => setSupervisorTitle(e.target.value)}
+                          placeholder="e.g. Regional Director, DICT Region V"
+                          className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-purple-500 font-medium"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Biometric Time Clock Credentials */}
+                  <div className="bg-[#111728] border border-[#1C2844] p-5 rounded-2xl space-y-4">
+                    <div className="flex items-center justify-between border-b border-[#18233C] pb-3">
+                      <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                        <Clock className="w-4 h-4 text-emerald-400" />
+                        Biometric Time Clock Sync (Open Time Clock)
+                      </h4>
+                      <span className="text-[10px] text-emerald-400">Turso table: dtr_user_setup</span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-semibold text-slate-300">
+                          OTC Username
+                        </label>
+                        <input
+                          type="text"
+                          value={otcUsername}
+                          onChange={(e) => setOtcUsername(e.target.value)}
+                          placeholder="Your OTC login username"
+                          className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-purple-500 font-mono"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-semibold text-slate-300">
+                          OTC Password / PIN
+                        </label>
+                        <input
+                          type="password"
+                          value={otcPassword}
+                          onChange={(e) => setOtcPassword(e.target.value)}
+                          placeholder="Optional biometric PIN"
+                          className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-purple-500 font-mono"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right 6 Columns: PNPKI .p12 Keystore & Digital Signature Image */}
+                <div className="lg:col-span-6 space-y-5">
+                  
+                  {/* Card 1: PNPKI .p12 Digital Certificate (Visible exclusively to ace.malto@dict.gov.ph) */}
+                  {isAceUser && (
+                    <div className="bg-[#111728] border border-[#1C2844] p-5 rounded-2xl space-y-4">
+                    <div className="flex items-center justify-between border-b border-[#18233C] pb-3">
+                      <div className="flex items-center gap-2">
+                        <FileKey className="w-4 h-4 text-purple-400" />
+                        <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                          PNPKI Digital Certificate (.p12 / .pfx)
+                        </h4>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        isP12Unlocked
+                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                          : p12File
+                          ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                          : "bg-slate-800 text-slate-400 border border-slate-700"
+                      }`}>
+                        {isP12Unlocked ? "Verified & Active" : p12File ? "Locked (Password Required)" : "No Certificate Loaded"}
+                      </span>
+                    </div>
+
+                    {/* File Upload Box */}
+                    <div className="space-y-3">
+                      {p12File ? (
+                        <div className="p-3.5 rounded-xl bg-[#0A0E1A] border border-[#1C2844] flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-9 h-9 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400 shrink-0">
+                              <FileKey className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="font-bold text-white text-xs truncate font-mono">
+                                {p12File.name}
+                              </div>
+                              <div className="text-[10px] text-slate-400">
+                                {(p12File.size / 1024).toFixed(1)} KB • PKCS#12 Keystore
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <label className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-semibold cursor-pointer border border-slate-700 transition-colors">
+                              <span>Replace</span>
+                              <input
+                                type="file"
+                                accept=".p12,.pfx"
+                                onChange={handleP12FileUpload}
+                                className="hidden"
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              onClick={handleClearP12Keystore}
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                              title="Remove .p12 keystore"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <label className="border-2 border-dashed border-[#1C2844] hover:border-purple-500/50 rounded-2xl p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-all bg-[#0A0E1A]/50 hover:bg-purple-950/10 group">
+                          <UploadCloud className="w-8 h-8 text-purple-400/70 group-hover:text-purple-400 transition-colors mb-2" />
+                          <span className="text-xs font-bold text-white">
+                            Upload PNPKI .p12 or .pfx Certificate
+                          </span>
+                          <span className="text-[10px] text-slate-400 mt-0.5">
+                            Drag and drop or click to browse standard PKCS#12 digital keystore
+                          </span>
+                          <input
+                            type="file"
+                            accept=".p12,.pfx"
+                            onChange={handleP12FileUpload}
+                            className="hidden"
+                          />
+                        </label>
+                      )}
+
+                      {/* Password input & verification */}
+                      {p12File && !isP12Unlocked && (
+                        <div className="space-y-2.5 pt-1">
+                          <label className="text-[11px] font-semibold text-slate-300">
+                            Keystore Password <span className="text-purple-400">*</span>
+                          </label>
+                          <div className="flex gap-2">
+                            <div className="relative flex-1">
+                              <input
+                                type={showP12Password ? "text" : "password"}
+                                value={p12Password}
+                                onChange={(e) => setP12Password(e.target.value)}
+                                placeholder="Enter .p12 certificate password"
+                                className="w-full bg-[#0A0E1A] border border-[#1C2844] rounded-xl pl-3.5 pr-10 py-2.5 text-xs text-white focus:outline-none focus:border-purple-500 font-mono"
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    handleUnlockP12Keystore();
+                                  }
+                                }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowP12Password((p) => !p)}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                              >
+                                {showP12Password ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                              </button>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={handleUnlockP12Keystore}
+                              className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-md shadow-purple-950/40 transition-colors cursor-pointer shrink-0"
+                            >
+                              Unlock & Verify
+                            </button>
+                          </div>
+
+                          <label className="flex items-center gap-2 cursor-pointer select-none text-[11px] text-slate-400 hover:text-slate-300 pt-1">
+                            <input
+                              type="checkbox"
+                              checked={savePasswordToDb}
+                              onChange={(e) => setSavePasswordToDb(e.target.checked)}
+                              className="rounded border-[#1C2844] bg-[#0A0E1A] text-purple-600 focus:ring-0 cursor-pointer"
+                            />
+                            <span>Save password in encrypted Turso database (Civil Service Form 48 1-click export)</span>
+                          </label>
+                        </div>
+                      )}
+
+                      {/* Error banner */}
+                      {p12Error && (
+                        <div className="p-3 rounded-xl bg-red-950/40 border border-red-500/30 text-red-300 text-xs flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                          <span>{p12Error}</span>
+                        </div>
+                      )}
+
+                      {/* Verified Signer Identity Metadata Grid */}
+                      {isP12Unlocked && p12SignerIdentity && (
+                        <div className="p-4 rounded-xl bg-[#0A0E1A] border border-emerald-500/30 space-y-3">
+                          <div className="flex items-center justify-between border-b border-[#18233C] pb-2">
+                            <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                              <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+                              Cryptographic Signer Identity (Verified)
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono">
+                              Chains: {p12SignerIdentity.caChainCount}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-[11px]">
+                            <div>
+                              <span className="text-slate-400 text-[10px] block">Signer Common Name (CN):</span>
+                              <span className="font-black text-white">{p12SignerIdentity.commonName}</span>
+                            </div>
+                            <div>
+                              <span className="text-slate-400 text-[10px] block">Issuer CA:</span>
+                              <span className="font-semibold text-purple-300">{p12SignerIdentity.issuerCN || "DICT PNPKI GovCA"}</span>
+                            </div>
+                            <div>
+                              <span className="text-slate-400 text-[10px] block">Serial Number:</span>
+                              <span className="font-mono text-slate-300 text-[10px] truncate block">{p12SignerIdentity.serialNumber || "N/A"}</span>
+                            </div>
+                            <div>
+                              <span className="text-slate-400 text-[10px] block">Validity Window:</span>
+                              <span className="text-[10px] text-emerald-300 font-mono">
+                                {p12SignerIdentity.validFrom.slice(0, 10)} to {p12SignerIdentity.validTo.slice(0, 10)}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="pt-1 border-t border-[#18233C]/80">
+                            <span className="text-slate-400 text-[10px] block">SHA-256 Certificate Fingerprint:</span>
+                            <code className="text-[9.5px] text-cyan-300 font-mono break-all select-all block bg-[#111728] p-1.5 rounded-lg border border-[#1C2844] mt-1">
+                              {p12SignerIdentity.sha256Fingerprint}
+                            </code>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  )}
+
+                  {/* Card 2: Signature Image & DTR Form 48 Stamp Preview */}
+                  <div className="bg-[#111728] border border-[#1C2844] p-5 rounded-2xl space-y-4">
+                    <div className="flex items-center justify-between border-b border-[#18233C] pb-3">
+                      <div className="flex items-center gap-2">
+                        <FileSignature className="w-4 h-4 text-emerald-400" />
+                        <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                          Digital Signature Image & Stamp Preview
+                        </h4>
+                      </div>
+                      <span className="text-[10px] text-slate-400">Civil Service Form 48</span>
+                    </div>
+
+                    <div className="space-y-3">
+                      {/* Image Upload / Preview */}
+                      {signatureImage ? (
+                        <div className="space-y-2">
+                          <div className="relative rounded-xl border border-[#1C2844] bg-[#0A0E1A] p-4 flex items-center justify-center min-h-[90px] overflow-hidden group">
+                            {/* Transparent checkerboard background */}
+                            <div
+                              className="absolute inset-0 opacity-15"
+                              style={{
+                                backgroundImage:
+                                  "linear-gradient(45deg, #222 25%, transparent 25%), linear-gradient(-45deg, #222 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #222 75%), linear-gradient(-45deg, transparent 75%, #222 75%)",
+                                backgroundSize: "16px 16px",
+                                backgroundPosition: "0 0, 0 8px, 8px -8px, -8px 0px",
+                              }}
+                            />
+                            <img
+                              src={signatureImage}
+                              alt="Official Digital Signature"
+                              className="max-h-20 max-w-full object-contain relative z-10"
+                            />
+                          </div>
+
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1">
+                              <Check className="w-3 h-3" /> Transparent PNG Loaded
+                            </span>
+                            <div className="flex items-center gap-2">
+                              <label className="text-[11px] font-semibold text-slate-300 hover:text-white px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 cursor-pointer border border-slate-700 transition-colors">
+                                Replace
+                                <input
+                                  type="file"
+                                  accept="image/png,image/jpeg"
+                                  onChange={handleSignatureImageUpload}
+                                  className="hidden"
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                onClick={handleClearSignatureImage}
+                                className="text-[11px] font-semibold text-red-400 hover:text-red-300 px-2.5 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors cursor-pointer"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <label className="border-2 border-dashed border-[#1C2844] hover:border-emerald-500/50 rounded-2xl p-5 flex flex-col items-center justify-center text-center cursor-pointer transition-all bg-[#0A0E1A]/50 hover:bg-emerald-950/10 group">
+                          <FileSignature className="w-8 h-8 text-emerald-400/70 group-hover:text-emerald-400 transition-colors mb-2" />
+                          <span className="text-xs font-bold text-white">
+                            Upload Transparent Signature Image (PNG)
+                          </span>
+                          <span className="text-[10px] text-slate-400 mt-0.5">
+                            Signatures with transparent background overlay seamlessly onto Civil Service Form 48
+                          </span>
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg"
+                            onChange={handleSignatureImageUpload}
+                            className="hidden"
+                          />
+                        </label>
+                      )}
+
+                      {/* Official PNPKI Form 48 Stamp Simulation */}
+                      <div className="p-3.5 rounded-xl bg-gradient-to-r from-[#0C1222] to-[#121A30] border border-[#1E2D4E] space-y-2">
+                        <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                          <span>Live Civil Service Form 48 Stamp Preview:</span>
+                          <span className="text-emerald-400 font-mono">DTR Vector Rendering</span>
+                        </div>
+
+                        <div className="p-3 rounded-lg bg-white/5 border border-white/10 flex flex-col sm:flex-row items-center gap-3">
+                          {signatureImage && (
+                            <img
+                              src={signatureImage}
+                              alt="Signature"
+                              className="h-10 w-24 object-contain shrink-0"
+                            />
+                          )}
+                          <div className="text-[10px] space-y-0.5 min-w-0">
+                            <div className="font-black text-purple-300 uppercase tracking-wide">
+                              DICT PNPKI DIGITALLY SIGNED
+                            </div>
+                            <div className="text-white font-semibold truncate">
+                              Signer: {p12SignerIdentity?.commonName || profileName || currentUser?.name || "PERSONNEL"}
+                            </div>
+                            <div className="text-slate-400 font-mono text-[9px]">
+                              Date: {profileTimestamp}
+                            </div>
+                            {p12SignerIdentity?.sha256Fingerprint && (
+                              <div className="text-cyan-400 font-mono text-[8.5px] truncate">
+                                SHA-256: {p12SignerIdentity.sha256Fingerprint.slice(0, 23)}...
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+
               </div>
             </div>
           </div>

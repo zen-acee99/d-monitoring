@@ -201,6 +201,8 @@ export function DtrPdfModal({ isOpen, onClose, record }: DtrPdfModalProps) {
           supervisorSignatureImage: record.supervisorSignatureImage || (record.status !== "Submitted" ? record.signatureImage : undefined),
           supervisorHasP12: record.supervisorHasP12 ?? (record.status !== "Submitted" ? record.hasP12 : undefined),
           signerName: record.signerName || record.supervisorName,
+          fileName: record.pdfFileName,
+          pdfFileName: record.pdfFileName,
         } as any,
         record.rows,
         record.supervisorSignatureImage || record.employeeSignatureImage || record.signatureImage,

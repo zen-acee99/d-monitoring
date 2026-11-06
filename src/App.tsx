@@ -117,6 +117,14 @@ function App() {
             </Shell>
           }
         />
+        <Route
+          path="/settings/profile"
+          element={
+            <Shell>
+              <SystemSettings defaultTab="profile" />
+            </Shell>
+          }
+        />
 
         {/* Fallbacks for other routes */}
         <Route path="*" element={<Navigate to="/login" replace />} />

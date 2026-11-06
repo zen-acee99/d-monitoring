@@ -431,6 +431,7 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
       pdfBase64,
       profileId,
       user_Id,
+      signerName,
       p12,
       p12_password,
       account_password,
@@ -440,6 +441,9 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
       sigRects,
       fieldName,
       pageIndex,
+      signatureImage,
+      isCounterSign,
+      counterSignPosition,
     } = req.body;
 
     if (!pdfBase64) {
@@ -448,16 +452,30 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
 
     const headerUserId = req.headers["x-user-id"] ? String(req.headers["x-user-id"]).trim() : null;
 
-    // Verify that any supplied user_Id / profileId belongs to a registered user in administration
-    const candidateUserId =
-      (user_Id ? String(user_Id).trim() : null) ||
-      (profileId ? String(profileId).trim().replace(/^dtr-sig-/, "") : null) ||
-      headerUserId;
+    // Resolve user from user_Id, header, or signature profile
+    let resolvedUserId = user_Id ? String(user_Id).trim() : null;
+    let resolvedUserName = "";
+    if (profileId) {
+      const pCheck = await db.execute({
+        sql: "SELECT * FROM dtr_generator WHERE id = ? OR user_Id = ? LIMIT 1",
+        args: [profileId, profileId],
+      }).catch(() => ({ rows: [] }));
+      if (pCheck.rows.length > 0) {
+        const row: any = pCheck.rows[0];
+        if (!resolvedUserId && row.user_Id) resolvedUserId = String(row.user_Id);
+        if (row.Name) resolvedUserName = String(row.Name);
+      }
+    }
 
-    if (candidateUserId) {
+    const candidateUserId =
+      resolvedUserId ||
+      headerUserId ||
+      (profileId ? String(profileId).trim().replace(/^dtr-sig-/, "") : null);
+
+    if (candidateUserId || resolvedUserName) {
       let regCheck = await db.execute({
-        sql: "SELECT * FROM administration WHERE id = ? OR email = ? OR LOWER(name) = LOWER(?) LIMIT 1",
-        args: [candidateUserId, candidateUserId, candidateUserId],
+        sql: "SELECT * FROM administration WHERE id = ? OR email = ? OR LOWER(name) = LOWER(?) OR LOWER(name) = LOWER(?) LIMIT 1",
+        args: [candidateUserId || "", candidateUserId || "", candidateUserId || "", resolvedUserName || ""],
       }).catch(() => ({ rows: [] }));
 
       if (regCheck.rows.length === 0) {
@@ -535,9 +553,10 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
 
     let p12ToUse = p12;
     let passwordToUse = p12_password;
+    let sigImgToUse = signatureImage;
 
     // If profileId or user_Id provided, look up saved profile in database
-    if ((!p12ToUse || !passwordToUse) && (profileId || user_Id)) {
+    if ((!p12ToUse || !passwordToUse || !sigImgToUse) && (profileId || user_Id)) {
       const lookupId = profileId || user_Id;
       const check = await db.execute({
         sql: "SELECT * FROM dtr_generator WHERE (id = ? OR user_Id = ?) AND (user_Id IS NULL OR user_Id NOT LIKE 'g-%') AND id NOT LIKE 'dtr-sig-g-%'",
@@ -552,6 +571,9 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
         if (!passwordToUse && row.p12_password) {
           passwordToUse = decryptP12Password(String(row.p12_password));
         }
+        if (!sigImgToUse && row.image_digiSigned) {
+          sigImgToUse = String(row.image_digiSigned);
+        }
       } else {
         const all = await db.execute(
           "SELECT * FROM dtr_generator WHERE p12 IS NOT NULL AND (user_Id IS NULL OR user_Id NOT LIKE 'g-%') AND id NOT LIKE 'dtr-sig-g-%'"
@@ -564,14 +586,58 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
           if (!passwordToUse && matched.p12_password) {
             passwordToUse = decryptP12Password(String(matched.p12_password));
           }
+          if (!sigImgToUse && matched.image_digiSigned) {
+            sigImgToUse = String(matched.image_digiSigned);
+          }
         }
       }
     }
 
     if (!p12ToUse) {
+      // If a specific signer was requested, look up their specific record by name or user_Id
+      if (signerName) {
+        const nameCheck = await db.execute({
+          sql: "SELECT * FROM dtr_generator WHERE (Name LIKE ? OR user_Id LIKE ?) AND p12 IS NOT NULL LIMIT 1",
+          args: [`%${signerName}%`, `%${signerName}%`],
+        }).catch(() => ({ rows: [] }));
+
+        if (nameCheck.rows.length > 0 && nameCheck.rows[0].p12) {
+          const row: any = nameCheck.rows[0];
+          p12ToUse = String(row.p12);
+          if (!passwordToUse && row.p12_password) {
+            passwordToUse = decryptP12Password(String(row.p12_password));
+          }
+          if (!sigImgToUse && row.image_digiSigned) {
+            sigImgToUse = String(row.image_digiSigned);
+          }
+        }
+      }
+
+      // Automatic supervisor fallback ONLY if explicitly requesting the official supervisor profile ('dtr-sig-sup-01')
+      if (!p12ToUse && profileId === "dtr-sig-sup-01") {
+        const supCheck = await db.execute({
+          sql: "SELECT * FROM dtr_generator WHERE id = 'dtr-sig-sup-01' AND p12 IS NOT NULL LIMIT 1",
+          args: [],
+        }).catch(() => ({ rows: [] }));
+
+        if (supCheck.rows.length > 0 && supCheck.rows[0].p12) {
+          const row: any = supCheck.rows[0];
+          p12ToUse = String(row.p12);
+          if (!passwordToUse && row.p12_password) {
+            passwordToUse = decryptP12Password(String(row.p12_password));
+          }
+          if (!sigImgToUse && row.image_digiSigned) {
+            sigImgToUse = String(row.image_digiSigned);
+          }
+        }
+      }
+    }
+
+    if (!p12ToUse) {
+      const targetUser = signerName ? ` for "${signerName}"` : "";
       return res.status(400).json({
         success: false,
-        error: "No PNPKI .p12 certificate found for signing. Please upload or attach a .p12 file.",
+        error: `No PNPKI .p12 certificate found${targetUser}. Please unlock or upload your .p12 keystore to apply your official digital signature.`,
       });
     }
 
@@ -587,13 +653,17 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
         sigRects: Array.isArray(sigRects) ? (sigRects as [number, number, number, number][]) : undefined,
         fieldName: typeof fieldName === "string" ? fieldName : undefined,
         pageIndex: typeof pageIndex === "number" ? pageIndex : undefined,
+        signatureImage: typeof sigImgToUse === "string" ? sigImgToUse : undefined,
+        signerName: typeof signerName === "string" && signerName.trim() ? signerName.trim() : undefined,
+        isCounterSign: Boolean(isCounterSign),
+        counterSignPosition: typeof counterSignPosition === "string" ? counterSignPosition : undefined,
       }
     );
 
     return res.json({
       success: true,
       signedPdfBase64: signedBuffer.toString("base64"),
-      signerName: signedBy,
+      signerName: (typeof signerName === "string" && signerName.trim()) ? signerName.trim() : signedBy,
       certificateInfo,
       signerIdentity: {
         commonName: signerIdentity.commonName,

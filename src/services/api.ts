@@ -842,6 +842,10 @@ export const dtrGeneratorApi = {
     sigRects?: [number, number, number, number][];
     fieldName?: string;
     pageIndex?: number;
+    signatureImage?: string;
+    signerName?: string;
+    isCounterSign?: boolean;
+    counterSignPosition?: string;
   }): Promise<{
     success: boolean;
     signedPdfBase64?: string;

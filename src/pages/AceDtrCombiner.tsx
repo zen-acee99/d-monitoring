@@ -353,7 +353,7 @@ export function AceDtrCombiner() {
       detectedReason: "Analyzing PDF structure & applying Rene Jane PNPKI signature...",
       pageIndex: 0,
       signatureCount: 0,
-      downloadFilename: `${file.name.replace(/\.pdf$/i, "")}_Signed_ReneJane.pdf`,
+      downloadFilename: file.name,
       signerIdentity: {
         ...RENE_JANE_CERT_METADATA,
         timestamp: timestampStr,
@@ -504,7 +504,7 @@ export function AceDtrCombiner() {
       setTimeout(() => {
         const a = document.createElement("a");
         a.href = item.blobUrl!;
-        a.download = item.downloadFilename;
+        a.download = item.downloadFilename || item.fileName || item.file?.name || "signed_document.pdf";
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);

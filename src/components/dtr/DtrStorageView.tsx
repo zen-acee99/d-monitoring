@@ -830,7 +830,7 @@ export function DtrStorageView({
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = item.pdfFileName || `AR_${item.employeeName}_${item.year}.pdf`;
+        a.download = item.pdfFileName || (isAR ? `AR_${item.employeeName}_${item.year}.pdf` : `DTR_${item.employeeName}_${item.year}.pdf`);
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -926,6 +926,8 @@ export function DtrStorageView({
           supervisorSignatureImage: item.supervisorSignatureImage || (item.status !== "Submitted" ? supProf?.image_digiSigned : undefined),
           supervisorHasP12: Boolean((item.supervisorHasP12 || supProf) && (item.status === "Verified" || item.status === "Approved")),
           signerName: effectiveSignerName,
+          fileName: item.pdfFileName,
+          pdfFileName: item.pdfFileName,
         } as any,
         item.rows,
         isSupervisor ? (item.supervisorSignatureImage || (item.status !== "Submitted" ? (supProf?.image_digiSigned || item.signatureImage) : undefined)) : (item.employeeSignatureImage || item.signatureImage),
@@ -1034,6 +1036,8 @@ export function DtrStorageView({
         supervisorSignatureImage: userSigProfile?.image_digiSigned || item.supervisorSignatureImage,
         supervisorHasP12: true,
         signerName: signerName,
+        fileName: item.pdfFileName,
+        pdfFileName: item.pdfFileName,
       } as any,
       item.rows,
       userSigProfile?.image_digiSigned || item.supervisorSignatureImage || item.signatureImage,

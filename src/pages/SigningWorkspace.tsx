@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import JSZip from "jszip";
 import {
   PenLine,
   Upload,
@@ -18,6 +19,8 @@ import {
   Search,
   Filter,
   FileKey,
+  KeyRound,
+  Lock,
   Check,
   ChevronDown,
   BadgeCheck,
@@ -1269,12 +1272,13 @@ function UploadModal({
         entry.scanResult = scan;
       } catch (err) {
         console.warn("Could not scan PDF for signers, using default signatories:", err);
+        const fallbackName = (storedUsers[0]?.name || "PERSONNEL").toUpperCase().trim();
         entry.scanResult = {
-          primaryPersonnel: "ACE M. MALTO",
-          requiredSigners: ["ACE M. MALTO"],
+          primaryPersonnel: fallbackName,
+          requiredSigners: [fallbackName],
           signers: [
             {
-              name: "ACE M. MALTO",
+              name: fallbackName,
               roleHeader: "",
               title: undefined,
               x: 420,
@@ -2087,6 +2091,382 @@ function BulkCounterSignModal({
   );
 }
 
+// ─── PNPKI .p12 Keystore Management Modal ───────────────────────────────────
+
+interface P12KeystoreModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  currentUser: any;
+  activeKeystore: any;
+  onKeystoreActivated: (keystore: any) => void;
+  showNotification: (msg: string) => void;
+}
+
+function P12KeystoreModal({
+  isOpen,
+  onClose,
+  currentUser,
+  activeKeystore,
+  onKeystoreActivated,
+  showNotification,
+}: P12KeystoreModalProps) {
+  const [tab, setTab] = useState<"select" | "upload">("select");
+  const [availableProfiles, setAvailableProfiles] = useState<DtrGeneratorSignatureRecord[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState<string>("");
+  const [isLoadingProfiles, setIsLoadingProfiles] = useState(false);
+
+  // Upload state
+  const [p12File, setP12File] = useState<{ name: string; size: number; base64: string } | null>(null);
+  const [p12Password, setP12Password] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [verifiedIdentity, setVerifiedIdentity] = useState<any | null>(null);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setIsLoadingProfiles(true);
+      dtrGeneratorApi
+        .getRecords()
+        .then((records) => {
+          const withP12 = (records || []).filter((r) => r.hasP12 || r.p12_filename || r.p12);
+          setAvailableProfiles(withP12);
+          if (withP12.length > 0) {
+            const currentMatch = currentUser
+              ? withP12.find(
+                  (p) =>
+                    (currentUser.id && (String(p.user_Id) === String(currentUser.id) || p.id === `dtr-sig-${currentUser.id}`)) ||
+                    matchNames(p.Name, currentUser.name)
+                )
+              : null;
+            if (currentMatch) {
+              setSelectedProfileId(currentMatch.id);
+            } else {
+              // Direct user to upload their own P12 certificate if not yet in database
+              setTab("upload");
+            }
+          } else {
+            setTab("upload");
+          }
+        })
+        .catch((e) => console.warn("Could not fetch P12 profiles:", e))
+        .finally(() => setIsLoadingProfiles(false));
+    }
+  }, [isOpen, selectedProfileId]);
+
+  if (!isOpen) return null;
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setVerifyError(null);
+    setVerifiedIdentity(null);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const b64 = (reader.result as string).replace(/^data:.*?;base64,/, "");
+      setP12File({ name: file.name, size: file.size, base64: b64 });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleVerifyUpload = async () => {
+    if (!p12File) {
+      setVerifyError("Please select a .p12 certificate file first.");
+      return;
+    }
+    setIsVerifying(true);
+    setVerifyError(null);
+    try {
+      const res = await dtrGeneratorApi.getP12Identity({
+        p12: p12File.base64,
+        p12_password: p12Password,
+      });
+      if (res.success && res.identity) {
+        setVerifiedIdentity(res.identity);
+      } else {
+        setVerifyError(res.error || "Failed to unlock .p12 certificate. Please verify your password.");
+      }
+    } catch (err: any) {
+      setVerifyError(err.message || "Failed to unlock .p12 certificate. Check password.");
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const handleActivateSelected = () => {
+    const target = availableProfiles.find((p) => p.id === selectedProfileId);
+    if (!target) return;
+    onKeystoreActivated({
+      profileId: target.id,
+      userId: target.user_Id,
+      signerName: target.Name,
+      isUnlocked: true,
+      hasP12: true,
+    });
+    showNotification(`✓ PNPKI Keystore activated: "${target.Name}"`);
+    onClose();
+  };
+
+  const handleActivateUploaded = async () => {
+    if (!p12File || !verifiedIdentity) return;
+    const signerName = verifiedIdentity.commonName || currentUser?.name || "Signer";
+    const profileId = currentUser?.id ? `dtr-sig-${currentUser.id}` : undefined;
+    const userId = currentUser?.id ? String(currentUser.id) : undefined;
+
+    try {
+      await dtrGeneratorApi.saveSignatureProfile({
+        id: profileId,
+        user_Id: userId,
+        Name: signerName,
+        p12: p12File.base64,
+        p12_filename: p12File.name,
+        p12_filesize: p12File.size,
+        p12_password: p12Password,
+      });
+    } catch (e) {
+      console.warn("Could not save P12 to database:", e);
+    }
+
+    onKeystoreActivated({
+      profileId,
+      userId,
+      signerName,
+      p12Base64: p12File.base64,
+      p12Password,
+      isUnlocked: true,
+      hasP12: true,
+      certificateInfo: verifiedIdentity,
+    });
+    showNotification(`✓ PNPKI Keystore unlocked and activated for "${signerName}"`);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-sm animate-in fade-in">
+      <div className="bg-[#0C101A] border border-[#1A2235] rounded-xl sm:rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 sm:py-4 border-b border-[#1A2235] bg-[#080B13]">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-violet-500/10 border border-violet-500/20 flex items-center justify-center text-violet-400 shrink-0">
+              <KeyRound className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-sm font-bold text-white">PNPKI .p12 Keystore Manager</h2>
+              <p className="text-[10px] sm:text-[11px] text-slate-400">
+                Configure cryptographic digital signing for CS Form 48 & Signing Workspace
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Active Keystore Banner */}
+        {activeKeystore?.isUnlocked && (
+          <div className="mx-4 sm:mx-6 mt-4 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/25 flex items-center gap-3 text-emerald-300">
+            <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0" />
+            <div className="text-xs">
+              <div className="font-bold">Active Keystore: {activeKeystore.signerName || "Authorized Signer"}</div>
+              <div className="text-[10px] text-emerald-400/80">Ready for cryptographic digital signing & counter-signing.</div>
+            </div>
+          </div>
+        )}
+
+        {/* Tab Switcher */}
+        <div className="flex border-b border-[#1A2235] px-4 sm:px-6 pt-3 gap-2">
+          <button
+            type="button"
+            onClick={() => setTab("select")}
+            className={`pb-2 px-3 text-xs font-bold transition-colors cursor-pointer border-b-2 ${
+              tab === "select"
+                ? "border-violet-500 text-violet-400"
+                : "border-transparent text-slate-400 hover:text-white"
+            }`}
+          >
+            Registered DICT Keystores ({availableProfiles.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("upload")}
+            className={`pb-2 px-3 text-xs font-bold transition-colors cursor-pointer border-b-2 ${
+              tab === "upload"
+                ? "border-violet-500 text-violet-400"
+                : "border-transparent text-slate-400 hover:text-white"
+            }`}
+          >
+            Upload New .p12 File
+          </button>
+        </div>
+
+        {/* Tab Content */}
+        <div className="p-4 sm:p-6 space-y-4">
+          {tab === "select" ? (
+            <div className="space-y-3">
+              <label className="text-xs font-bold text-slate-200">
+                Select from verified DICT Region V PNPKI keystores in Turso:
+              </label>
+
+              {isLoadingProfiles ? (
+                <div className="p-4 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin text-violet-400" />
+                  <span>Loading available keystores…</span>
+                </div>
+              ) : availableProfiles.length === 0 ? (
+                <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
+                  ⚠️ No registered .p12 keystores found in the database. Please upload your .p12 file.
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                  {availableProfiles.map((p) => {
+                    const isSelected = selectedProfileId === p.id;
+                    return (
+                      <div
+                        key={p.id}
+                        onClick={() => setSelectedProfileId(p.id)}
+                        className={`p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between ${
+                          isSelected
+                            ? "bg-violet-600/15 border-violet-500 text-white shadow-sm shadow-violet-950/40"
+                            : "bg-[#111728] border-[#1C2844] text-slate-300 hover:border-slate-600"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <FileKey className={`w-4 h-4 shrink-0 ${isSelected ? "text-violet-400" : "text-slate-400"}`} />
+                          <div>
+                            <div className="text-xs font-bold">{p.Name}</div>
+                            <div className="text-[10px] text-slate-400 font-mono">
+                              {p.p12_filename || "PNPKI Digital Certificate (.p12)"}
+                            </div>
+                          </div>
+                        </div>
+                        {isSelected && <Check className="w-4 h-4 text-violet-400 shrink-0" />}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="p-3 rounded-xl bg-violet-500/5 border border-violet-500/20 text-[11px] text-slate-400 leading-relaxed">
+                When activated, any document you sign or bulk-sign will receive an official cryptographic PNPKI digital signature revision (ISO 32000-1) preserving all earlier signatures intact.
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-200">Upload .p12 / .pfx Certificate File:</label>
+                <input
+                  type="file"
+                  accept=".p12,.pfx"
+                  onChange={handleFileChange}
+                  className="w-full text-xs text-slate-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-violet-600 file:text-white hover:file:bg-violet-500 file:cursor-pointer bg-[#111728] border border-[#1C2844] rounded-xl p-2 cursor-pointer"
+                />
+                {p12File && (
+                  <div className="text-[10px] text-emerald-400 flex items-center gap-1 mt-1">
+                    <Check className="w-3 h-3" />
+                    <span>Selected: {p12File.name} ({(p12File.size / 1024).toFixed(1)} KB)</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-200">Keystore Password:</label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    value={p12Password}
+                    onChange={(e) => setP12Password(e.target.value)}
+                    placeholder="Enter .p12 passphrase"
+                    className="w-full bg-[#111728] border border-[#1C2844] focus:border-violet-500 rounded-xl px-3.5 py-2 text-xs text-white outline-none pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((p) => !p)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs cursor-pointer"
+                  >
+                    {showPassword ? "Hide" : "Show"}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleVerifyUpload}
+                disabled={isVerifying || !p12File}
+                className="w-full py-2 rounded-xl bg-violet-600/30 hover:bg-violet-600/50 border border-violet-500/40 text-violet-300 font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50"
+              >
+                {isVerifying ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Verifying Keystore Cryptography…</span>
+                  </>
+                ) : (
+                  <>
+                    <KeyRound className="w-3.5 h-3.5" />
+                    <span>Verify & Unlock Keystore</span>
+                  </>
+                )}
+              </button>
+
+              {verifyError && (
+                <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-xs text-red-300">
+                  {verifyError}
+                </div>
+              )}
+
+              {verifiedIdentity && (
+                <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-300 space-y-1">
+                  <div className="font-bold flex items-center gap-1.5 text-white">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>Verified: {verifiedIdentity.commonName}</span>
+                  </div>
+                  <div className="text-[10px] text-slate-300">Issuer: {verifiedIdentity.issuerCN || "DICT CA"}</div>
+                  <div className="text-[10px] text-slate-400 font-mono truncate">SHA256: {verifiedIdentity.sha256Fingerprint}</div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex flex-col-reverse sm:flex-row gap-2.5 sm:gap-3 px-4 sm:px-6 py-3 sm:py-3.5 border-t border-[#1A2235] bg-[#080B13]">
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full sm:flex-1 py-2 rounded-xl border border-[#1C2844] text-slate-400 hover:text-white hover:bg-white/5 text-xs font-semibold transition-colors cursor-pointer"
+          >
+            Close
+          </button>
+          {tab === "select" ? (
+            <button
+              type="button"
+              onClick={handleActivateSelected}
+              disabled={!selectedProfileId || availableProfiles.length === 0}
+              className="w-full sm:flex-1 py-2 rounded-xl text-white font-bold text-xs flex items-center justify-center gap-2 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 shadow-lg shadow-violet-950/50 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Activate Selected Keystore</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleActivateUploaded}
+              disabled={!verifiedIdentity}
+              className="w-full sm:flex-1 py-2 rounded-xl text-white font-bold text-xs flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-lg shadow-emerald-950/50 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Save & Activate Keystore</span>
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── LocalStorage Serialization Helper (Safe for 100-200 files) ────────────
 
 function serializeDocsForLocalStorage(docs: WorkspaceDocument[]): string {
@@ -2099,11 +2479,19 @@ function serializeDocsForLocalStorage(docs: WorkspaceDocument[]): string {
 
 export function SigningWorkspace() {
   const [currentUser, setCurrentUser] = useState(() => getCurrentUser());
+  const userEmail = (currentUser?.email || "").toLowerCase().trim();
+  const isAceUser = userEmail === "ace.malto@dict.gov.ph";
 
   useEffect(() => {
     const handleAuthChange = () => {
-      setCurrentUser(getCurrentUser());
+      const freshUser = getCurrentUser();
+      setCurrentUser(freshUser);
       cachedSignerContextRef.current = null;
+      const freshEmail = (freshUser?.email || "").toLowerCase().trim();
+      if (freshEmail !== "ace.malto@dict.gov.ph") {
+        setActiveKeystoreProfile(null);
+        setIsP12KeystoreModalOpen(false);
+      }
     };
 
     const handleUserRosterUpdated = () => {
@@ -2165,6 +2553,21 @@ export function SigningWorkspace() {
   const [counterSignDocTarget, setCounterSignDocTarget] = useState<WorkspaceDocument | null>(null);
   const [counterSignPositionChoice, setCounterSignPositionChoice] = useState<CounterSignPosition>("right");
   const [isSingleCounterSigning, setIsSingleCounterSigning] = useState(false);
+
+  // PNPKI Keystore Management State (Strictly exclusive to ace.malto@dict.gov.ph)
+  const [isP12KeystoreModalOpen, setIsP12KeystoreModalOpen] = useState(false);
+  const [activeKeystoreProfile, setActiveKeystoreProfile] = useState<any | null>(() => {
+    try {
+      if (userEmail !== "ace.malto@dict.gov.ph") return null;
+      const saved = localStorage.getItem("dict_active_p12_keystore");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return null;
+  });
+
+  // Batch Download State (Select All, Selected, or All Queue to ZIP)
+  const [isDownloadingBatch, setIsDownloadingBatch] = useState(false);
+  const [batchDownloadProgress, setBatchDownloadProgress] = useState<{ current: number; total: number } | null>(null);
 
   // High-Speed Batch Upload Streaming State for 100-200 files
   const [batchUploadProgress, setBatchUploadProgress] = useState<{
@@ -2339,7 +2742,13 @@ export function SigningWorkspace() {
       try {
         const parsed = JSON.parse(cached);
         if (Array.isArray(parsed)) {
-          const valid = parsed.filter((d: any) => d && !deletedIds.has(d.id));
+          const freshUsers = getStoredUsers().map((u) => ({ name: u.name, role: u.role, email: u.email }));
+          const valid = parsed
+            .filter((d: any) => d && !deletedIds.has(d.id))
+            .map((d: any) => {
+              const { updatedDoc } = recheckDocWithLatestUsers(d, freshUsers);
+              return updatedDoc as WorkspaceDocument;
+            });
           setDocuments(valid);
         }
       } catch {}
@@ -2481,6 +2890,8 @@ export function SigningWorkspace() {
       }
     }
 
+    const targetFilename = doc.fileName || doc.fileObj?.name || `document_${doc.id}.pdf`;
+
     // 1. Download cryptographically signed PDF if available
     if (pdfUrl) {
       try {
@@ -2496,17 +2907,21 @@ export function SigningWorkspace() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = doc.fileName;
+        a.download = targetFilename;
+        document.body.appendChild(a);
         a.click();
-        URL.revokeObjectURL(url);
-        showNotif(`✓ Downloaded digitally signed ${doc.fileName}`);
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        showNotif(`✓ Downloaded digitally signed ${targetFilename}`);
         return;
       } catch {
         const a = document.createElement("a");
         a.href = doc.pdfDataUrl;
-        a.download = doc.fileName;
+        a.download = targetFilename;
+        document.body.appendChild(a);
         a.click();
-        showNotif(`✓ Downloaded ${doc.fileName}`);
+        document.body.removeChild(a);
+        showNotif(`✓ Downloaded ${targetFilename}`);
         return;
       }
     }
@@ -2516,22 +2931,149 @@ export function SigningWorkspace() {
       const url = URL.createObjectURL(doc.fileObj);
       const a = document.createElement("a");
       a.href = url;
-      a.download = doc.fileName;
+      a.download = targetFilename;
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
-      showNotif(`✓ Downloaded ${doc.fileName}`);
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showNotif(`✓ Downloaded ${targetFilename}`);
       return;
     }
 
-    const sampleContent = `Republic of the Philippines\nDEPARTMENT OF INFORMATION AND COMMUNICATIONS TECHNOLOGY\nRegion V - Bicol Region\n\nOFFICIAL DOCUMENT: ${doc.fileName}\nTracking ID: ${doc.id}\nPrimary Subject: ${doc.targetPersonnel}\nUploaded By: ${doc.uploadedBy}\nUploaded At: ${doc.uploadedAt}\nSigning Status: ${doc.status.toUpperCase()}\n\nScanned Required Signers (${doc.requiredSigners.length}):\n${doc.requiredSigners.map((s, i) => `  ${i + 1}. ${s}`).join("\n")}\n\nCompleted Signatures:\n${doc.signers.filter((s) => s.status === "signed").map((s) => `  ✓ ${s.name} (${s.role || "Signer"}) - Placed Above Name`).join("\n")}\n${(doc.counterSigners || []).map((c) => `  ✓ ${c.name} - Counter-Signed Beside Name (${c.position || "beside"})`).join("\n")}\n\nThis electronic document has been verified under the DICT Signing Workspace.`;
+    const sampleContent = `Republic of the Philippines\nDEPARTMENT OF INFORMATION AND COMMUNICATIONS TECHNOLOGY\nRegion V - Bicol Region\n\nOFFICIAL DOCUMENT: ${targetFilename}\nTracking ID: ${doc.id}\nPrimary Subject: ${doc.targetPersonnel}\nUploaded By: ${doc.uploadedBy}\nUploaded At: ${doc.uploadedAt}\nSigning Status: ${doc.status.toUpperCase()}\n\nScanned Required Signers (${doc.requiredSigners.length}):\n${doc.requiredSigners.map((s, i) => `  ${i + 1}. ${s}`).join("\n")}\n\nCompleted Signatures:\n${doc.signers.filter((s) => s.status === "signed").map((s) => `  ✓ ${s.name} (${s.role || "Signer"}) - Placed Above Name`).join("\n")}\n${(doc.counterSigners || []).map((c) => `  ✓ ${c.name} - Counter-Signed Beside Name (${c.position || "beside"})`).join("\n")}\n\nThis electronic document has been verified under the DICT Signing Workspace.`;
     const blob = new Blob([sampleContent], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = doc.fileName.replace(/\.pdf$/i, ".txt");
+    a.download = targetFilename.replace(/\.pdf$/i, ".txt");
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
-    showNotif(`✓ Downloaded transmittal for ${doc.fileName}`);
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showNotif(`✓ Downloaded transmittal for ${targetFilename}`);
+  };
+
+  // Helper to extract file blob and filename for single or batch downloading
+  const getDocumentFile = async (
+    doc: WorkspaceDocument
+  ): Promise<{ fileName: string; blob: Blob } | null> => {
+    let pdfUrl = doc.pdfDataUrl;
+    if (!pdfUrl && !doc.fileObj) {
+      try {
+        const full = await dtrStorageApi.getRecord(doc.id);
+        if (full?.pdfDataUrl) {
+          pdfUrl = full.pdfDataUrl;
+          doc.pdfDataUrl = full.pdfDataUrl;
+        }
+      } catch (e) {
+        console.warn("Failed to load PDF for batch download:", e);
+      }
+    }
+
+    if (pdfUrl) {
+      try {
+        const base64 = pdfUrl.includes(",") ? pdfUrl.split(",")[1] : pdfUrl;
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        return {
+          fileName: doc.fileName || doc.fileObj?.name || `document_${doc.id}.pdf`,
+          blob: new Blob([bytes], { type: "application/pdf" }),
+        };
+      } catch (e) {
+        console.warn("Error decoding pdfUrl for doc:", doc.id, e);
+      }
+    }
+
+    if (doc.fileObj) {
+      return {
+        fileName: doc.fileName || doc.fileObj.name,
+        blob: doc.fileObj,
+      };
+    }
+
+    const targetFilename = doc.fileName || doc.fileObj?.name || `${doc.id}`;
+    const sampleContent = `Republic of the Philippines\nDEPARTMENT OF INFORMATION AND COMMUNICATIONS TECHNOLOGY\nRegion V - Bicol Region\n\nOFFICIAL DOCUMENT: ${targetFilename}\nTracking ID: ${doc.id}\nPrimary Subject: ${doc.targetPersonnel}\nUploaded By: ${doc.uploadedBy}\nUploaded At: ${doc.uploadedAt}\nSigning Status: ${doc.status.toUpperCase()}\n\nScanned Required Signers (${doc.requiredSigners.length}):\n${doc.requiredSigners.map((s, i) => `  ${i + 1}. ${s}`).join("\n")}\n\nCompleted Signatures:\n${doc.signers.filter((s) => s.status === "signed").map((s) => `  ✓ ${s.name} (${s.role || "Signer"}) - Placed Above Name`).join("\n")}\n${(doc.counterSigners || []).map((c) => `  ✓ ${c.name} - Counter-Signed Beside Name (${c.position || "beside"})`).join("\n")}\n\nThis electronic document has been verified under the DICT Signing Workspace.`;
+    return {
+      fileName: targetFilename.replace(/\.pdf$/i, ".txt"),
+      blob: new Blob([sampleContent], { type: "text/plain;charset=utf-8" }),
+    };
+  };
+
+  // High-performance batch download for selected or all documents into a ZIP archive
+  const handleBatchDownload = async (
+    targetDocs: WorkspaceDocument[],
+    zipLabel = "Batch"
+  ) => {
+    if (targetDocs.length === 0) {
+      showNotif("⚠️ No documents available to download.");
+      return;
+    }
+
+    // Single document: trigger standard direct download
+    if (targetDocs.length === 1) {
+      await handleDownload(targetDocs[0]);
+      return;
+    }
+
+    setIsDownloadingBatch(true);
+    setBatchDownloadProgress({ current: 0, total: targetDocs.length });
+    showNotif(`📦 Packaging ${targetDocs.length} document(s) into ZIP archive...`);
+
+    try {
+      const zip = new JSZip();
+      const usedNames = new Set<string>();
+
+      for (let i = 0; i < targetDocs.length; i++) {
+        const doc = targetDocs[i];
+        setBatchDownloadProgress({ current: i + 1, total: targetDocs.length });
+        const res = await getDocumentFile(doc);
+        if (res) {
+          let name = res.fileName;
+          if (usedNames.has(name)) {
+            const extIdx = name.lastIndexOf(".");
+            const base = extIdx !== -1 ? name.slice(0, extIdx) : name;
+            const ext = extIdx !== -1 ? name.slice(extIdx) : "";
+            let counter = 1;
+            while (usedNames.has(`${base}_(${counter})${ext}`)) {
+              counter++;
+            }
+            name = `${base}_(${counter})${ext}`;
+          }
+          usedNames.add(name);
+          zip.file(name, res.blob);
+        }
+      }
+
+      showNotif(`🗜️ Compressing ${targetDocs.length} documents into ZIP archive...`);
+      const zipBlob = await zip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: { level: 6 },
+      });
+
+      const today = new Date().toISOString().slice(0, 10);
+      const zipName = `DICT_SigningWorkspace_${zipLabel}_${today}.zip`;
+
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = zipName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      showNotif(`✓ Downloaded ${targetDocs.length} document(s) in "${zipName}"!`);
+    } catch (err: any) {
+      console.error("Batch download error:", err);
+      showNotif(`Failed batch download: ${err.message || "Unknown error"}`);
+    } finally {
+      setIsDownloadingBatch(false);
+      setBatchDownloadProgress(null);
+    }
   };
 
   // ─── Signer Profile Context Resolver (Pre-cached for 100+ documents) ────────
@@ -2543,48 +3085,51 @@ export function SigningWorkspace() {
       return cachedSignerContextRef.current;
     }
 
+    let activeKeystore = isAceUser ? activeKeystoreProfile : null;
+    if (!activeKeystore && isAceUser) {
+      try {
+        const saved = localStorage.getItem("dict_active_p12_keystore");
+        if (saved) activeKeystore = JSON.parse(saved);
+      } catch {}
+    }
+
+    // 1. Locate the logged-in user's own profile (to get their real signature image and name!)
     let userSigProfile: DtrGeneratorSignatureRecord | null = null;
+    let fallbackKeystoreProfile: DtrGeneratorSignatureRecord | null = null;
+
     try {
-      if (liveUser?.id) {
-        const list = await dtrGeneratorApi.getRecords({ user_Id: String(liveUser.id) });
-        if (Array.isArray(list) && list.length > 0) {
-          userSigProfile =
-            list.find((p) => String(p.user_Id) === String(liveUser.id) || p.id === `dtr-sig-${liveUser.id}`) || null;
-        }
-      }
-      if (!userSigProfile && currentUserName) {
-        const list = await dtrGeneratorApi.getRecords({ Name: currentUserName });
-        if (Array.isArray(list) && list.length > 0) {
-          userSigProfile =
-            list.find((p) => p.Name.toLowerCase() === currentUserName.toLowerCase() || matchNames(p.Name, currentUserName)) || null;
-        }
-      }
-      if (!userSigProfile && currentUserName) {
-        const all = await dtrGeneratorApi.getRecords();
-        if (Array.isArray(all) && all.length > 0) {
-          userSigProfile =
-            all.find((p) => (p.user_Id && String(p.user_Id) === String(liveUser?.id)) || matchNames(p.Name, currentUserName)) || null;
-        }
+      const all = await dtrGeneratorApi.getRecords();
+      if (Array.isArray(all) && all.length > 0) {
+        // Find logged-in user's profile: match by user_Id, exact name, or partial match (e.g. Ace Malto / Malto Ace Mata)
+        userSigProfile =
+          all.find(
+            (p) =>
+              (liveUser?.id && (String(p.user_Id) === String(liveUser.id) || p.id === `dtr-sig-${liveUser.id}`)) ||
+              matchNames(p.Name, currentUserName) ||
+              (currentUserName.toLowerCase().includes("malto") && p.Name.toLowerCase().includes("malto")) ||
+              (currentUserName.toLowerCase().includes("ace") && p.Name.toLowerCase().includes("ace"))
+          ) || null;
+
+        // Find available fallback P12 keystore profile (e.g. supervisor) for cryptographic seal if user has no P12 yet
+        fallbackKeystoreProfile = all.find((p) => p.hasP12 || p.p12) || null;
       }
     } catch (err) {
       console.warn("Could not load digital signature profile:", err);
     }
 
-    const effectiveSignerName = (currentUserName || userSigProfile?.Name || "Authorized Signer").trim();
+    // Signer name is ALWAYS the logged-in user's name (never overwritten by keystore holder name!)
+    const effectiveSignerName = (
+      currentUserName ||
+      liveUser?.name ||
+      userSigProfile?.Name ||
+      "Authorized Signer"
+    ).trim();
 
-    const isProfileOwnerMatch = Boolean(
-      userSigProfile &&
-      ((userSigProfile.user_Id && String(userSigProfile.user_Id) === String(liveUser?.id)) ||
-        (liveUser?.id && userSigProfile.id === `dtr-sig-${liveUser.id}`) ||
-        matchNames(userSigProfile.Name, currentUserName))
-    );
-
-    let signatureImage = isProfileOwnerMatch ? (userSigProfile?.image_digiSigned || null) : null;
+    // Signature image is ALWAYS the logged-in user's signature stroke
+    let signatureImage = userSigProfile?.image_digiSigned || activeKeystore?.signatureImage || null;
     const isReneJane =
       matchNames(effectiveSignerName, "Rene Jane Rosendo Buena") ||
-      matchNames(currentUserName, "Rene Jane Rosendo Buena") ||
-      effectiveSignerName.toLowerCase().includes("rene jane") ||
-      effectiveSignerName.toLowerCase().includes("buena");
+      matchNames(currentUserName, "Rene Jane Rosendo Buena");
 
     if (!signatureImage && isReneJane) {
       signatureImage = RENE_JANE_SIGNATURE_BASE64;
@@ -2602,16 +3147,33 @@ export function SigningWorkspace() {
       }
     }
 
-    const p12Options =
-      isProfileOwnerMatch && (userSigProfile?.hasP12 || userSigProfile?.p12)
-        ? {
-            profileId: userSigProfile.id,
-            user_Id: userSigProfile.user_Id,
-            p12Base64: userSigProfile.p12 || undefined,
-            signerName: effectiveSignerName,
-            signerRole: "supervisor" as const,
-          }
-        : null;
+    // Determine P12 cryptographic keystore:
+    // 1. User's own P12 if uploaded in database
+    // 2. Active keystore if user selected/unlocked one in the PNPKI modal
+    // Note: Strictly bound to user's identity — NEVER silently fall back to another employee's P12 (e.g. Cantorna)!
+    const chosenP12Profile = (userSigProfile?.hasP12 || userSigProfile?.p12)
+      ? userSigProfile
+      : (activeKeystore?.p12Base64 || activeKeystore?.profileId)
+      ? activeKeystore
+      : null;
+
+    const hasP12Available = Boolean(
+      activeKeystore?.p12Base64 ||
+      chosenP12Profile?.p12Base64 ||
+      chosenP12Profile?.p12 ||
+      chosenP12Profile?.hasP12
+    );
+
+    const p12Options = hasP12Available
+      ? {
+          profileId: userSigProfile?.p12 ? userSigProfile.id : (chosenP12Profile?.id || activeKeystore?.profileId),
+          user_Id: userSigProfile?.p12 ? userSigProfile.user_Id : (chosenP12Profile?.user_Id || activeKeystore?.userId),
+          p12Base64: activeKeystore?.p12Base64 || userSigProfile?.p12 || chosenP12Profile?.p12 || undefined,
+          p12Password: activeKeystore?.p12Password,
+          signerName: effectiveSignerName, // Strictly logged-in user (e.g. Ace Malto)
+          signerRole: "supervisor" as const,
+        }
+      : null;
 
     const ctx: UserSignerContext = {
       userSigProfile,
@@ -2619,7 +3181,7 @@ export function SigningWorkspace() {
       signatureImage,
       signatureImageBytes,
       signatureImageType,
-      isProfileOwnerMatch,
+      isProfileOwnerMatch: true,
       p12Options,
     };
 
@@ -2650,6 +3212,15 @@ export function SigningWorkspace() {
       const effectiveSignerName = signerCtx.effectiveSignerName;
       const signatureImage = signerCtx.signatureImage;
       const p12Options = signerCtx.p12Options;
+
+      // If user has no active P12, do NOT silently sign as another person! Prompt them to unlock their certificate.
+      if (!p12Options && !activeKeystoreProfile?.isUnlocked && !signerCtx.userSigProfile?.p12) {
+        showNotif(`⚠️ No active PNPKI .p12 certificate for "${effectiveSignerName}". Please ensure your .p12 certificate is configured.`);
+        if (isAceUser) {
+          setIsP12KeystoreModalOpen(true);
+        }
+        throw new Error(`PNPKI .p12 certificate required for "${effectiveSignerName}".`);
+      }
 
       // Accurately resolve which signature line in the document to target
       const matchedRequiredSigner = doc.requiredSigners.find((req) =>
@@ -3016,10 +3587,17 @@ export function SigningWorkspace() {
     );
   };
 
-  const toggleSelectAll = (forceValue?: boolean) => {
-    const allSelected = forceValue !== undefined ? !forceValue : documents.length > 0 && documents.every((d) => d.selected);
+  const toggleSelectAll = (customPool?: WorkspaceDocument[], forceValue?: boolean) => {
+    const pool = customPool && customPool.length > 0 ? customPool : documents;
+    const poolIds = new Set(pool.map((d) => d.id));
+    const allSelected =
+      forceValue !== undefined
+        ? !forceValue
+        : pool.length > 0 && pool.every((d) => d.selected);
     const targetState = forceValue !== undefined ? forceValue : !allSelected;
-    setDocuments((prev) => prev.map((d) => ({ ...d, selected: targetState })));
+    setDocuments((prev) =>
+      prev.map((d) => (poolIds.has(d.id) ? { ...d, selected: targetState } : d))
+    );
   };
 
   const deselectAll = () => {
@@ -3117,19 +3695,29 @@ export function SigningWorkspace() {
     // 1. Instant document model instantiation (<5ms for 200 items)
     const newDocs: WorkspaceDocument[] = scannedEntries.map((entry, i) => {
       const scan = entry.scanResult;
-      const primary = scan?.primaryPersonnel || scan?.requiredSigners?.[0] || defaultUser;
+      const isPlaceholderPrimary =
+        !scan?.primaryPersonnel ||
+        scan.primaryPersonnel.toUpperCase() === "PERSONNEL" ||
+        scan.primaryPersonnel.toUpperCase() === "USER";
+
+      const primary = !isPlaceholderPrimary
+        ? scan!.primaryPersonnel
+        : scan?.requiredSigners?.[0] || defaultUser;
+
       const required =
         scan?.requiredSigners && scan.requiredSigners.length > 0
           ? scan.requiredSigners
-          : [defaultUser];
+          : [primary];
 
       const docSigners: DocumentSigner[] =
         scan?.signers && scan.signers.length > 0
-          ? scan.signers.map((s) => ({
+          ? scan.signers.map((s: any) => ({
               name: s.name,
-              role: "Signatory",
-              status: "pending",
+              role: s.title || "Signatory",
+              status: s.status || (s.isAlreadySigned ? "signed" : "pending"),
               position: "above",
+              signedAt: s.signedAt,
+              p12CommonName: s.p12CommonName,
             }))
           : required.map((rName) => ({
               name: rName,
@@ -3903,6 +4491,66 @@ export function SigningWorkspace() {
               </>
             )}
 
+            {/* Batch Download Button (Downloads Selected if selected, or All queue if none selected) */}
+            <button
+              type="button"
+              onClick={() =>
+                handleBatchDownload(
+                  selectedDocs.length > 0
+                    ? selectedDocs
+                    : filtered.length > 0
+                    ? filtered
+                    : documents,
+                  selectedDocs.length > 0 ? "Selected" : "All"
+                )
+              }
+              disabled={isDownloadingBatch || documents.length === 0}
+              className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-3 sm:px-3.5 py-2 rounded-xl text-xs font-bold transition-all border cursor-pointer active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed ${
+                selectedDocs.length > 0
+                  ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 shadow-lg shadow-emerald-950/40"
+                  : "bg-[#101726] border-[#1F293D] text-slate-300 hover:bg-[#151E32] hover:text-white"
+              }`}
+              title={
+                selectedDocs.length > 0
+                  ? `Batch download ${selectedDocs.length} selected document(s) as ZIP archive`
+                  : `Batch download all ${documents.length} document(s) in queue as ZIP archive`
+              }
+            >
+              {isDownloadingBatch ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+              ) : (
+                <Download className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              )}
+              <span>
+                {isDownloadingBatch && batchDownloadProgress
+                  ? `Downloading (${batchDownloadProgress.current}/${batchDownloadProgress.total})`
+                  : selectedDocs.length > 0
+                  ? `Download (${selectedDocs.length})`
+                  : `Batch Download (${documents.length})`}
+              </span>
+            </button>
+
+            {/* PNPKI Keystore Button (Visible exclusively to ace.malto@dict.gov.ph) */}
+            {isAceUser && (
+              <button
+                type="button"
+                onClick={() => setIsP12KeystoreModalOpen(true)}
+                className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-3 sm:px-3.5 py-2 rounded-xl text-xs font-bold transition-all border cursor-pointer active:scale-[0.98] ${
+                  activeKeystoreProfile
+                    ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 shadow-lg shadow-emerald-950/30"
+                    : "bg-[#101726] border-[#1F293D] text-slate-300 hover:bg-[#151E32] hover:text-white"
+                }`}
+                title="Configure or switch active PNPKI .p12 certificate for cryptographic digital signing"
+              >
+                <KeyRound className="w-3.5 h-3.5 shrink-0" />
+                <span>
+                  {activeKeystoreProfile
+                    ? `PNPKI: ${activeKeystoreProfile.signerName?.split(" ")[0] || "Active"}`
+                    : "PNPKI Keystore"}
+                </span>
+              </button>
+            )}
+
             {/* Upload File Button */}
             <button
               type="button"
@@ -4204,7 +4852,7 @@ export function SigningWorkspace() {
             </div>
           </div>
 
-          {/* ── Multi-Select & Batch Deletion Bar (Select All / Delete All / Delete Selected) ── */}
+          {/* ── Multi-Select & Batch Action Bar (Select All / Download Selected / Download All / Delete) ── */}
           {documents.length > 0 && (
             <div className="flex flex-wrap items-center justify-between gap-2.5 px-4 sm:px-5 py-2.5 bg-[#090D17] border-b border-[#1A2235] text-xs">
               {/* Left: Selection toggles */}
@@ -4212,12 +4860,17 @@ export function SigningWorkspace() {
                 <label className="flex items-center gap-2 cursor-pointer select-none text-slate-300 hover:text-white transition-colors">
                   <input
                     type="checkbox"
-                    checked={documents.length > 0 && documents.every((d) => d.selected)}
-                    onChange={() => toggleSelectAll()}
+                    checked={
+                      (filtered.length > 0 ? filtered : documents).length > 0 &&
+                      (filtered.length > 0 ? filtered : documents).every((d) => d.selected)
+                    }
+                    onChange={() => toggleSelectAll(filtered.length > 0 ? filtered : documents)}
                     className="rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer"
                   />
                   <span className="font-semibold text-xs">
-                    Select All ({documents.length})
+                    {filtered.length !== documents.length
+                      ? `Select All (${filtered.length} of ${documents.length})`
+                      : `Select All (${documents.length})`}
                   </span>
                 </label>
 
@@ -4239,12 +4892,55 @@ export function SigningWorkspace() {
 
               {/* Right: Batch Actions */}
               <div className="flex items-center gap-2 ml-auto">
+                {/* Download Selected (Active when 1 or more selected) */}
+                {selectedDocs.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleBatchDownload(selectedDocs, "Selected")}
+                    disabled={isDownloadingBatch || isDeletingBatch}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 hover:text-emerald-200 font-bold text-xs transition-all cursor-pointer shadow-sm disabled:opacity-50"
+                    title={`Batch download ${selectedDocs.length} selected document(s) as ZIP archive`}
+                  >
+                    {isDownloadingBatch ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+                    ) : (
+                      <Download className="w-3.5 h-3.5 text-emerald-400" />
+                    )}
+                    <span>
+                      {isDownloadingBatch && batchDownloadProgress
+                        ? `Downloading (${batchDownloadProgress.current}/${batchDownloadProgress.total})`
+                        : `Download Selected (${selectedDocs.length})`}
+                    </span>
+                  </button>
+                )}
+
+                {/* Download All (Downloads all documents in queue or filtered queue as ZIP) */}
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleBatchDownload(
+                      filtered.length > 0 && filtered.length !== documents.length ? filtered : documents,
+                      "All"
+                    )
+                  }
+                  disabled={isDownloadingBatch || isDeletingBatch || documents.length === 0}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700 text-slate-300 hover:text-white font-medium text-xs transition-all cursor-pointer disabled:opacity-40"
+                  title="Batch download all documents as ZIP archive"
+                >
+                  <Download className="w-3.5 h-3.5 text-slate-400" />
+                  <span>
+                    {filtered.length !== documents.length
+                      ? `Download Filtered (${filtered.length})`
+                      : `Download All (${documents.length})`}
+                  </span>
+                </button>
+
                 {/* Delete Selected (Active when 1 or more selected) */}
                 {selectedDocs.length > 0 && (
                   <button
                     type="button"
                     onClick={handlePromptDeleteSelected}
-                    disabled={isDeletingBatch}
+                    disabled={isDeletingBatch || isDownloadingBatch}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-600/20 hover:bg-red-600/30 border border-red-500/40 text-red-300 hover:text-red-200 font-bold text-xs transition-all cursor-pointer shadow-sm disabled:opacity-50"
                     title={`Delete ${selectedDocs.length} selected document(s)`}
                   >
@@ -4261,7 +4957,7 @@ export function SigningWorkspace() {
                 <button
                   type="button"
                   onClick={handlePromptDeleteAll}
-                  disabled={isDeletingBatch || documents.length === 0}
+                  disabled={isDeletingBatch || isDownloadingBatch || documents.length === 0}
                   className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-red-950/30 hover:bg-red-900/40 border border-red-900/50 text-red-400 hover:text-red-300 font-medium text-xs transition-all cursor-pointer disabled:opacity-40"
                   title="Permanently remove all documents in this workspace"
                 >
@@ -4298,9 +4994,12 @@ export function SigningWorkspace() {
                   const sc = statusConfig[doc.status];
                   const userIsReq = isUserAuthorizedToSignDoc(doc, currentUser);
                   const userSigned = hasUserAlreadySigned(doc, currentUser?.name);
-                  const completedSignersCount = doc.signers.filter(
-                    (s) => s.status === "signed"
-                  ).length;
+                  const completedSignersCount = (doc.requiredSigners || []).filter((reqName) => {
+                    const sObj = doc.signers?.find(
+                      (s) => matchNames(s.name, reqName) || normalizeName(s.name) === normalizeName(reqName)
+                    );
+                    return sObj?.status === "signed";
+                  }).length;
 
                   return (
                     <div
@@ -4493,10 +5192,17 @@ export function SigningWorkspace() {
                       <th className="px-4 py-3 w-8">
                         <input
                           type="checkbox"
-                          checked={documents.length > 0 && documents.every((d) => d.selected)}
-                          onChange={() => toggleSelectAll()}
+                          checked={
+                            (filtered.length > 0 ? filtered : documents).length > 0 &&
+                            (filtered.length > 0 ? filtered : documents).every((d) => d.selected)
+                          }
+                          onChange={() => toggleSelectAll(filtered.length > 0 ? filtered : documents)}
                           className="rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer"
-                          title="Select all"
+                          title={
+                            filtered.length !== documents.length
+                              ? `Select all (${filtered.length} filtered)`
+                              : "Select all"
+                          }
                         />
                       </th>
                       <th className="px-4 py-3 min-w-[200px]">Document / Personnel</th>
@@ -4516,9 +5222,12 @@ export function SigningWorkspace() {
                     const userIsReq = isUserAuthorizedToSignDoc(doc, currentUser);
                     const userSigned = hasUserAlreadySigned(doc, currentUser?.name);
 
-                    const completedSignersCount = doc.signers.filter(
-                      (s) => s.status === "signed"
-                    ).length;
+                    const completedSignersCount = (doc.requiredSigners || []).filter((reqName) => {
+                      const sObj = doc.signers?.find(
+                        (s) => matchNames(s.name, reqName) || normalizeName(s.name) === normalizeName(reqName)
+                      );
+                      return sObj?.status === "signed";
+                    }).length;
 
                     return (
                       <tr
@@ -4840,6 +5549,24 @@ export function SigningWorkspace() {
             : undefined
         }
       />
+
+      {/* ── PNPKI .p12 Keystore Management Modal (Exclusively for ace.malto@dict.gov.ph) ── */}
+      {isAceUser && (
+        <P12KeystoreModal
+          isOpen={isP12KeystoreModalOpen}
+          onClose={() => setIsP12KeystoreModalOpen(false)}
+          currentUser={currentUser}
+          activeKeystore={activeKeystoreProfile}
+          onKeystoreActivated={(ks) => {
+            setActiveKeystoreProfile(ks);
+            try {
+              localStorage.setItem("dict_active_p12_keystore", JSON.stringify(ks));
+            } catch {}
+            cachedSignerContextRef.current = null;
+          }}
+          showNotification={showNotif}
+        />
+      )}
 
       {/* ── High-Speed Batch Delete Confirmation Modal (Delete Selected / Delete All) ── */}
       {confirmDeleteModal.isOpen && (

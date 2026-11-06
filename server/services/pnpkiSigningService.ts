@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import forge from "node-forge";
+import zlib from "zlib";
 import { PDFDocument, PDFName, PDFNumber, PDFString, PDFHexString, PDFArray, PDFDict, PDFInvalidObject } from "pdf-lib";
 import { SignPdf } from "@signpdf/signpdf";
 import { P12Signer } from "@signpdf/signer-p12";
@@ -224,24 +225,102 @@ export function parseP12Certificate(p12Base64: string, password?: string) {
 }
 
 /**
- * Parses all PDF objects and returns a Map containing the latest definition body of each object.
+ * Extracts a balanced PDF dictionary (<< ... >>) handling arbitrary nesting depth.
  */
-function parsePdfObjects(pdfStr: string): Map<number, string> {
+function extractBalancedDict(str: string, startIndex: number): string | null {
+  const dictStart = str.indexOf("<<", startIndex);
+  if (dictStart === -1) return null;
+  let depth = 0;
+  let i = dictStart;
+  while (i < str.length) {
+    if (str[i] === "<" && str[i + 1] === "<") {
+      depth++;
+      i += 2;
+    } else if (str[i] === ">" && str[i + 1] === ">") {
+      depth--;
+      i += 2;
+      if (depth === 0) {
+        return str.slice(dictStart, i);
+      }
+    } else {
+      i++;
+    }
+  }
+  return null;
+}
+
+/**
+ * Parses all PDF objects including uncompressed objects and objects stored inside
+ * compressed Object Streams (/Type /ObjStm), returning a Map containing the latest definition body.
+ */
+function parsePdfObjects(pdfBuf: Buffer): Map<number, string> {
   const map = new Map<number, string>();
+  const pdfStr = pdfBuf.toString("latin1");
+
+  // 1. Regular uncompressed objects
   const regex = /(\d+)\s+0\s+obj\s*([\s\S]*?)\s*endobj/g;
   let match;
   while ((match = regex.exec(pdfStr)) !== null) {
     const objNum = parseInt(match[1]);
     map.set(objNum, match[2]); // latest occurrence naturally overwrites earlier ones
   }
+
+  // 2. Objects inside compressed Object Streams (/Type /ObjStm)
+  // Bounded regex ensures we do not cross >> or stream boundaries
+  const objStmMatches = [...pdfStr.matchAll(/(\d+)\s+0\s+obj\s*<<((?:(?!>>|stream)[\s\S])*)\/Type\s*\/ObjStm/g)];
+  for (const sm of objStmMatches) {
+    const objStart = sm.index;
+    const headerSlice = pdfStr.slice(objStart, objStart + 500);
+    const firstMatch = headerSlice.match(/\/First\s+(\d+)/);
+    const lenMatch = headerSlice.match(/\/Length\s+(\d+)/);
+    if (!firstMatch || !lenMatch) continue;
+
+    const first = parseInt(firstMatch[1]);
+    const length = parseInt(lenMatch[1]);
+
+    const streamWord = "stream";
+    const streamWordIdx = headerSlice.indexOf(streamWord);
+    if (streamWordIdx === -1) continue;
+
+    let streamStart = objStart + streamWordIdx + streamWord.length;
+    if (pdfBuf[streamStart] === 13) streamStart++;
+    if (pdfBuf[streamStart] === 10) streamStart++;
+
+    const streamData = pdfBuf.slice(streamStart, streamStart + length);
+    try {
+      const decompressed = zlib.inflateSync(streamData).toString("latin1");
+      const headerStr = decompressed.slice(0, first).trim();
+      const tokens = headerStr.split(/\s+/);
+      const pairs: { objNum: number; offset: number }[] = [];
+      for (let i = 0; i < tokens.length; i += 2) {
+        if (tokens[i] && tokens[i + 1]) {
+          pairs.push({ objNum: parseInt(tokens[i]), offset: parseInt(tokens[i + 1]) });
+        }
+      }
+      for (let i = 0; i < pairs.length; i++) {
+        const cur = pairs[i];
+        const start = first + cur.offset;
+        const end = i + 1 < pairs.length ? first + pairs[i + 1].offset : decompressed.length;
+        const body = decompressed.slice(start, end).trim();
+        // LATEST definition in stream order naturally overwrites earlier ones
+        map.set(cur.objNum, body);
+      }
+    } catch {
+      // Ignored if stream is not standard deflate
+    }
+  }
+
   return map;
 }
 
 /**
  * Appends a digital signature incrementally to an already-signed PDF buffer,
  * preserving all previous signatures and their cryptographic byte ranges intact (ISO 32000 compliant).
+ * Renders the visual appearance (signature image + crisp black typography) directly into the
+ * Appearance XObject (/AP /N) on the signature widget annotation so the signature is visible,
+ * clickable in Adobe Acrobat to inspect validation details, and registered in the Signatures panel.
  */
-export function appendSignatureIncremental(
+export async function appendSignatureIncremental(
   pdfBuffer: Buffer,
   signerName: string,
   sigRects: [number, number, number, number][],
@@ -249,27 +328,39 @@ export function appendSignatureIncremental(
   contactInfo: string = "pnpki@dict.gov.ph",
   location: string = "Legazpi City, Philippines",
   customFieldName?: string,
-  targetPageIndex: number = 0
-): Buffer {
-  const pdfStr = pdfBuffer.toString("binary");
+  targetPageIndex: number = 0,
+  visualOptions?: {
+    signatureImage?: string;
+    isCounterSign?: boolean;
+    counterSignPosition?: string;
+  }
+): Promise<Buffer> {
+  const pdfStr = pdfBuffer.toString("latin1");
 
-  // 1. Find previous startxref
-  const startXrefMatches = [...pdfStr.matchAll(/startxref\s+(\d+)\s+%%EOF/g)];
+  // 1. Find previous startxref (support both text xref and xref streams)
+  const startXrefMatches = [...pdfStr.matchAll(/startxref\s*(\d+)/g)];
   if (startXrefMatches.length === 0) {
     throw new Error("Could not find startxref in PDF buffer for incremental update");
   }
   const prevStartXref = parseInt(startXrefMatches[startXrefMatches.length - 1][1]);
 
-  // 2. Parse all latest PDF objects
-  const objMap = parsePdfObjects(pdfStr);
+  // Determine if previous xref was an XRef stream (/Type /XRef)
+  const prevXrefSlice = pdfStr.slice(prevStartXref, prevStartXref + 300);
+  const prevWasXRefStream = /\/Type\s*\/XRef\b/.test(prevXrefSlice);
+
+  // 2. Parse all latest PDF objects (including objects inside Object Streams)
+  const objMap = parsePdfObjects(pdfBuffer);
   let maxObj = 0;
   for (const objNum of objMap.keys()) {
     if (objNum > maxObj) maxObj = objNum;
   }
 
-  // 3. Find Catalog /Root object number from the latest trailer
+  // 3. Find Catalog /Root object number from the latest trailer or cross-reference stream
+  let rootObjNum = 1;
   const rootMatches = [...pdfStr.matchAll(/\/Root\s+(\d+)\s+0\s+R/g)];
-  const rootObjNum = rootMatches.length > 0 ? parseInt(rootMatches[rootMatches.length - 1][1]) : 1;
+  if (rootMatches.length > 0) {
+    rootObjNum = parseInt(rootMatches[rootMatches.length - 1][1]);
+  }
   const catalogBody = objMap.get(rootObjNum) || "";
 
   // 4. Find Page Object number (collect all /Type /Page to support multi-page targetPageIndex)
@@ -279,7 +370,7 @@ export function appendSignatureIncremental(
       pageObjNums.push(objNum);
     }
   }
-  let pageObjNum = 3;
+  let pageObjNum = pageObjNums.length > 0 ? pageObjNums[0] : 13;
   if (pageObjNums.length > 0) {
     if (targetPageIndex >= 0 && targetPageIndex < pageObjNums.length) {
       pageObjNum = pageObjNums[targetPageIndex];
@@ -306,19 +397,91 @@ export function appendSignatureIncremental(
     }
   }
 
-  // 6. Find existing AcroForm Fields from latest Catalog body
+  // 6. Find existing AcroForm, Fields, DR, and DA
   let existingFields = "";
+  let existingDR = "";
+  let existingDA = "";
+  let existingAcroFormObjNum: number | null = null;
+
   const acroFormRefMatch = catalogBody.match(/\/AcroForm\s+(\d+)\s+0\s+R/);
   if (acroFormRefMatch) {
-    const afObjNum = parseInt(acroFormRefMatch[1]);
-    const afBody = objMap.get(afObjNum) || "";
+    existingAcroFormObjNum = parseInt(acroFormRefMatch[1]);
+    const afBody = objMap.get(existingAcroFormObjNum) || "";
     const fieldsMatch = afBody.match(/\/Fields\s*\[([^\]]*)\]/);
     if (fieldsMatch) existingFields = fieldsMatch[1].trim();
+
+    const drIdx = afBody.indexOf("/DR");
+    if (drIdx !== -1) {
+      existingDR = extractBalancedDict(afBody, drIdx) || "";
+    }
+
+    const daMatch = afBody.match(/\/DA\s*(\([^\)]*\))/);
+    if (daMatch) existingDA = daMatch[1];
   } else {
-    const acroFormDirectMatch = catalogBody.match(/\/AcroForm\s*<<([\s\S]*?)>>/);
-    if (acroFormDirectMatch) {
-      const fieldsMatch = acroFormDirectMatch[1].match(/\/Fields\s*\[([^\]]*)\]/);
-      if (fieldsMatch) existingFields = fieldsMatch[1].trim();
+    const drIdx = catalogBody.indexOf("/DR");
+    if (drIdx !== -1) {
+      existingDR = extractBalancedDict(catalogBody, drIdx) || "";
+    }
+    const daMatch = catalogBody.match(/\/DA\s*(\([^\)]*\))/);
+    if (daMatch) existingDA = daMatch[1];
+    const fieldsMatch = catalogBody.match(/\/Fields\s*\[([^\]]*)\]/);
+    if (fieldsMatch) existingFields = fieldsMatch[1].trim();
+  }
+
+  // Preserve all existing signature widget references in AcroForm /Fields
+  const fieldRefsSet = new Set<string>();
+  if (existingFields) {
+    const refs = existingFields.match(/\d+\s+0\s+R/g) || [];
+    refs.forEach((r) => fieldRefsSet.add(r));
+  }
+  for (const [objNum, body] of objMap.entries()) {
+    if (/\/FT\s*\/Sig\b/.test(body) || (/\/Type\s*\/Annot\b/.test(body) && /\/Subtype\s*\/Widget\b/.test(body))) {
+      fieldRefsSet.add(`${objNum} 0 R`);
+    }
+  }
+
+  // Extract Info and ID from previous trailer or cross-reference stream
+  let trailerInfoEntry = "";
+  let trailerIdEntry = "";
+
+  const infoMatch = pdfStr.match(/\/Info\s+(\d+\s+0\s+R)/);
+  if (infoMatch) {
+    trailerInfoEntry = `/Info ${infoMatch[1]}\n`;
+  }
+  const idMatch = pdfStr.match(/\/ID\s*(\[\s*<[0-9a-fA-F]+>\s*<[0-9a-fA-F]+>\s*\])/);
+  if (idMatch) {
+    trailerIdEntry = `/ID ${idMatch[1]}\n`;
+  }
+
+  // 7. Pre-extract signature image RGB and Alpha streams for Appearance XObject
+  let defRGB: Buffer | null = null;
+  let defAlpha: Buffer | null = null;
+  let imgW = 0;
+  let imgH = 0;
+
+  if (visualOptions?.signatureImage) {
+    try {
+      const cleanImgB64 = visualOptions.signatureImage.replace(/^data:.*?;base64,/, "").trim();
+      const imgBuf = Buffer.from(cleanImgB64, "base64");
+      const tempDoc = await PDFDocument.create();
+      const isJpg = visualOptions.signatureImage.includes("image/jpeg") || visualOptions.signatureImage.includes("image/jpg");
+      if (!isJpg) {
+        const embedded = await tempDoc.embedPng(imgBuf);
+        imgW = embedded.width;
+        imgH = embedded.height;
+        const embedder = (embedded as any).embedder;
+        if (embedder && embedder.image) {
+          const imgObj = embedder.image;
+          if (imgObj.rgbChannel) {
+            defRGB = zlib.deflateSync(imgObj.rgbChannel);
+          }
+          if (imgObj.alphaChannel) {
+            defAlpha = zlib.deflateSync(imgObj.alphaChannel);
+          }
+        }
+      }
+    } catch (imgErr) {
+      console.warn("[pnpki] Could not pre-process signature image for Appearance XObject:", imgErr);
     }
   }
 
@@ -343,21 +506,45 @@ export function appendSignatureIncremental(
     `<<\n/Type /Sig\n/Filter /Adobe.PPKLite\n/SubFilter /adbe.pkcs7.detached\n/ByteRange [${byteRangePlaceholder}]\n/Contents <${placeholderContents}>\n/Reason (${reason})\n/M (D:${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)}+08'00')\n/Name (${signerName})\n/ContactInfo (${contactInfo})\n/Location (${location})\n/Prop_Build << /Filter << /Name /Adobe.PPKLite >> >>\n>>`
   );
 
+  let nextFreeObj = maxObj + 2;
+
+  // 2. Shared Type 1 Helvetica Font Object for clean vector text
+  const fontObjNum = nextFreeObj++;
+  appendObj(
+    fontObjNum,
+    `<<\n/Type /Font\n/Subtype /Type1\n/BaseFont /Helvetica\n/Encoding /WinAnsiEncoding\n>>`
+  );
+
+  // 3. Shared Signature Image XObject and Alpha Mask (if image present)
+  let imgObjNum = 0;
+  let smaskObjNum = 0;
+  if (defRGB) {
+    if (defAlpha) {
+      smaskObjNum = nextFreeObj++;
+      appendObj(
+        smaskObjNum,
+        `<<\n/Type /XObject\n/Subtype /Image\n/Width ${imgW}\n/Height ${imgH}\n/ColorSpace /DeviceGray\n/BitsPerComponent 8\n/Filter /FlateDecode\n/Length ${defAlpha.length}\n>>\nstream\n${defAlpha.toString("binary")}\nendstream`
+      );
+    }
+    imgObjNum = nextFreeObj++;
+    const smaskEntry = smaskObjNum ? `/SMask ${smaskObjNum} 0 R\n` : "";
+    appendObj(
+      imgObjNum,
+      `<<\n/Type /XObject\n/Subtype /Image\n/Width ${imgW}\n/Height ${imgH}\n/ColorSpace /DeviceRGB\n/BitsPerComponent 8\n${smaskEntry}/Filter /FlateDecode\n/Length ${defRGB.length}\n>>\nstream\n${defRGB.toString("binary")}\nendstream`
+    );
+  }
+
   // Count existing signatures in the document to generate strictly unique /T field names
   const existingSigMatches = [...pdfStr.matchAll(/\/Type\s*\/Sig\b/g)];
   const existingSigCount = existingSigMatches.length;
   const cleanSignerTag = signerName.replace(/[^a-zA-Z0-9]/g, "_");
-  const escapedSigner = signerName.replace(/[()\\]/g, "\\$&");
-  const labelText = "Digitally signed";
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const pnpkiDateStr = `${now.getFullYear()}.${pad(now.getMonth() + 1)}.${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())} +08'00'`;
+  const isCounter = Boolean(visualOptions?.isCounterSign);
 
-  // 2. Widget Annotations & Appearance Streams
+  // 4. Widget Annotations & Appearance Streams
   const newWidgetRefs: string[] = [];
   sigRects.forEach((rectCoords, idx) => {
-    const wNum = maxObj + 2 + idx;
-    const apNum = maxObj + 2 + sigRects.length + idx;
+    const wNum = nextFreeObj++;
+    const apNum = nextFreeObj++;
     newWidgetRefs.push(`${wNum} 0 R`);
 
     const rx = rectCoords[0];
@@ -372,19 +559,55 @@ export function appendSignatureIncremental(
     const bboxH = Math.max(14, maxY - minY);
 
     const sigIndex = existingSigCount + 1 + idx;
-    const defaultFieldName = `Signature_${sigIndex}_${cleanSignerTag}`;
+    const defaultFieldName = isCounter
+      ? `CounterSignature_${sigIndex}_${cleanSignerTag}`
+      : `Signature_${sigIndex}_${cleanSignerTag}`;
     const fieldName = customFieldName
       ? (sigRects.length > 1 ? `${customFieldName}_${idx + 1}` : customFieldName)
       : defaultFieldName;
 
-    // Transparent Appearance XObject stream (visual signature & text are already rendered in the vector PDF content stream, matching Pass 1)
-    const streamContent = `q\nQ`;
-    const streamLen = Buffer.from(streamContent, "binary").length;
+    let streamContent = "q\n";
 
-    // Appearance XObject
+    if (isCounter) {
+      // ── Compact Horizontal Counter-Signature (beside personnel name) ──
+      if (imgObjNum) {
+        streamContent += `q\n14 0 0 12 1 1 cm\n/SigImg Do\nQ\n`;
+      } else {
+        // Crisp vector checkmark on left
+        streamContent += `q\n1.1 w\n0 0 0 RG\n2 6.5 m\n6 2.5 l\n13 11.5 l\nS\nQ\n`;
+      }
+      const rawName = (signerName || "Signer").trim();
+      const nameParts = rawName.split(/\s+/).filter(Boolean);
+      const compactName =
+        rawName.length <= 10
+          ? rawName
+          : nameParts.length > 1
+          ? `${nameParts[0][0]}. ${nameParts[nameParts.length - 1]}`
+          : rawName.slice(0, 10);
+      const escapedCompact = compactName.replace(/[()\\]/g, "\\$&");
+
+      // Black text, regular Helvetica
+      streamContent += `q\nBT\n/Helv 3.3 Tf\n0 0 0 rg\n16 8 Td\n(DigiSigned) Tj\n0 -4.5 Td\n/Helv 3.0 Tf\n(by ${escapedCompact}) Tj\nET\nQ\nQ\n`;
+    } else {
+      // ── Standard Signature Stamp ABOVE Personnel Name ──
+      if (imgObjNum) {
+        const drawH = Math.max(10, bboxH - 6);
+        streamContent += `q\n38 0 0 ${drawH} 2 3 cm\n/SigImg Do\nQ\n`;
+      }
+      const textX = imgObjNum ? 44 : 6;
+      const escapedSigner = signerName.replace(/[()\\]/g, "\\$&");
+
+      // Per user explicit instruction: Black text, normal font (not bold), no date/time
+      streamContent += `q\nBT\n/Helv 6.5 Tf\n0 0 0 rg\n${textX} 15 Td\n(Digitally signed) Tj\n0 -8 Td\n(by ${escapedSigner}) Tj\nET\nQ\nQ\n`;
+    }
+
+    const streamLen = Buffer.from(streamContent, "binary").length;
+    const imgResourceEntry = imgObjNum ? `/XObject << /SigImg ${imgObjNum} 0 R >>\n` : "";
+
+    // Appearance XObject (/AP /N)
     appendObj(
       apNum,
-      `<<\n/Type /XObject\n/Subtype /Form\n/BBox [0 0 ${bboxW} ${bboxH}]\n/Resources <<>>\n/Length ${streamLen}\n>>\nstream\n${streamContent}\nendstream`
+      `<<\n/Type /XObject\n/Subtype /Form\n/BBox [0 0 ${bboxW} ${bboxH}]\n/Resources <<\n/ProcSet [/PDF /Text /ImageC]\n/Font << /Helv ${fontObjNum} 0 R >>\n${imgResourceEntry}>>\n/Length ${streamLen}\n>>\nstream\n${streamContent}\nendstream`
     );
 
     // Widget Annotation
@@ -394,17 +617,30 @@ export function appendSignatureIncremental(
     );
   });
 
-  const newAcroFormNum = maxObj + 2 + sigRects.length * 2;
+  // Add new widgets to the combined fields set
+  newWidgetRefs.forEach((r) => fieldRefsSet.add(r));
+  const finalFieldsStr = Array.from(fieldRefsSet).join(" ");
 
-  // 3. New AcroForm Object with ALL previous + new widget references
-  const combinedFields = [existingFields, ...newWidgetRefs].filter(Boolean).join(" ");
+  // 5. AcroForm Object: If existingAcroFormObjNum is an indirect object, reuse its object number!
+  const acroFormObjNum = existingAcroFormObjNum || nextFreeObj++;
+  const drEntry = existingDR ? `/DR ${existingDR}\n` : `/DR << /Font << /Helv ${fontObjNum} 0 R >> >>\n`;
+  const daEntry = existingDA ? `/DA ${existingDA}\n` : `/DA (/Helv 0 Tf 0 g )\n`;
+
+  // AcroForm Object preserving ALL previous + new widget references and DR/DA
   appendObj(
-    newAcroFormNum,
-    `<<\n/Fields [${combinedFields}]\n/SigFlags 3\n>>`
+    acroFormObjNum,
+    `<<\n/Fields [${finalFieldsStr}]\n${drEntry}${daEntry}/SigFlags 3\n>>`
   );
 
-  // 4. Updated Page Object with ALL previous + new annotations
-  const combinedAnnots = [existingAnnots, ...newWidgetRefs].filter(Boolean).join(" ");
+  // 6. Updated Page Object with ALL previous + new annotations
+  const annotRefsSet = new Set<string>();
+  if (existingAnnots) {
+    const matches = existingAnnots.match(/\d+\s+0\s+R/g) || [];
+    matches.forEach((r) => annotRefsSet.add(r));
+  }
+  newWidgetRefs.forEach((r) => annotRefsSet.add(r));
+  const finalAnnotsStr = Array.from(annotRefsSet).join(" ");
+
   let cleanedPageBody = pageBody
     .replace(/^\s*<<\s*/, "")
     .replace(/\s*>>\s*$/, "")
@@ -414,49 +650,95 @@ export function appendSignatureIncremental(
 
   appendObj(
     pageObjNum,
-    `<<\n${cleanedPageBody}\n/Annots [${combinedAnnots}]\n>>`
+    `<<\n${cleanedPageBody}\n/Annots [${finalAnnotsStr}]\n>>`
   );
 
-  // 5. Updated Catalog Object pointing to new AcroForm
-  let cleanedCatalogBody = catalogBody
-    .replace(/^\s*<<\s*/, "")
-    .replace(/\s*>>\s*$/, "")
-    .replace(/\/AcroForm\s+\d+\s+0\s+R/g, "")
-    .replace(/\/AcroForm\s*<<[\s\S]*?>>/g, "")
-    .trim();
+  // 7. Updated Catalog Object ONLY if AcroForm was newly created or was inline
+  if (!existingAcroFormObjNum) {
+    let cleanedCatalogBody = catalogBody
+      .replace(/^\s*<<\s*/, "")
+      .replace(/\s*>>\s*$/, "")
+      .replace(/\/AcroForm\s+\d+\s+0\s+R/g, "")
+      .replace(/\/AcroForm\s*<<[\s\S]*?>>/g, "")
+      .trim();
 
-  appendObj(
-    rootObjNum,
-    `<<\n${cleanedCatalogBody}\n/AcroForm ${newAcroFormNum} 0 R\n>>`
-  );
-
-  // 6. Incremental XRef Table
-  const xrefOffset = pdfBuffer.length + Buffer.from(appendData, "binary").length;
-  let xrefData = `xref\n0 1\n0000000000 65535 f \n`;
-
-  const sortedObjs = [...objOffsets.keys()].sort((a, b) => a - b);
-  let i = 0;
-  while (i < sortedObjs.length) {
-    const startObj = sortedObjs[i];
-    let count = 1;
-    while (i + count < sortedObjs.length && sortedObjs[i + count] === startObj + count) {
-      count++;
-    }
-    xrefData += `${startObj} ${count}\n`;
-    for (let j = 0; j < count; j++) {
-      const oNum = startObj + j;
-      const off = objOffsets.get(oNum)!;
-      xrefData += `${String(off).padStart(10, "0")} 00000 n \n`;
-    }
-    i += count;
+    appendObj(
+      rootObjNum,
+      `<<\n${cleanedCatalogBody}\n/AcroForm ${acroFormObjNum} 0 R\n>>`
+    );
   }
 
-  const maxTotalObj = Math.max(...objOffsets.keys(), maxObj) + 1;
-  const trailerData = `trailer\n<<\n/Size ${maxTotalObj}\n/Root ${rootObjNum} 0 R\n/Prev ${prevStartXref}\n>>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  // 8. Cross-Reference Section:
+  // If the previous revision used an XRef Stream (/Type /XRef), write an incremental XRef Stream!
+  // Otherwise, write a classic incremental xref table (e.g. for CS Form 48).
+  if (prevWasXRefStream) {
+    const sortedObjs = [...objOffsets.keys()].sort((a, b) => a - b);
+    const xrefObjNum = Math.max(...sortedObjs, maxObj) + 1;
+    const allObjs = [...sortedObjs, xrefObjNum];
 
-  appendData += xrefData + trailerData;
+    const groups: { start: number; count: number }[] = [];
+    let i = 0;
+    while (i < allObjs.length) {
+      const start = allObjs[i];
+      let count = 1;
+      while (i + count < allObjs.length && allObjs[i + count] === start + count) {
+        count++;
+      }
+      groups.push({ start, count });
+      i += count;
+    }
 
-  return Buffer.concat([pdfBuffer, Buffer.from(appendData, "binary")]);
+    const indexStr = groups.map((g) => `${g.start} ${g.count}`).join(" ");
+    const xrefOffset = pdfBuffer.length + Buffer.from(appendData, "binary").length;
+    objOffsets.set(xrefObjNum, xrefOffset);
+
+    // Build binary stream: for each object, 1 byte type (1), 4 bytes offset, 2 bytes gen (0)
+    const streamBuf = Buffer.alloc(allObjs.length * 7);
+    allObjs.forEach((oNum, idx) => {
+      const off = objOffsets.get(oNum)!;
+      streamBuf[idx * 7] = 1;
+      streamBuf[idx * 7 + 1] = (off >> 24) & 0xff;
+      streamBuf[idx * 7 + 2] = (off >> 16) & 0xff;
+      streamBuf[idx * 7 + 3] = (off >> 8) & 0xff;
+      streamBuf[idx * 7 + 4] = off & 0xff;
+      streamBuf[idx * 7 + 5] = 0;
+      streamBuf[idx * 7 + 6] = 0;
+    });
+
+    const defStream = zlib.deflateSync(streamBuf);
+    const header = `${xrefObjNum} 0 obj\n<<\n/Type /XRef\n/Size ${xrefObjNum + 1}\n/Root ${rootObjNum} 0 R\n/Prev ${prevStartXref}\n${trailerInfoEntry}${trailerIdEntry}/W [1 4 2]\n/Index [${indexStr}]\n/Filter /FlateDecode\n/Length ${defStream.length}\n>>\nstream\n`;
+    const footer = `\nendstream\nendobj\nstartxref\n${xrefOffset}\n%%EOF\n`;
+
+    const xrefStreamBuf = Buffer.concat([Buffer.from(header, "binary"), defStream, Buffer.from(footer, "binary")]);
+    return Buffer.concat([pdfBuffer, Buffer.from(appendData, "binary"), xrefStreamBuf]);
+  } else {
+    // Classic incremental xref table (Strict ISO 32000-1 20-byte entries)
+    const xrefOffset = pdfBuffer.length + Buffer.from(appendData, "binary").length;
+    let xrefData = `xref\n`;
+
+    const sortedObjs = [...objOffsets.keys()].sort((a, b) => a - b);
+    let i = 0;
+    while (i < sortedObjs.length) {
+      const startObj = sortedObjs[i];
+      let count = 1;
+      while (i + count < sortedObjs.length && sortedObjs[i + count] === startObj + count) {
+        count++;
+      }
+      xrefData += `${startObj} ${count}\n`;
+      for (let j = 0; j < count; j++) {
+        const oNum = startObj + j;
+        const off = objOffsets.get(oNum)!;
+        xrefData += `${String(off).padStart(10, "0")} 00000 n \n`;
+      }
+      i += count;
+    }
+
+    const maxTotalObj = Math.max(...objOffsets.keys(), maxObj) + 1;
+    const trailerData = `trailer\n<<\n/Size ${maxTotalObj}\n/Root ${rootObjNum} 0 R\n/Prev ${prevStartXref}\n${trailerInfoEntry}${trailerIdEntry}>>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+
+    appendData += xrefData + trailerData;
+    return Buffer.concat([pdfBuffer, Buffer.from(appendData, "binary")]);
+  }
 }
 
 /**
@@ -476,6 +758,10 @@ export async function signPdfBuffer(
     sigRects?: [number, number, number, number][];
     fieldName?: string;
     pageIndex?: number;
+    signatureImage?: string;
+    signerName?: string;
+    isCounterSign?: boolean;
+    counterSignPosition?: string;
   }
 ): Promise<{ signedBuffer: Buffer; signerName: string; certificateInfo: any; signerIdentity: SignerIdentity }> {
   // Extract signer identity strictly from certificate
@@ -495,7 +781,7 @@ export async function signPdfBuffer(
   console.log("[pnpki] Validity Period:       ", signerIdentity.validFrom.toISOString(), "to", signerIdentity.validTo.toISOString());
   console.log("[pnpki] ========================================================\n");
 
-  const signerName = signerIdentity.commonName;
+  const signerName = (options?.signerName || signerIdentity.commonName || "").trim();
   const reason =
     options?.reason ||
     "Civil Service Form No. 48 Official Daily Time Record Digital Certification";
@@ -513,9 +799,9 @@ export async function signPdfBuffer(
   let pdfWithPlaceholder: Buffer;
 
   if (isAlreadySigned) {
-    // ── Incremental Mode: Append second signature revision to preserve Pass 1 signature (ISO 32000) ──
-    console.log("[pnpki] Document already contains a digital signature. Appending revision incrementally...");
-    pdfWithPlaceholder = appendSignatureIncremental(
+    // ── Incremental Mode: Append digital signature revision incrementally to preserve earlier signatures (ISO 32000) ──
+    console.log("[pnpki] Document already contains a digital signature. Appending revision incrementally with visual appearance...");
+    pdfWithPlaceholder = await appendSignatureIncremental(
       pdfBuffer,
       signerName,
       rawRects,
@@ -523,7 +809,12 @@ export async function signPdfBuffer(
       contactInfo,
       location,
       options?.fieldName,
-      options?.pageIndex
+      options?.pageIndex,
+      {
+        signatureImage: options?.signatureImage,
+        isCounterSign: options?.isCounterSign,
+        counterSignPosition: options?.counterSignPosition,
+      }
     );
   } else {
     // ── First Signature Mode: Inject placeholder /Sig field and multi-widgets with pdf-lib ──
@@ -679,7 +970,7 @@ export async function signPdfBuffer(
 
   return {
     signedBuffer,
-    signerName: signerIdentity.commonName,
+    signerName: signerName || signerIdentity.commonName,
     certificateInfo: {
       commonName: signerIdentity.commonName,
       subjectDN: signerIdentity.subjectDN,
