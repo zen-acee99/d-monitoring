@@ -93,6 +93,8 @@ export function getDtrStorage(): DtrStorageItem[] {
     // Filter out any legacy hardcoded seed dummy records from older versions
     const clean = parsed.filter(
       (r) =>
+        r &&
+        typeof r.id === "string" &&
         !r.id.startsWith("DTR-HRM-00") &&
         !r.id.startsWith("DTR-TOD-00") &&
         !r.id.startsWith("DTR-PROV-ALB-00") &&

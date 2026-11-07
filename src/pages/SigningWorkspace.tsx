@@ -27,6 +27,7 @@ import {
   ZoomIn,
   ZoomOut,
   Printer,
+  ExternalLink,
   Users,
   Award,
   FileCheck,
@@ -967,6 +968,19 @@ function DocumentPreviewModal({
               </div>
             )}
 
+            {/* Open in New Window / Tab */}
+            {blobUrl && (
+              <a
+                href={blobUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-1.5 rounded-lg bg-[#111728] border border-[#1C2844] text-slate-400 hover:text-white transition-colors cursor-pointer flex items-center justify-center"
+                title="Open PDF in new tab"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            )}
+
             {/* Print */}
             {blobUrl && (
               <button
@@ -1204,16 +1218,22 @@ function DocumentPreviewModal({
               <p className="text-sm font-semibold text-slate-300">Loading document preview…</p>
             </div>
           ) : blobUrl ? (
-            /* PDF Iframe Viewer */
+            /* PDF Viewer with <object> and <iframe> fallback */
             <div
               style={{ transform: `scale(${zoom / 100})`, transformOrigin: "top center" }}
               className="w-full h-full flex justify-center transition-transform duration-150"
             >
-              <iframe
-                src={`${blobUrl}#toolbar=1&navpanes=1`}
-                title={doc.fileObj?.name || doc.fileName}
+              <object
+                data={`${blobUrl}#toolbar=1&navpanes=1`}
+                type="application/pdf"
                 className="w-full h-full min-h-[75vh] rounded-xl border border-[#1A2235] bg-white shadow-2xl"
-              />
+              >
+                <iframe
+                  src={`${blobUrl}#toolbar=1&navpanes=1`}
+                  title={doc.fileObj?.name || doc.fileName}
+                  className="w-full h-full min-h-[75vh] rounded-xl border border-[#1A2235] bg-white shadow-2xl"
+                />
+              </object>
             </div>
           ) : (
             /* Styled Fallback Document Simulation - FAITHFUL TO IMAGE 2 */
