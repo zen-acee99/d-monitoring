@@ -560,12 +560,12 @@ export async function appendSignatureIncremental(
 
     if (!isCounter) {
       // Ensure the visual bounding box is ALWAYS wide enough to fit long names (e.g. Annabel C. Odoño-Calimpong) without any clipping
-      if (bboxW < 195) {
-        bboxW = 195;
+      if (bboxW < 225) {
+        bboxW = 225;
         maxX = minX + bboxW;
       }
-      if (bboxH < 32) {
-        bboxH = 32;
+      if (bboxH < 34) {
+        bboxH = 34;
       }
     }
 

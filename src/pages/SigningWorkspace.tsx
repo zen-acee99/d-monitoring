@@ -566,6 +566,32 @@ function DocumentPreviewModal({
     }
   }, [rawDoc]);
 
+  // All hook calls must precede any conditional return statements (React Rules of Hooks)
+  const signersList = doc?.signers || rawDoc?.signers || [];
+  const requiredList = doc?.requiredSigners || rawDoc?.requiredSigners || [];
+  const allCounterSigners = doc?.counterSigners || rawDoc?.counterSigners || [];
+
+  const uniqueSigners = useMemo(() => {
+    const seen = new Set<string>();
+    return signersList.filter((s) => {
+      const key = `${normalizeName(s.name)}_${s.status}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [signersList]);
+
+  const uniqueSignedSigners = useMemo(() => {
+    const seen = new Set<string>();
+    return signersList.filter((s) => {
+      if (s.status !== "signed") return false;
+      const key = normalizeName(s.name);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [signersList]);
+
   useEffect(() => {
     if (!rawDoc) {
       setBlobUrl(null);
@@ -666,10 +692,6 @@ function DocumentPreviewModal({
   const userHasSigned = hasUserAlreadySigned(doc, currentUser?.name);
   const isAllRequiredSigned = effectiveStatus === "signed";
 
-  const signersList = doc.signers || [];
-  const requiredList = doc.requiredSigners || [];
-  const allCounterSigners = doc.counterSigners || [];
-
   // Group signers matching DICT standard layout (PREPARED BY, REVIEWED BY, NOTED BY, ARD, REGIONAL DIRECTOR)
   const prepSigner = signersList.find(
     (s) =>
@@ -722,27 +744,6 @@ function DocumentPreviewModal({
     [prepSigner, revSigner, notedSigner, ardSigner, rdSigner].filter(Boolean) as DocumentSigner[]
   );
   const otherSigners = signersList.filter((s) => !handledSet.has(s));
-
-  const uniqueSigners = useMemo(() => {
-    const seen = new Set<string>();
-    return signersList.filter((s) => {
-      const key = `${normalizeName(s.name)}_${s.status}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }, [signersList]);
-
-  const uniqueSignedSigners = useMemo(() => {
-    const seen = new Set<string>();
-    return signersList.filter((s) => {
-      if (s.status !== "signed") return false;
-      const key = normalizeName(s.name);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }, [signersList]);
 
   const renderSignerCard = (
     signer?: DocumentSigner,
@@ -5804,17 +5805,19 @@ export function SigningWorkspace() {
       </div>
 
       {/* ── Document Preview Modal ─────────────────────────────────────────── */}
-      <DocumentPreviewModal
-        doc={previewDoc}
-        onClose={() => setPreviewDoc(null)}
-        onSign={handleSignSingle}
-        onCounterSign={(id, pos) => {
-          if (previewDoc) handleOpenSingleCounterSign(previewDoc, pos);
-        }}
-        onDownload={handleDownload}
-        onShowValidationStatus={handleOpenValidationModal}
-        currentUser={currentUser}
-      />
+      {previewDoc && (
+        <DocumentPreviewModal
+          doc={previewDoc}
+          onClose={() => setPreviewDoc(null)}
+          onSign={handleSignSingle}
+          onCounterSign={(id, pos) => {
+            if (previewDoc) handleOpenSingleCounterSign(previewDoc, pos);
+          }}
+          onDownload={handleDownload}
+          onShowValidationStatus={handleOpenValidationModal}
+          currentUser={currentUser}
+        />
+      )}
 
       {/* ── Upload Modal with Automatic Scanning ───────────────────────────── */}
       <UploadModal

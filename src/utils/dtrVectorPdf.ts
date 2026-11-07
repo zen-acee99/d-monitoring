@@ -2021,6 +2021,7 @@ export interface DetectedPdfSignature {
   signerName: string;
   signDate: string;
   fieldName: string;
+  isSigned?: boolean;
 }
 
 export interface ScanPdfResult {
@@ -2075,59 +2076,67 @@ export function detectExistingPdfSignatures(pdfDoc: PDFDocument): DetectedPdfSig
             }
           }
 
-          let signerName = "";
-          let signDate = "";
-          if (vRef) {
-            const vDict = page.node.context.lookup(vRef);
-            if (vDict instanceof PDFDict) {
-              const nameObj = vDict.lookup(PDFName.of("Name"));
-              if (nameObj) {
-                signerName = (nameObj as any).decodeText ? (nameObj as any).decodeText() : nameObj.toString().replace(/[()]/g, "");
-              }
-              const dateObj = vDict.lookup(PDFName.of("M"));
-              if (dateObj) {
-                signDate = (dateObj as any).decodeText ? (dateObj as any).decodeText() : dateObj.toString().replace(/[()]/g, "");
-              }
+        let hasCryptoContents = false;
+        let signerName = "";
+        let signDate = "";
+
+        if (vRef) {
+          const vDict = page.node.context.lookup(vRef);
+          if (vDict instanceof PDFDict) {
+            if (vDict.has(PDFName.of("ByteRange")) || vDict.has(PDFName.of("Contents"))) {
+              hasCryptoContents = true;
+            }
+            const nameObj = vDict.lookup(PDFName.of("Name"));
+            if (nameObj) {
+              signerName = (nameObj as any).decodeText ? (nameObj as any).decodeText() : nameObj.toString().replace(/[()]/g, "");
+            }
+            const dateObj = vDict.lookup(PDFName.of("M"));
+            if (dateObj) {
+              signDate = (dateObj as any).decodeText ? (dateObj as any).decodeText() : dateObj.toString().replace(/[()]/g, "");
             }
           }
+        }
 
-          // Inspect /AP /N Form XObject stream if signerName is not in /V dictionary
-          if (!signerName) {
-            try {
-              const apDict = annot.lookup(PDFName.of("AP"));
-              if (apDict instanceof PDFDict) {
-                const nRef = apDict.lookup(PDFName.of("N"));
-                if (nRef) {
-                  const nObj = page.node.context.lookup(nRef);
-                  if (nObj && typeof (nObj as any).getContents === "function") {
-                    const bytes = (nObj as any).getContents();
-                    const text = new TextDecoder("latin1").decode(bytes);
-                    const match = text.match(/by\s+([A-Za-z\s\.,\-]+)/i) || text.match(/Digitally signed\s+by\s+([A-Za-z\s\.,\-]+)/i);
-                    if (match) {
-                      signerName = match[1].replace(/[()\\]/g, "").trim();
-                    }
+        // Inspect /AP /N Form XObject stream if signerName is not in /V dictionary
+        if (!signerName) {
+          try {
+            const apDict = annot.lookup(PDFName.of("AP"));
+            if (apDict instanceof PDFDict) {
+              const nRef = apDict.lookup(PDFName.of("N"));
+              if (nRef) {
+                const nObj = page.node.context.lookup(nRef);
+                if (nObj && typeof (nObj as any).getContents === "function") {
+                  const bytes = (nObj as any).getContents();
+                  const text = new TextDecoder("latin1").decode(bytes);
+                  const match = text.match(/by\s+([A-Za-z\s\.,\-]+)/i) || text.match(/Digitally signed\s+by\s+([A-Za-z\s\.,\-]+)/i);
+                  if (match) {
+                    signerName = match[1].replace(/[()\\]/g, "").trim();
                   }
                 }
               }
-            } catch {}
-          }
-
-          const tObj = annot.lookup(PDFName.of("T"));
-          const fieldName = tObj ? ((tObj as any).decodeText ? (tObj as any).decodeText() : tObj.toString().replace(/[()]/g, "")) : "";
-          if (!signerName && fieldName) {
-            const fMatch = fieldName.match(/Signed by\s+([A-Za-z\s\.,\-]+)/i) || fieldName.match(/by\s+([A-Za-z\s\.,\-]+)/i);
-            if (fMatch) {
-              signerName = fMatch[1].trim();
             }
-          }
+          } catch {}
+        }
 
-          detected.push({
-            pageIndex: pIdx,
-            rect,
-            signerName: signerName.trim(),
-            signDate: signDate.trim(),
-            fieldName: fieldName.trim(),
-          });
+        const tObj = annot.lookup(PDFName.of("T"));
+        const fieldName = tObj ? ((tObj as any).decodeText ? (tObj as any).decodeText() : tObj.toString().replace(/[()]/g, "")) : "";
+        if (!signerName && fieldName) {
+          const fMatch = fieldName.match(/Signed by\s+([A-Za-z\s\.,\-]+)/i) || fieldName.match(/by\s+([A-Za-z\s\.,\-]+)/i);
+          if (fMatch) {
+            signerName = fMatch[1].trim();
+          }
+        }
+
+        const isActuallySigned = Boolean(hasCryptoContents || (signerName && signerName.length >= 3));
+
+        detected.push({
+          pageIndex: pIdx,
+          rect,
+          signerName: signerName.trim(),
+          signDate: signDate.trim(),
+          fieldName: fieldName.trim(),
+          isSigned: isActuallySigned,
+        });
         }
       } catch {}
     }
@@ -2304,11 +2313,15 @@ export async function scanPdfForSigners(
         if (!already) {
           // Check if an existing cryptographic signature or P12 stamp already covers this signatory
           // 1. Prioritize direct PNPKI common name match (e.g. "Dy Leah Balderama" matches "Leah B. Dy")
-          let userSig = existingSignatures.find((sig) => sig.signerName && matchNames(sig.signerName, u.name));
+          let userSig = existingSignatures.find(
+            (sig) => sig.isSigned !== false && sig.signerName && matchNames(sig.signerName, u.name)
+          );
 
           // 2. Fallback to bounding box overlap directly above signatory name column
           if (!userSig) {
             userSig = existingSignatures.find((sig) => {
+              // Must be an actual signed signature, NOT an empty signature placeholder field!
+              if (!sig.isSigned && !sig.signerName) return false;
               if (sig.pageIndex === pIdx && sig.rect) {
                 // If this signature belongs to another registered user, do not attribute it here
                 if (sig.signerName && !matchNames(sig.signerName, u.name)) {
@@ -2328,8 +2341,8 @@ export async function scanPdfForSigners(
           }
 
           // A signatory is only marked as signed if an authentic Adobe Acrobat P12 / digital signature
-          // covers this signatory. Static printed text on an unsigned template does NOT constitute a signature.
-          const isAlreadySigned = Boolean(userSig);
+          // covers this signatory. Static printed text on an unsigned template or empty field does NOT constitute a signature.
+          const isAlreadySigned = Boolean(userSig && (userSig.isSigned || userSig.signerName));
           const cleanName = u.name.toUpperCase().replace(/^(ENGR\.?|ATTY\.?|DIR\.?|DR\.?)\s+/i, "").trim();
 
           detectedSigners.push({
@@ -2825,9 +2838,9 @@ export function findPersonnelSignatureCoordinates(
 
       if (isAnnabelOrDirector || existingSigWidgets.length >= 3) {
         // Column 4: Approved / Noted by Regional Director ANNABEL C. ODOÑO-CALIMPONG
-        // Box width of 190 pt ensures long name "by Annabel C. Odoño-Calimpong" is completely visible without any clipping
-        const boxW = 190;
-        const boxX = Math.max(15, Math.min(width - boxW - 15, 600));
+        // Box width of 230 pt ensures long name "by Annabel C. Odoño-Calimpong" is completely visible without any clipping
+        const boxW = 230;
+        const boxX = Math.max(15, Math.min(width - boxW - 15, 595));
         return {
           pageIndex: pIdx,
           boxX,
@@ -2957,10 +2970,10 @@ export function findPersonnelSignatureCoordinates(
             appliedPosition: effectivePos,
           };
         } else {
-          // Normal sign: placed directly ABOVE the name (generous width up to 230 pt so long names like Annabel C. Odoño-Calimpong never cut off)
+          // Normal sign: placed directly ABOVE the name (generous width up to 250 pt so long names like Annabel C. Odoño-Calimpong never cut off)
           const rawTargetName = (personnelName || item.text || "").trim();
           const nameLen = rawTargetName.length;
-          const boxW = Math.max(195, Math.min(230, Math.round(44 + nameLen * 5.2)));
+          const boxW = Math.max(220, Math.min(250, Math.round(50 + nameLen * 5.8)));
           const boxH = 32;
           let boxX = Math.round(item.x - 4);
           if (boxX + boxW > width - 15) {
