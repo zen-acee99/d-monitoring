@@ -1218,22 +1218,14 @@ function DocumentPreviewModal({
               <p className="text-sm font-semibold text-slate-300">Loading document preview…</p>
             </div>
           ) : blobUrl ? (
-            /* PDF Viewer with <object> and <iframe> fallback */
-            <div
-              style={{ transform: `scale(${zoom / 100})`, transformOrigin: "top center" }}
-              className="w-full h-full flex justify-center transition-transform duration-150"
-            >
-              <object
-                data={`${blobUrl}#toolbar=1&navpanes=1`}
-                type="application/pdf"
-                className="w-full h-full min-h-[75vh] rounded-xl border border-[#1A2235] bg-white shadow-2xl"
-              >
-                <iframe
-                  src={`${blobUrl}#toolbar=1&navpanes=1`}
-                  title={doc.fileObj?.name || doc.fileName}
-                  className="w-full h-full min-h-[75vh] rounded-xl border border-[#1A2235] bg-white shadow-2xl"
-                />
-              </object>
+            /* Clean PDF Viewer - Native 1:1 scale without CSS transform to prevent Chromium PDFium assertion failures */
+            <div className="w-full h-full flex-1 min-h-[75vh] flex justify-center items-center overflow-hidden rounded-xl border border-[#1A2235] bg-[#2A2D32] shadow-2xl">
+              <iframe
+                key={blobUrl}
+                src={`${blobUrl}#view=FitH&toolbar=1`}
+                title={doc.fileObj?.name || doc.fileName}
+                className="w-full h-full min-h-[75vh] flex-1 border-0"
+              />
             </div>
           ) : (
             /* Styled Fallback Document Simulation - FAITHFUL TO IMAGE 2 */

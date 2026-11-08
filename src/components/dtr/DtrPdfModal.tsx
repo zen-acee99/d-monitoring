@@ -395,17 +395,12 @@ export function DtrPdfModal({ isOpen, onClose, record }: DtrPdfModalProps) {
           {record.docType === "AR" || record.pdfFileName?.toUpperCase().startsWith("AR_") ? (
             <div className="w-full h-full max-w-5xl bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col min-h-[640px] relative">
               {blobUrl ? (
-                <object
-                  data={`${blobUrl}#toolbar=1&navpanes=1`}
-                  type="application/pdf"
+                <iframe
+                  key={blobUrl}
+                  src={`${blobUrl}#view=FitH&toolbar=1`}
+                  title={record.pdfFileName || "Accomplishment Report"}
                   className="w-full flex-1 min-h-[640px] border-0"
-                >
-                  <iframe
-                    src={`${blobUrl}#toolbar=1&navpanes=1`}
-                    title={record.pdfFileName || "Accomplishment Report"}
-                    className="w-full flex-1 min-h-[640px] border-0"
-                  />
-                </object>
+                />
               ) : isLoadingPdf ? (
                 <div className="flex flex-col items-center justify-center p-12 text-slate-500 my-auto">
                   <Loader2 className="w-10 h-10 text-purple-400 animate-spin mb-3" />

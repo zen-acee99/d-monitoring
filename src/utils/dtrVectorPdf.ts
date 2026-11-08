@@ -2127,7 +2127,7 @@ export function detectExistingPdfSignatures(pdfDoc: PDFDocument): DetectedPdfSig
           }
         }
 
-        const isActuallySigned = Boolean(hasCryptoContents || (signerName && signerName.length >= 3));
+        const isActuallySigned = Boolean(hasCryptoContents);
 
         detected.push({
           pageIndex: pIdx,
@@ -2158,9 +2158,13 @@ export function detectExistingPdfSignatures(pdfDoc: PDFDocument): DetectedPdfSig
               const tObj = fDict.lookup(PDFName.of("T"));
               const fieldName = tObj ? ((tObj as any).decodeText ? (tObj as any).decodeText() : tObj.toString().replace(/[()]/g, "")) : "";
               let sName = "";
+              let acroHasCrypto = false;
               if (vRef) {
                 const vDict = pdfDoc.context.lookup(vRef);
                 if (vDict instanceof PDFDict) {
+                  if (vDict.has(PDFName.of("ByteRange")) && vDict.has(PDFName.of("Contents"))) {
+                    acroHasCrypto = true;
+                  }
                   const nameObj = vDict.lookup(PDFName.of("Name"));
                   if (nameObj) {
                     sName = (nameObj as any).decodeText ? (nameObj as any).decodeText() : nameObj.toString().replace(/[()]/g, "");
@@ -2178,6 +2182,7 @@ export function detectExistingPdfSignatures(pdfDoc: PDFDocument): DetectedPdfSig
                   signerName: sName.trim(),
                   signDate: "",
                   fieldName: fieldName.trim(),
+                  isSigned: acroHasCrypto,
                 });
               }
             }
@@ -2314,14 +2319,14 @@ export async function scanPdfForSigners(
           // Check if an existing cryptographic signature or P12 stamp already covers this signatory
           // 1. Prioritize direct PNPKI common name match (e.g. "Dy Leah Balderama" matches "Leah B. Dy")
           let userSig = existingSignatures.find(
-            (sig) => sig.isSigned !== false && sig.signerName && matchNames(sig.signerName, u.name)
+            (sig) => sig.isSigned === true && sig.signerName && matchNames(sig.signerName, u.name)
           );
 
           // 2. Fallback to bounding box overlap directly above signatory name column
           if (!userSig) {
             userSig = existingSignatures.find((sig) => {
-              // Must be an actual signed signature, NOT an empty signature placeholder field!
-              if (!sig.isSigned && !sig.signerName) return false;
+              // Must be an authentic cryptographically signed signature, NOT an empty signature placeholder field!
+              if (sig.isSigned !== true || !sig.signerName) return false;
               if (sig.pageIndex === pIdx && sig.rect) {
                 // If this signature belongs to another registered user, do not attribute it here
                 if (sig.signerName && !matchNames(sig.signerName, u.name)) {
@@ -2342,7 +2347,7 @@ export async function scanPdfForSigners(
 
           // A signatory is only marked as signed if an authentic Adobe Acrobat P12 / digital signature
           // covers this signatory. Static printed text on an unsigned template or empty field does NOT constitute a signature.
-          const isAlreadySigned = Boolean(userSig && (userSig.isSigned || userSig.signerName));
+          const isAlreadySigned = Boolean(userSig && userSig.isSigned === true);
           const cleanName = u.name.toUpperCase().replace(/^(ENGR\.?|ATTY\.?|DIR\.?|DR\.?)\s+/i, "").trim();
 
           detectedSigners.push({
