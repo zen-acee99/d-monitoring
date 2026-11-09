@@ -678,12 +678,25 @@ export async function appendSignatureIncremental(
 
   // 7. Updated Catalog Object ONLY if AcroForm was newly created or was inline
   if (!existingAcroFormObjNum) {
-    let cleanedCatalogBody = catalogBody
-      .replace(/^\s*<<\s*/, "")
-      .replace(/\s*>>\s*$/, "")
-      .replace(/\/AcroForm\s+\d+\s+0\s+R/g, "")
-      .replace(/\/AcroForm\s*<<[\s\S]*?>>/g, "")
-      .trim();
+    let cleanedCatalogBody = catalogBody.trim();
+    if (cleanedCatalogBody.startsWith("<<")) {
+      cleanedCatalogBody = cleanedCatalogBody.slice(2);
+    }
+    if (cleanedCatalogBody.endsWith(">>")) {
+      cleanedCatalogBody = cleanedCatalogBody.slice(0, -2);
+    }
+    cleanedCatalogBody = cleanedCatalogBody.replace(/\/AcroForm\s+\d+\s+0\s+R/g, "").trim();
+
+    // Cleanly remove inline /AcroForm << ... >> using balanced dictionary extraction
+    // (regex cannot match nested dictionaries without cutting off at inner dictionaries like /DR or /Font)
+    const afIdx = cleanedCatalogBody.indexOf("/AcroForm");
+    if (afIdx !== -1) {
+      const balanced = extractBalancedDict(cleanedCatalogBody, afIdx);
+      if (balanced) {
+        const dictStart = cleanedCatalogBody.indexOf(balanced, afIdx);
+        cleanedCatalogBody = (cleanedCatalogBody.slice(0, afIdx) + cleanedCatalogBody.slice(dictStart + balanced.length)).trim();
+      }
+    }
 
     appendObj(
       rootObjNum,

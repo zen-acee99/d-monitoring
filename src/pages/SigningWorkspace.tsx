@@ -1222,7 +1222,7 @@ function DocumentPreviewModal({
             <div className="w-full h-full flex-1 min-h-[75vh] flex justify-center items-center overflow-hidden rounded-xl border border-[#1A2235] bg-[#2A2D32] shadow-2xl">
               <iframe
                 key={blobUrl}
-                src={`${blobUrl}#view=FitH&toolbar=1`}
+                src={`${blobUrl}#page=1&toolbar=1`}
                 title={doc.fileObj?.name || doc.fileName}
                 className="w-full h-full min-h-[75vh] flex-1 border-0"
               />

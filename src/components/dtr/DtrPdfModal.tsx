@@ -397,7 +397,7 @@ export function DtrPdfModal({ isOpen, onClose, record }: DtrPdfModalProps) {
               {blobUrl ? (
                 <iframe
                   key={blobUrl}
-                  src={`${blobUrl}#view=FitH&toolbar=1`}
+                  src={`${blobUrl}#page=1&toolbar=1`}
                   title={record.pdfFileName || "Accomplishment Report"}
                   className="w-full flex-1 min-h-[640px] border-0"
                 />
