@@ -1218,14 +1218,21 @@ function DocumentPreviewModal({
               <p className="text-sm font-semibold text-slate-300">Loading document preview…</p>
             </div>
           ) : blobUrl ? (
-            /* Clean PDF Viewer - Native 1:1 scale without CSS transform to prevent Chromium PDFium assertion failures */
-            <div className="w-full h-full flex-1 min-h-[75vh] flex justify-center items-center overflow-hidden rounded-xl border border-[#1A2235] bg-[#2A2D32] shadow-2xl">
-              <iframe
+            /* Clean PDF Viewer - Native 1:1 scale with fixed viewport height to prevent Chromium PDFium assertion failures */
+            <div className="w-full h-[78vh] min-h-[600px] flex justify-center items-center overflow-hidden rounded-xl border border-[#1A2235] bg-[#2A2D32] shadow-2xl">
+              <object
                 key={blobUrl}
-                src={`${blobUrl}#page=1&toolbar=1`}
-                title={doc.fileObj?.name || doc.fileName}
-                className="w-full h-full min-h-[75vh] flex-1 border-0"
-              />
+                data={`${blobUrl}#view=FitH&toolbar=1`}
+                type="application/pdf"
+                className="w-full h-full min-h-[600px] rounded-xl border-0"
+              >
+                <iframe
+                  key={blobUrl}
+                  src={`${blobUrl}#view=FitH&toolbar=1`}
+                  title={doc.fileObj?.name || doc.fileName}
+                  className="w-full h-full min-h-[600px] border-0"
+                />
+              </object>
             </div>
           ) : (
             /* Styled Fallback Document Simulation - FAITHFUL TO IMAGE 2 */
@@ -1773,18 +1780,28 @@ function mapDtrRecordToWorkspaceDoc(record: any): WorkspaceDocument {
   const isRaodDoc = resolvedFileName.toUpperCase().includes("RAOD");
   const isAnnabelDoc = resolvedFileName.toUpperCase().includes("ANNABEL") || String(target).toUpperCase().includes("ANNABEL");
 
-  let sanitizedRequired: string[] = Array.isArray(remarksData.requiredSigners)
-    ? [...remarksData.requiredSigners]
-    : record.signerName ? [record.signerName] : (target && target !== "PERSONNEL" ? [target] : []);
+  let sanitizedRequired: string[] =
+    Array.isArray(remarksData.requiredSigners) && remarksData.requiredSigners.length > 0
+      ? [...remarksData.requiredSigners]
+      : record.signerName
+      ? [record.signerName]
+      : target && target !== "PERSONNEL"
+      ? [target]
+      : [];
 
-  let sanitizedSigners: DocumentSigner[] = Array.isArray(remarksData.signers)
-    ? [...remarksData.signers]
-    : sanitizedRequired.map((r) => ({
-        name: r,
-        role: "Signatory",
-        status: record.status === "signed" ? "signed" : "pending",
-        position: "above",
-      }));
+  let sanitizedSigners: DocumentSigner[] =
+    Array.isArray(remarksData.signers) && remarksData.signers.length > 0
+      ? [...remarksData.signers]
+      : sanitizedRequired.map((r) => ({
+          name: r,
+          role: "Signatory",
+          status: record.status === "signed" ? "signed" : "pending",
+          position: "above",
+        }));
+
+  if (sanitizedRequired.length === 0 && sanitizedSigners.length > 0) {
+    sanitizedRequired = sanitizedSigners.map((s) => s.name);
+  }
 
   if (isRaodDoc || isAnnabelDoc) {
     sanitizedRequired = sanitizedRequired.filter((r) => {

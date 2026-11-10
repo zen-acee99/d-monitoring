@@ -547,25 +547,43 @@ export async function appendSignatureIncremental(
     const apNum = nextFreeObj++;
     newWidgetRefs.push(`${wNum} 0 R`);
 
-    const rx = rectCoords[0];
-    const ry = rectCoords[1];
-    const rw = rectCoords[2];
-    const rh = rectCoords[3];
-    const minX = Math.min(rx, rx + rw);
-    const minY = Math.min(ry, ry + rh);
-    let maxX = Math.max(rx, rx + rw);
-    const maxY = Math.max(ry, ry + rh);
+    const c0 = rectCoords[0];
+    const c1 = rectCoords[1];
+    const c2 = rectCoords[2];
+    const c3 = rectCoords[3];
+
+    let minX: number;
+    let minY: number;
+    let maxX: number;
+    let maxY: number;
+
+    // Detect whether rectCoords is [x1, y1, x2, y2] or [x, y, width, height]
+    if (c2 > c0 && c3 > c1) {
+      // Format is [x1, y1, x2, y2]
+      minX = Math.round(c0);
+      minY = Math.round(c1);
+      maxX = Math.round(c2);
+      maxY = Math.round(c3);
+    } else {
+      // Format is [x, y, width, height]
+      minX = Math.round(Math.min(c0, c0 + c2));
+      minY = Math.round(Math.min(c1, c1 + c3));
+      maxX = Math.round(Math.max(c0, c0 + c2));
+      maxY = Math.round(Math.max(c1, c1 + c3));
+    }
+
     let bboxW = Math.max(20, maxX - minX);
     let bboxH = Math.max(14, maxY - minY);
 
     if (!isCounter) {
-      // Ensure the visual bounding box is ALWAYS wide enough to fit long names (e.g. Annabel C. Odoño-Calimpong) without any clipping
-      if (bboxW < 225) {
-        bboxW = 225;
+      // Ensure the visual bounding box is wide enough for the stamp without invading adjacent columns
+      if (bboxW < 115) {
+        bboxW = 115;
         maxX = minX + bboxW;
       }
-      if (bboxH < 34) {
-        bboxH = 34;
+      if (bboxH < 18) {
+        bboxH = 18;
+        maxY = minY + bboxH;
       }
     }
 
@@ -600,28 +618,29 @@ export async function appendSignatureIncremental(
       // Black text, regular Helvetica
       streamContent += `q\nBT\n/Helv 3.3 Tf\n0 0 0 rg\n16 8 Td\n(DigiSigned) Tj\n0 -4.5 Td\n/Helv 3.0 Tf\n(by ${escapedCompact}) Tj\nET\nQ\nQ\n`;
     } else {
-      // ── Standard Signature Stamp ABOVE Personnel Name ──
+      // ── Standard Signature Stamp ABOVE Personnel Name (18pt height, 5-8px gap) ──
       if (imgObjNum) {
-        const drawH = Math.max(10, bboxH - 6);
-        streamContent += `q\n34 0 0 ${drawH} 2 3 cm\n/SigImg Do\nQ\n`;
+        const drawH = Math.max(10, bboxH - 4);
+        streamContent += `q\n30 0 0 ${drawH} 2 2 cm\n/SigImg Do\nQ\n`;
       }
-      const textX = imgObjNum ? 38 : 6;
+      const textX = imgObjNum ? 34 : 4;
       const escapedSigner = signerName.replace(/[()\\]/g, "\\$&");
       const signerFullText = `by ${escapedSigner}`;
 
       // Dynamic font size calculation to guarantee long names (e.g. Annabel C. Odoño-Calimpong) are NEVER cut off
       const availW = Math.max(50, bboxW - textX - 6);
-      let signerFontSize = signerFullText.length > 24 ? 5.8 : 6.2;
+      let signerFontSize = signerFullText.length > 24 ? 5.2 : 5.8;
       const charWidthFactor = 0.58;
       let estimatedTextWidth = signerFullText.length * (signerFontSize * charWidthFactor);
-      while (signerFontSize > 3.4 && estimatedTextWidth > availW) {
+      while (signerFontSize > 3.2 && estimatedTextWidth > availW) {
         signerFontSize -= 0.1;
         estimatedTextWidth = signerFullText.length * (signerFontSize * charWidthFactor);
       }
       signerFontSize = Math.round(signerFontSize * 10) / 10;
 
       // Per user explicit instruction: Black text, normal font (not bold), no date/time
-      streamContent += `q\nBT\n/Helv 6.0 Tf\n0 0 0 rg\n${textX} 15 Td\n(Digitally signed) Tj\n0 -7.5 Td\n/Helv ${signerFontSize} Tf\n(${signerFullText}) Tj\nET\nQ\nQ\n`;
+      // Compact 18pt height layout: Line 1 at 10.5, Line 2 at 4.0
+      streamContent += `q\nBT\n/Helv 5.5 Tf\n0 0 0 rg\n${textX} 10.5 Td\n(Digitally signed) Tj\n0 -6.5 Td\n/Helv ${signerFontSize} Tf\n(${signerFullText}) Tj\nET\nQ\nQ\n`;
     }
 
     const streamLen = Buffer.from(streamContent, "binary").length;
@@ -862,7 +881,12 @@ export async function signPdfBuffer(
         : (options?.pageIndex === -1 ? pages.length - 1 : 0);
     const page = pages[targetPageIndex] || pages[0];
 
-    const widgetRects = rawRects.map(([rx, ry, rw, rh]) => [rx, ry, rx + rw, ry + rh]);
+    const widgetRects = rawRects.map(([c0, c1, c2, c3]) => {
+      if (c2 > c0 && c3 > c1) {
+        return [c0, c1, c2, c3];
+      }
+      return [c0, c1, c0 + c2, c1 + c3];
+    });
     const signatureLength = 32768;
 
   // ByteRange placeholder

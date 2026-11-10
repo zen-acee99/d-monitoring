@@ -781,6 +781,16 @@ export function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+export function toCompactName(str: string): string {
+  return str
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/ñ/gi, "n")
+    .replace(/^(ENGR|ATTY|DIR|DR|MS|MR)/i, "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .toUpperCase();
+}
+
 export function matchNames(a?: string | null, b?: string | null): boolean {
   if (!a || !b) return false;
   const clean = (s: string) =>
@@ -802,6 +812,14 @@ export function matchNames(a?: string | null, b?: string | null): boolean {
   if (s1.length >= 6 && new RegExp(`(^|\\s)${escapeRegex(s2)}(\\s|$)`, "i").test(s1)) return true;
   if (s2.length >= 6 && new RegExp(`(^|\\s)${escapeRegex(s1)}(\\s|$)`, "i").test(s2)) return true;
 
+  // Compact alphanumeric match (ignores kerning spaces, missing middle initials, dashes, e.g. "ANNABELC.ODOÑ O-CALIM PONG")
+  const c1 = toCompactName(a);
+  const c2 = toCompactName(b);
+  if (c1 === c2) return true;
+  if (c1.length >= 8 && c2.length >= 8) {
+    if (c1.includes(c2) || c2.includes(c1)) return true;
+  }
+
   const t1 = s1.split(" ").filter((w) => w.length >= 2 && !COMMON_STOP_WORDS.has(w.toUpperCase()));
   const t2 = s2.split(" ").filter((w) => w.length >= 2 && !COMMON_STOP_WORDS.has(w.toUpperCase()));
   if (t1.length === 0 || t2.length === 0) return false;
@@ -810,7 +828,21 @@ export function matchNames(a?: string | null, b?: string | null): boolean {
 
   // If both have 2+ name tokens, require at least 2 tokens in common (e.g. "LEAH" + "DY")
   if (t1.length >= 2 && t2.length >= 2) {
-    return common.length >= 2;
+    if (common.length >= 2) return true;
+  }
+
+  // Check first and last name tokens in compact string
+  const sig1 = t1.filter((w) => w.length >= 3);
+  const sig2 = t2.filter((w) => w.length >= 3);
+  if (sig2.length >= 2) {
+    const first = sig2[0].toUpperCase();
+    const last = sig2[sig2.length - 1].toUpperCase();
+    if (c1.includes(first) && c1.includes(last)) return true;
+  }
+  if (sig1.length >= 2) {
+    const first = sig1[0].toUpperCase();
+    const last = sig1[sig1.length - 1].toUpperCase();
+    if (c2.includes(first) && c2.includes(last)) return true;
   }
 
   // If one is a single token (e.g. surname "CALIMPONG"), require at least 4 letters and an exact word token match
@@ -1658,7 +1690,70 @@ export function extractTextItemsFromContentStream(
     }
   }
 
-  return items;
+  return assembleTextItemsIntoLines(items);
+}
+
+/**
+ * Assembles fragmented individual character glyph items into cohesive phrases and words.
+ * Crucial for PDFs (e.g. from Google Docs, Word, or print drivers) that emit characters individually.
+ */
+export function assembleTextItemsIntoLines(rawItems: PdfTextItem[]): PdfTextItem[] {
+  if (rawItems.length <= 1) return rawItems;
+
+  const linesMap = new Map<number, PdfTextItem[]>();
+  for (const it of rawItems) {
+    let matchedKey: number | null = null;
+    for (const key of linesMap.keys()) {
+      if (Math.abs(it.y - key) < 2.5) {
+        matchedKey = key;
+        break;
+      }
+    }
+    if (matchedKey !== null) {
+      linesMap.get(matchedKey)!.push(it);
+    } else {
+      linesMap.set(it.y, [it]);
+    }
+  }
+
+  const result: PdfTextItem[] = [];
+
+  for (const [y, lineItems] of linesMap.entries()) {
+    lineItems.sort((a, b) => a.x - b.x);
+
+    let currentPhrase = "";
+    let phraseStartX = lineItems[0].x;
+    let prevItemRight = phraseStartX;
+
+    for (let i = 0; i < lineItems.length; i++) {
+      const it = lineItems[i];
+      let chunkW = 0;
+      for (let c = 0; c < it.text.length; c++) {
+        const ch = it.text[c];
+        if (ch === " " || ch === "." || ch === "," || ch === ":" || ch === "-") chunkW += 3.5;
+        else if (ch >= "A" && ch <= "Z") chunkW += 7.0;
+        else chunkW += 5.5;
+      }
+      chunkW = Math.max(chunkW, 4);
+
+      if (it.x - prevItemRight > 14 && currentPhrase.length > 0) {
+        result.push({ text: currentPhrase.trim(), x: phraseStartX, y });
+        currentPhrase = "";
+        phraseStartX = it.x;
+      } else if (it.x - prevItemRight > 3.2 && currentPhrase.length > 0 && !currentPhrase.endsWith(" ")) {
+        currentPhrase += " ";
+      }
+
+      currentPhrase += it.text;
+      prevItemRight = it.x + chunkW;
+    }
+
+    if (currentPhrase.trim().length > 0) {
+      result.push({ text: currentPhrase.trim(), x: phraseStartX, y });
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -1968,7 +2063,7 @@ export async function signUploadedArPdfBytes(
       isGoogleAuth: p12Options.isGoogleAuth,
       reason: "Official Accomplishment Report Provincial Approval",
       sigRect: [boxX, boxY, boxW, boxH],
-      sigRects: [[boxX, boxY, boxW, boxH]],
+      sigRects: loc.sigRects && loc.sigRects.length > 0 ? loc.sigRects : [[boxX, boxY, boxW, boxH]],
       pageIndex: loc.pageIndex,
     });
 
@@ -2239,8 +2334,9 @@ export async function scanPdfForSigners(
     const { width, height } = page.getSize();
     const isLandscape = width > height || width >= 800;
     // In landscape RAOD sheets, signature blocks are located at y ≈ 25..120 pt.
-    // Above y = 125 pt is the accounting table (obligations/disbursements) where transaction payees appear.
-    const maxSigY = isLandscape ? 120 : Math.min(220, height * 0.35);
+    // In portrait memos, letters, and vouchers, signature blocks can appear midway up the page (y up to ~620 pt).
+    // Avoid top letterhead/memo addressee header by capping at height * 0.72 (≈ 606 pt for A4).
+    const maxSigY = isLandscape ? 120 : Math.round(height * 0.72);
 
     const sBytes = extractPageContentStreamBytes(pdfDoc, page);
     if (sBytes.length === 0) continue;
@@ -2252,16 +2348,23 @@ export async function scanPdfForSigners(
     const sigAreaItems = items.filter((item) => {
       if (item.y > maxSigY || item.y < 20) return false;
       if (isDecorationOrUnderline(item.text) || isDigitalSignatureBadge(item.text)) return false;
-      const upper = item.text.toUpperCase();
+      const trimmed = item.text.trim();
+      if (trimmed.startsWith(":")) return false; // Exclude memo addressee headers (e.g. ": ANNABEL...")
+      const upper = trimmed.toUpperCase();
       if (
         upper.includes("(AGENCY HEAD)") ||
         upper.includes("(STATION)") ||
         upper.includes("(DESIGNATION)") ||
-        upper.includes("PAGE ") ||
+        upper.includes("PAGE") || // handles "PAGE ", "PAGE3OF3", "|PAGE", etc.
         upper.includes("REPUBLIC OF THE PHILIPPINES") ||
         upper.includes("ALLOTMENT") ||
         upper.includes("OBLIGATION") ||
-        upper.includes("DISBURSEMENT")
+        upper.includes("DISBURSEMENT") ||
+        upper.includes("REGION5@DICT.GOV.PH") ||
+        upper.includes("EMBARCADERO") ||
+        upper.includes("LEGAZPI") ||
+        upper.includes("PHP") ||
+        upper.includes("PESOS")
       ) {
         return false;
       }
@@ -2277,31 +2380,8 @@ export async function scanPdfForSigners(
 
     // Match strictly against users present in the active user list ("if the name is not include in the userlist dont show")
     for (const u of effectiveUsers) {
-      const normUName = normalizeNameForMatch(u.name);
-      const uParts = normUName.split(/\s+/).filter((p) => p.length > 2 && !COMMON_STOP_WORDS.has(p.toUpperCase()));
-      if (uParts.length === 0) continue;
-
       const userMatches = sigAreaItems.filter((item) => {
-        const normItem = normalizeNameForMatch(item.text);
-        if (normItem === normUName) return true;
-        if (normUName.length >= 5 && new RegExp(`(^|\\s)${escapeRegex(normUName)}(\\s|$)`, "i").test(normItem)) return true;
-        if (uParts.length >= 2) {
-          const allParts = uParts.every((part) =>
-            new RegExp(`(^|\\s)${escapeRegex(part)}(\\s|$)`, "i").test(normItem)
-          );
-          if (allParts) return true;
-          const first = uParts[0];
-          const last = uParts[uParts.length - 1];
-          if (first.length >= 3 && last.length >= 3 && first !== last) {
-            if (
-              new RegExp(`(^|\\s)${escapeRegex(first)}(\\s|$)`, "i").test(normItem) &&
-              new RegExp(`(^|\\s)${escapeRegex(last)}(\\s|$)`, "i").test(normItem)
-            ) {
-              return true;
-            }
-          }
-        }
-        return false;
+        return matchNames(item.text, u.name);
       });
 
       if (userMatches.length > 0) {
@@ -2309,11 +2389,7 @@ export async function scanPdfForSigners(
         userMatches.sort((a, b) => a.y - b.y);
         const item = userMatches[0];
 
-        const already = detectedSigners.some(
-          (s) =>
-            normalizeNameForMatch(s.name) === normUName ||
-            (uParts.length >= 2 && uParts.every((p) => normalizeNameForMatch(s.name).includes(p)))
-        );
+        const already = detectedSigners.some((s) => matchNames(s.name, u.name));
 
         if (!already) {
           // Check if an existing cryptographic signature or P12 stamp already covers this signatory
@@ -2326,19 +2402,18 @@ export async function scanPdfForSigners(
           if (!userSig) {
             userSig = existingSignatures.find((sig) => {
               // Must be an authentic cryptographically signed signature, NOT an empty signature placeholder field!
-              if (sig.isSigned !== true || !sig.signerName) return false;
+              if (sig.isSigned !== true) return false;
+              // If the signature explicitly specifies a signerName from a P12 certificate,
+              // and that signerName DOES NOT match this user, it NEVER belongs to this user!
+              if (sig.signerName && !matchNames(sig.signerName, u.name)) {
+                return false;
+              }
               if (sig.pageIndex === pIdx && sig.rect) {
-                // If this signature belongs to another registered user, do not attribute it here
-                if (sig.signerName && !matchNames(sig.signerName, u.name)) {
-                  const matchesOtherUser = effectiveUsers.some(
-                    (other) => other.name !== u.name && matchNames(sig.signerName, other.name)
-                  );
-                  if (matchesOtherUser) return false;
-                }
                 const [rx1, ry1, rx2, ry2] = sig.rect;
                 const sigCenterX = (rx1 + rx2) / 2;
-                const isXDirect = (item.x >= rx1 - 25 && item.x <= rx2 + 25) || Math.abs(sigCenterX - item.x) < 70;
-                const isYAbove = ry1 >= item.y - 15 && ry1 <= item.y + 110;
+                const isXDirect = (item.x >= rx1 - 25 && item.x <= rx2 + 25) || Math.abs(sigCenterX - item.x) < 50;
+                // Signature stamp must be immediately above the name (gap 5..38 pt), NOT far up in employee signature area!
+                const isYAbove = ry1 >= item.y - 5 && ry1 <= item.y + 40;
                 return isXDirect && isYAbove;
               }
               return false;
@@ -2413,12 +2488,15 @@ export function detectMatchingUsersFromText(
     const uParts = normUName.split(/\s+/).filter((p) => p.length > 2 && !COMMON_STOP_WORDS.has(p.toUpperCase()));
     if (uParts.length === 0) continue;
 
-    // Direct snippet match against extracted lines or filename/notes using whole-word boundaries
+    // Direct snippet match against extracted lines or filename/notes using whole-word boundaries or compact match
     const directMatch = normalizedSnippets.some((snippet) => {
-      // 1. Exact full normalized name match
+      // 1. Direct or compact name match
+      if (matchNames(snippet, u.name)) return true;
+
+      // 2. Exact full normalized name match
       if (snippet === normUName) return true;
 
-      // 2. Full normalized name appears as exact phrase inside snippet
+      // 3. Full normalized name appears as exact phrase inside snippet
       if (normUName.length >= 5 && new RegExp(`(^|\\s)${escapeRegex(normUName)}(\\s|$)`, "i").test(snippet)) {
         return true;
       }
@@ -2477,6 +2555,9 @@ export function recheckDocWithLatestUsers(
   if (doc.scannedInfo?.signers && Array.isArray(doc.scannedInfo.signers)) {
     candidateTexts.push(...doc.scannedInfo.signers.map((s: any) => s.name));
   }
+  if (doc.signers && Array.isArray(doc.signers)) {
+    candidateTexts.push(...doc.signers.map((s: any) => s.name));
+  }
   if (doc.fileName) candidateTexts.push(doc.fileName);
   // Do NOT add doc.notes or unverified doc.targetPersonnel to prevent cross-contamination
 
@@ -2486,6 +2567,11 @@ export function recheckDocWithLatestUsers(
   const validSignerNames = new Set(matchedUsers.map((u) => normalizeNameForMatch(u.name)));
   if (doc.scannedInfo?.signers && Array.isArray(doc.scannedInfo.signers)) {
     doc.scannedInfo.signers.forEach((s: any) => {
+      if (s?.name) validSignerNames.add(normalizeNameForMatch(s.name));
+    });
+  }
+  if (doc.signers && Array.isArray(doc.signers)) {
+    doc.signers.forEach((s: any) => {
       if (s?.name) validSignerNames.add(normalizeNameForMatch(s.name));
     });
   }
@@ -2508,15 +2594,31 @@ export function recheckDocWithLatestUsers(
     if (!alreadyInReq) {
       hasNewRecognition = true;
       newlyDetectedNames.push(cleanName);
-      if (!isSigned) {
-        nextRequired.push(cleanName);
-      }
+      nextRequired.push(cleanName);
+    }
+    if (!existingSigner) {
       nextSigners.push({
         name: cleanName,
         role: u.role || "Signatory",
         status: isSigned ? "signed" : "pending",
         position: "above",
       });
+    }
+  }
+
+  // Ensure all existing signers are also in nextRequired if they are registered users
+  for (const s of nextSigners) {
+    if (s?.name) {
+      const cleanName = s.name.toUpperCase().replace(/^(ENGR\.?|ATTY\.?|DIR\.?|DR\.?)\s+/i, "").trim();
+      const inReq = nextRequired.some(
+        (r: string) => matchNames(r, cleanName) || normalizeNameForMatch(r) === normalizeNameForMatch(cleanName)
+      );
+      if (!inReq) {
+        const inUsers = latestUsers.some((u) => matchNames(u.name, cleanName) || normalizeNameForMatch(u.name) === normalizeNameForMatch(cleanName));
+        if (inUsers) {
+          nextRequired.push(cleanName);
+        }
+      }
     }
   }
 
@@ -2605,13 +2707,36 @@ export function recheckDocWithLatestUsers(
     return true;
   });
 
-  if (filteredRequired.length !== nextRequired.length || filteredSigners.length !== nextSigners.length) {
-    hasNewRecognition = true;
-    nextRequired.length = 0;
-    nextRequired.push(...filteredRequired);
-    nextSigners.length = 0;
-    nextSigners.push(...filteredSigners);
+  const deduplicatedRequired: string[] = [];
+  const seenReq = new Set<string>();
+  for (const r of filteredRequired) {
+    const norm = normalizeNameForMatch(r);
+    if (!seenReq.has(norm)) {
+      seenReq.add(norm);
+      deduplicatedRequired.push(r);
+    }
   }
+
+  const deduplicatedSigners: any[] = [];
+  const seenSig = new Set<string>();
+  for (const s of filteredSigners) {
+    const norm = normalizeNameForMatch(s.name);
+    if (!seenSig.has(norm)) {
+      seenSig.add(norm);
+      deduplicatedSigners.push(s);
+    }
+  }
+
+  if (
+    deduplicatedRequired.length !== (doc.requiredSigners || []).length ||
+    deduplicatedSigners.length !== (doc.signers || []).length
+  ) {
+    hasNewRecognition = true;
+  }
+  nextRequired.length = 0;
+  nextRequired.push(...deduplicatedRequired);
+  nextSigners.length = 0;
+  nextSigners.push(...deduplicatedSigners);
 
   // Update targetPersonnel: pick the first pending registered signer, or the first filtered registered signer
   let nextTarget = doc.targetPersonnel;
@@ -2763,6 +2888,7 @@ export function findPersonnelSignatureCoordinates(
   boxY: number;
   boxW: number;
   boxH: number;
+  sigRects?: [number, number, number, number][];
   detectedReason: string;
   appliedPosition?: "above" | "right" | "left" | "bottom";
 } {
@@ -2827,9 +2953,24 @@ export function findPersonnelSignatureCoordinates(
       }
     } catch {}
 
-    // Special layout handler for RAOD / Landscape documents (width >= 800 && width > height)
+    const sBytes = extractPageContentStreamBytes(pdfDoc, page);
+    const fontCMaps = sBytes.length > 0 ? loadPageFontCMaps(pdfDoc, page) : [];
+    const textItems = sBytes.length > 0 ? extractTextItemsFromContentStream(sBytes, fontCMaps) : [];
+
+    const nameMatchesInText =
+      Boolean((targetParts.length > 0 || normTarget) && textItems.length > 0) &&
+      textItems.some((item) => {
+        if (isDecorationOrUnderline(item.text) || isDigitalSignatureBadge(item.text)) return false;
+        if (item.text.trim().startsWith(":")) return false;
+        if (matchNames(item.text, personnelName)) return true;
+        const normItem = normalizeNameForMatch(item.text);
+        return Boolean(normTarget && (normItem === normTarget || normItem.includes(normTarget)));
+      });
+
+    // Special layout handler for RAOD / Landscape documents fallback (width >= 800 && width > height)
+    // Only used when the personnel name is NOT found in the document's text stream
     const isLandscapeRaod = width >= 800 && width > height;
-    if (isLandscapeRaod && !isCounter) {
+    if (isLandscapeRaod && !isCounter && !nameMatchesInText) {
       const lowerName = (personnelName || "").toLowerCase();
       const isAnnabelOrDirector =
         lowerName.includes("annabel") ||
@@ -2897,16 +3038,14 @@ export function findPersonnelSignatureCoordinates(
       }
     }
 
-    const sBytes = extractPageContentStreamBytes(pdfDoc, page);
     if (sBytes.length === 0) continue;
 
-    const fontCMaps = loadPageFontCMaps(pdfDoc, page);
-    const textItems = extractTextItemsFromContentStream(sBytes, fontCMaps);
-
-    // 1. Check for exact or partial personnel name match in the signature area (y <= height * 0.55)
+    // 1. Check for exact, compact, or partial personnel name match in the signature area
     if (targetParts.length > 0 || normTarget) {
       const matches = textItems.filter((item) => {
         if (isDecorationOrUnderline(item.text) || isDigitalSignatureBadge(item.text)) return false;
+        if (item.text.trim().startsWith(":")) return false; // Exclude memo addressee headers
+        if (matchNames(item.text, personnelName)) return true;
         // Prioritize signature area matches over top form headers
         const normItem = normalizeNameForMatch(item.text);
         const isExactMatch = normTarget && (normItem === normTarget || normItem.includes(normTarget));
@@ -2975,24 +3114,87 @@ export function findPersonnelSignatureCoordinates(
             appliedPosition: effectivePos,
           };
         } else {
-          // Normal sign: placed directly ABOVE the name (generous width up to 250 pt so long names like Annabel C. Odoño-Calimpong never cut off)
-          const rawTargetName = (personnelName || item.text || "").trim();
+          // Normal sign: placed strictly ABOVE the personnel name without invading neighbor columns
+          const rawTargetName = (personnelName || "").trim();
           const nameLen = rawTargetName.length;
-          const boxW = Math.max(220, Math.min(250, Math.round(50 + nameLen * 5.8)));
-          const boxH = 32;
-          let boxX = Math.round(item.x - 4);
-          if (boxX + boxW > width - 15) {
-            boxX = Math.max(15, width - boxW - 15);
+
+          // Prioritize the signature block at the bottom of the page (lowest Y)
+          const baseMatch = matches[0];
+          // Side-by-side multi-copy forms (e.g. dual CSC Form 48 DTR) have copies at the same vertical level (dy <= 25 pt)
+          const signatureAreaMatches = matches.filter((m) => Math.abs(m.y - baseMatch.y) <= 25);
+
+          // Group into distinct physical occurrences on the page (supports dual CSC Form 48 DTR left/right copies)
+          const distinctMatches: typeof signatureAreaMatches = [];
+          for (const m of signatureAreaMatches) {
+            const isDuplicate = distinctMatches.some(
+              (existing) => Math.abs(existing.x - m.x) < 40 && Math.abs(existing.y - m.y) < 15
+            );
+            if (!isDuplicate) {
+              distinctMatches.push(m);
+            }
           }
-          const boxY = Math.min(height - boxH - 10, Math.round(item.y + 14));
+          distinctMatches.sort((a, b) => a.x - b.x); // sort left-to-right
+
+          const allBoxes = distinctMatches.map((item) => {
+            // Locate full name text width on this line (supports multi-token names on the same line)
+            const sameLineItems = textItems
+              .filter((it) => Math.abs(it.y - item.y) < 4 && it.x >= item.x - 5 && it.x <= item.x + 250)
+              .sort((a, b) => a.x - b.x);
+
+            let rightmostX = item.x + measurePdfTextWidth(item.text.trim(), 10.5);
+            for (const it of sameLineItems) {
+              if (it.x <= rightmostX + 22) {
+                const itEnd = it.x + measurePdfTextWidth(it.text.trim(), 10.5);
+                if (itEnd > rightmostX) {
+                  rightmostX = itEnd;
+                }
+              }
+            }
+            const nameTextWidth = Math.max(measurePdfTextWidth(item.text.trim(), 10.5), rightmostX - item.x);
+
+            // Compact signature stamp width: strictly between 115 and 142 pt so column borders
+            // (such as in DV, Payroll, Abstract, Voucher tables) are never crossed or invaded
+            let boxW = Math.max(115, Math.min(142, Math.round(38 + nameLen * 3.8)));
+            const boxH = 18;
+
+            // Align directly and strictly ABOVE the personnel name:
+            // If name is wider than the stamp, center over name; otherwise align snugly with start of name
+            let boxX = nameTextWidth > boxW
+              ? Math.round(item.x + (nameTextWidth - boxW) / 2)
+              : Math.round(item.x - 2);
+
+            // Never overflow page right edge, but avoid shifting left across column boundaries
+            if (boxX + boxW > width - 10) {
+              boxW = Math.max(90, width - boxX - 10);
+              if (boxX + boxW > width - 10) {
+                boxX = Math.max(10, width - boxW - 10);
+              }
+            }
+
+            // Exact 5-8 px visual gap above top of name letters:
+            // Standard font cap height is ~7 pt above item.y baseline.
+            // boxY = item.y + 9 positions the bottom of the 18pt stamp (text baseline at +4pt)
+            // at ~5.2 px above the top of the name, while staying safely below preceding headers (e.g. APPROVED:)
+            const boxY = Math.min(height - boxH - 4, Math.round(item.y + 9));
+            return { boxX, boxY, boxW, boxH, text: item.text };
+          });
+
+          const primary = allBoxes[0];
+          const sigRects: [number, number, number, number][] = allBoxes.map((b) => [
+            b.boxX,
+            b.boxY,
+            b.boxX + b.boxW,
+            b.boxY + b.boxH,
+          ]);
 
           return {
             pageIndex: pIdx,
-            boxX,
-            boxY,
-            boxW,
-            boxH,
-            detectedReason: `Matched personnel name "${item.text}" on page ${pIdx + 1} - placed ABOVE name at (${boxX}, ${boxY})`,
+            boxX: primary.boxX,
+            boxY: primary.boxY,
+            boxW: primary.boxW,
+            boxH: primary.boxH,
+            sigRects,
+            detectedReason: `Matched ${distinctMatches.length} occurrence(s) of personnel "${primary.text}" on page ${pIdx + 1} - placed strictly ABOVE name(s)`,
             appliedPosition: "above",
           };
         }
@@ -3031,13 +3233,13 @@ export function findPersonnelSignatureCoordinates(
   } else {
     const rawTargetName = (personnelName || "").trim();
     const nameLen = rawTargetName.length;
-    const boxW = Math.max(195, Math.min(230, Math.round(44 + nameLen * 5.2)));
-    const boxH = 32;
+    const boxW = Math.max(115, Math.min(142, Math.round(38 + nameLen * 3.8)));
+    const boxH = 18;
     let boxX = Math.round(width * 0.50);
     if (boxX + boxW > width - 15) {
       boxX = Math.max(15, width - boxW - 15);
     }
-    const boxY = Math.round(height * 0.18 + 24);
+    const boxY = Math.round(height * 0.18 + 10);
     return {
       pageIndex: lastPageIdx,
       boxX,
@@ -3148,7 +3350,7 @@ export async function signUploadedPersonnelPdfBytes(
       reason,
       fieldName,
       sigRect: [boxX, boxY, boxW, boxH],
-      sigRects: [[boxX, boxY, boxW, boxH]],
+      sigRects: loc.sigRects && loc.sigRects.length > 0 ? loc.sigRects : [[boxX, boxY, boxW, boxH]],
       pageIndex: loc.pageIndex,
       signatureImage,
       signerName: resolvedSignerName,
@@ -3272,83 +3474,94 @@ export async function signUploadedPersonnelPdfBytes(
       }
     }
 
-    if (imgBytes) {
+    const rectsToDraw: [number, number, number, number][] =
+      loc.sigRects && loc.sigRects.length > 0
+        ? loc.sigRects
+        : [[boxX, boxY, boxX + boxW, boxY + boxH]];
+
+    for (const [rX, rY, rX2, rY2] of rectsToDraw) {
+      const curW = rX2 - rX;
+      const curH = rY2 - rY;
+      let hasDrawnImage = false;
+
+      if (imgBytes) {
+        try {
+          let embeddedImg;
+          if (isJpg) {
+            embeddedImg = await pdfDoc.embedJpg(imgBytes);
+          } else {
+            embeddedImg = await pdfDoc.embedPng(imgBytes);
+          }
+          targetPage.drawImage(embeddedImg, {
+            x: rX + 2,
+            y: rY + 2,
+            width: 30,
+            height: Math.max(10, curH - 4),
+          });
+          hasDrawnImage = true;
+        } catch (e) {
+          console.warn("Could not embed signature image in PDF page:", e);
+        }
+      }
+
       try {
-        let embeddedImg;
-        if (isJpg) {
-          embeddedImg = await pdfDoc.embedJpg(imgBytes);
+        const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        const textX = hasDrawnImage ? rX + 34 : rX + 4;
+        const isReneJane =
+          resolvedSignerName.toLowerCase().includes("buena") ||
+          resolvedSignerName.toLowerCase().includes("rene jane");
+
+        const signerText = isReneJane ? "Buena Rene Jane Rosendo" : `by ${resolvedSignerName}`;
+        const availW = Math.max(50, curW - (textX - rX) - 4);
+        let signerFontSize = signerText.length > 24 ? 5.2 : 5.8;
+
+        try {
+          while (signerFontSize > 3.2 && helvetica.widthOfTextAtSize(signerText, signerFontSize) > availW) {
+            signerFontSize -= 0.1;
+          }
+        } catch {
+          if (signerText.length * 3.6 > availW) {
+            signerFontSize = Math.max(3.2, Math.min(5.8, availW / (signerText.length * 0.58)));
+          }
+        }
+        signerFontSize = Math.round(signerFontSize * 10) / 10;
+
+        if (isReneJane) {
+          targetPage.drawText("Digitally signed by", {
+            x: textX,
+            y: rY + 10.5,
+            size: 5.5,
+            font: helvetica,
+            color: rgb(0.0, 0.0, 0.0),
+          });
+
+          targetPage.drawText(signerText, {
+            x: textX,
+            y: rY + 4.0,
+            size: signerFontSize,
+            font: helvetica,
+            color: rgb(0.0, 0.0, 0.0),
+          });
         } else {
-          embeddedImg = await pdfDoc.embedPng(imgBytes);
+          targetPage.drawText("Digitally signed", {
+            x: textX,
+            y: rY + 10.5,
+            size: 5.5,
+            font: helvetica,
+            color: rgb(0.0, 0.0, 0.0),
+          });
+
+          targetPage.drawText(signerText, {
+            x: textX,
+            y: rY + 4.0,
+            size: signerFontSize,
+            font: helvetica,
+            color: rgb(0.0, 0.0, 0.0),
+          });
         }
-        targetPage.drawImage(embeddedImg, {
-          x: boxX + 3,
-          y: boxY + 3,
-          width: 34,
-          height: boxH - 6,
-        });
-        hasDrawnImage = true;
-      } catch (e) {
-        console.warn("Could not embed signature image in PDF page:", e);
+      } catch (err) {
+        console.warn("Could not draw digital signature typography:", err);
       }
-    }
-
-    try {
-      const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const textX = hasDrawnImage ? boxX + 38 : boxX + 5;
-      const isReneJane =
-        resolvedSignerName.toLowerCase().includes("buena") ||
-        resolvedSignerName.toLowerCase().includes("rene jane");
-
-      const signerText = isReneJane ? "Buena Rene Jane Rosendo" : `by ${resolvedSignerName}`;
-      const availW = Math.max(60, boxW - (textX - boxX) - 4);
-      let signerFontSize = 6.2;
-
-      try {
-        while (signerFontSize > 3.4 && helvetica.widthOfTextAtSize(signerText, signerFontSize) > availW) {
-          signerFontSize -= 0.1;
-        }
-      } catch {
-        if (signerText.length * 3.6 > availW) {
-          signerFontSize = Math.max(3.4, Math.min(6.2, availW / (signerText.length * 0.58)));
-        }
-      }
-      signerFontSize = Math.round(signerFontSize * 10) / 10;
-
-      if (isReneJane) {
-        targetPage.drawText("Digitally signed by", {
-          x: textX,
-          y: boxY + 14,
-          size: 6.5,
-          font: helvetica,
-          color: rgb(0.0, 0.0, 0.0),
-        });
-
-        targetPage.drawText(signerText, {
-          x: textX,
-          y: boxY + 6.5,
-          size: signerFontSize,
-          font: helvetica,
-          color: rgb(0.0, 0.0, 0.0),
-        });
-      } else {
-        targetPage.drawText("Digitally signed", {
-          x: textX,
-          y: boxY + 14,
-          size: 6.5,
-          font: helvetica,
-          color: rgb(0.0, 0.0, 0.0),
-        });
-
-        targetPage.drawText(signerText, {
-          x: textX,
-          y: boxY + 6.5,
-          size: signerFontSize,
-          font: helvetica,
-          color: rgb(0.0, 0.0, 0.0),
-        });
-      }
-    } catch (err) {
-      console.warn("Could not draw digital signature typography:", err);
     }
   }
 
@@ -3383,7 +3596,7 @@ export async function signUploadedPersonnelPdfBytes(
       reason,
       fieldName,
       sigRect: [boxX, boxY, boxW, boxH],
-      sigRects: [[boxX, boxY, boxW, boxH]],
+      sigRects: loc.sigRects && loc.sigRects.length > 0 ? loc.sigRects : [[boxX, boxY, boxW, boxH]],
       pageIndex: loc.pageIndex,
     });
 
