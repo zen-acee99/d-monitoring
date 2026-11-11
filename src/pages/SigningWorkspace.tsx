@@ -867,6 +867,39 @@ function DocumentPreviewModal({
     });
   }, [signersList]);
 
+  const handleAttachPdfFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !rawDoc) return;
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      rawDoc.pdfDataUrl = dataUrl;
+      rawDoc.fileObj = file;
+      const objectUrl = URL.createObjectURL(file);
+      setBlobUrl(objectUrl);
+
+      // Persist to database so it is permanently attached to this document
+      signingWorkspaceApi
+        .saveDocument({
+          id: rawDoc.id,
+          fileName: rawDoc.fileName,
+          fileSize: formatFileSize(file.size),
+          uploadedAt: rawDoc.uploadedAt,
+          uploadedBy: rawDoc.uploadedBy,
+          status: rawDoc.status,
+          targetPersonnel: rawDoc.targetPersonnel,
+          requiredSigners: rawDoc.requiredSigners,
+          signers: rawDoc.signers,
+          scannedInfo: rawDoc.scannedInfo,
+          pdfDataUrl: dataUrl,
+          province: rawDoc.province,
+          notes: rawDoc.notes,
+        })
+        .catch(() => {});
+    } catch (err) {
+      console.warn("Failed attaching PDF to document:", err);
+    }
+  };
+
   useEffect(() => {
     if (!rawDoc) {
       setBlobUrl(null);
@@ -1526,11 +1559,38 @@ function DocumentPreviewModal({
               </object>
             </div>
           ) : (
-            /* Styled Fallback Document Simulation - FAITHFUL TO IMAGE 2 */
-            <div
-              style={{ transform: `scale(${zoom / 100})`, transformOrigin: "top center" }}
-              className="bg-white text-black p-4 sm:p-8 md:p-14 rounded-lg shadow-2xl w-full max-w-[840px] min-h-[720px] flex flex-col justify-between select-text transition-transform duration-150"
-            >
+            /* Styled Fallback Document Simulation with Notice Banner */
+            <div className="flex flex-col items-center w-full max-w-[840px] space-y-4">
+              {/* Notice Banner explaining why this transmittal view appears */}
+              <div className="w-full p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                  <div className="text-xs space-y-0.5">
+                    <p className="font-bold text-amber-300">
+                      Original PDF Scanned File Missing In Cloud Storage
+                    </p>
+                    <p className="text-slate-300">
+                      This older document was saved before individual cloud streaming was enabled, so its binary PDF was not preserved in the cloud database.
+                      Below is the system transmittal summary. Attach the real PDF file below to view the actual document pages.
+                    </p>
+                  </div>
+                </div>
+                <label className="shrink-0 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-md transition-all active:scale-95">
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Attach Real PDF</span>
+                  <input
+                    type="file"
+                    accept="application/pdf"
+                    className="hidden"
+                    onChange={handleAttachPdfFile}
+                  />
+                </label>
+              </div>
+
+              <div
+                style={{ transform: `scale(${zoom / 100})`, transformOrigin: "top center" }}
+                className="bg-white text-black p-4 sm:p-8 md:p-14 rounded-lg shadow-2xl w-full max-w-[840px] min-h-[720px] flex flex-col justify-between select-text transition-transform duration-150"
+              >
               {/* Document Header */}
               <div className="border-b border-slate-300 pb-5 space-y-2">
                 <div className="flex flex-col sm:flex-row items-center justify-between text-[10px] sm:text-[11px] font-bold text-slate-600 uppercase tracking-widest gap-1 text-center sm:text-left">
@@ -1620,8 +1680,9 @@ function DocumentPreviewModal({
                 )}
               </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
+      </div>
 
         {/* Modal Bottom Bar */}
         <div className="bg-[#080B13] border-t border-[#1A2235] px-4 sm:px-5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-[10px] sm:text-[11px] text-slate-500 shrink-0">
