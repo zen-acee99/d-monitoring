@@ -894,6 +894,9 @@ function DocumentPreviewModal({
     if (!file || !rawDoc) return;
     try {
       const dataUrl = await fileToDataUrl(file);
+      const cleanFileName = rawDoc.fileName.replace(/\.docx?(\.pdf)?$/i, ".pdf");
+      rawDoc.fileName = cleanFileName;
+      rawDoc.fileType = "pdf";
       rawDoc.pdfDataUrl = dataUrl;
       rawDoc.fileObj = file;
       const objectUrl = URL.createObjectURL(file);
@@ -903,7 +906,7 @@ function DocumentPreviewModal({
       signingWorkspaceApi
         .saveDocument({
           id: rawDoc.id,
-          fileName: rawDoc.fileName,
+          fileName: cleanFileName,
           fileSize: formatFileSize(file.size),
           uploadedAt: rawDoc.uploadedAt,
           uploadedBy: rawDoc.uploadedBy,
@@ -1584,30 +1587,42 @@ function DocumentPreviewModal({
             /* Styled Fallback Document Simulation with Notice Banner */
             <div className="flex flex-col items-center w-full max-w-[840px] space-y-4">
               {/* Notice Banner explaining why this transmittal view appears */}
-              <div className="w-full p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg">
-                <div className="flex items-start gap-3">
-                  <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-                  <div className="text-xs space-y-0.5">
-                    <p className="font-bold text-amber-300">
-                      Original PDF Scanned File Missing In Cloud Storage
-                    </p>
-                    <p className="text-slate-300">
-                      This older document was saved before individual cloud streaming was enabled, so its binary PDF was not preserved in the cloud database.
-                      Below is the system transmittal summary. Attach the real PDF file below to view the actual document pages.
-                    </p>
+              {(() => {
+                const isWordDoc = Boolean(
+                  doc?.fileName?.toLowerCase().includes(".docx") ||
+                  doc?.fileName?.toLowerCase().includes(".doc") ||
+                  doc?.fileType === "docx"
+                );
+                return (
+                  <div className="w-full p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg">
+                    <div className="flex items-start gap-3">
+                      <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                      <div className="text-xs space-y-0.5">
+                        <p className="font-bold text-amber-300">
+                          {isWordDoc
+                            ? "Microsoft Word (.docx) Document — PDF Version Required for Viewing"
+                            : "Original PDF File Missing in Cloud Storage"}
+                        </p>
+                        <p className="text-slate-300">
+                          {isWordDoc
+                            ? "This document was uploaded as a Microsoft Word (.docx) file. Web browsers can only render PDF files inside the viewer. Below is the official transmittal summary. To view the original document pages, export the Word file as a PDF and attach it below."
+                            : "The binary PDF for this record was not preserved in cloud storage. Below is the system transmittal summary. Attach the real PDF file below to view the actual document pages."}
+                        </p>
+                      </div>
+                    </div>
+                    <label className="shrink-0 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-md transition-all active:scale-95">
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Attach Real PDF</span>
+                      <input
+                        type="file"
+                        accept="application/pdf"
+                        className="hidden"
+                        onChange={handleAttachPdfFile}
+                      />
+                    </label>
                   </div>
-                </div>
-                <label className="shrink-0 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-md transition-all active:scale-95">
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>Attach Real PDF</span>
-                  <input
-                    type="file"
-                    accept="application/pdf"
-                    className="hidden"
-                    onChange={handleAttachPdfFile}
-                  />
-                </label>
-              </div>
+                );
+              })()}
 
               <div
                 style={{ transform: `scale(${zoom / 100})`, transformOrigin: "top center" }}
