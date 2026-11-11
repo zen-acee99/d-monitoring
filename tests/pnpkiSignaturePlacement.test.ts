@@ -627,6 +627,58 @@ async function runTestSuite() {
   }
 
   // ─────────────────────────────────────────────────────────────────
+  // TEST 15: Table with Vertical Column Divider (media_1794390299905_f288aa95.png)
+  // Strict non-overlapping rule: signature MUST NEVER cross left vertical dividing line
+  // ─────────────────────────────────────────────────────────────────
+  console.log("\n[Test 15] Table with Vertical Column Divider & Strict Non-Overlapping (media_1794390299905_f288aa95.png)");
+  {
+    const vLineX = 195;
+    const rightBorderX = 550;
+    const rowY = 120;
+    const targetName = "ACE MATA MALTO";
+    const nameX = 230; // close to vertical divider at 195
+
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    const font = await doc.embedFont(StandardFonts.HelveticaBold);
+
+    // Draw table vertical borders
+    page.drawLine({ start: { x: vLineX, y: 60 }, end: { x: vLineX, y: 220 }, thickness: 1, color: rgb(0, 0, 0) });
+    page.drawLine({ start: { x: rightBorderX, y: 60 }, end: { x: rightBorderX, y: 220 }, thickness: 1, color: rgb(0, 0, 0) });
+
+    // Draw left column labels
+    page.drawText("Signature", { x: 50, y: rowY + 35, size: 9, font, color: rgb(0, 0, 0) });
+    page.drawText("Printed Name", { x: 50, y: rowY, size: 9, font, color: rgb(0, 0, 0) });
+    page.drawText("Position", { x: 50, y: rowY - 20, size: 9, font, color: rgb(0, 0, 0) });
+
+    // Draw right column signatory
+    page.drawText(targetName, { x: nameX, y: rowY, size: 10, font, color: rgb(0, 0, 0) });
+    page.drawText("OIC-Regional Director, Regional Office No. V", { x: nameX, y: rowY - 20, size: 8, font, color: rgb(0, 0, 0) });
+
+    const pdfBytes = await doc.save({ useObjectStreams: false });
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+
+    const loc = findPersonnelSignatureCoordinates(pdfDoc, targetName);
+
+    assert(loc.appliedPosition === "above", "Test 15.1", `appliedPosition must be "above", got "${loc.appliedPosition}"`);
+    assert(loc.boxY === Math.round(rowY + 13), "Test 15.2", `boxY must be rowY + 13 (${Math.round(rowY + 13)}), got ${loc.boxY}`);
+    assert(loc.boxH === 28, "Test 15.3", `boxH must be 28pt, got ${loc.boxH}`);
+    assert(loc.boxW >= 120, "Test 15.4", `boxW must be >= 120pt, got ${loc.boxW}`);
+
+    // STRICT NON-OVERLAPPING ENFORCEMENT:
+    // Signature boxX MUST be strictly to the right of the vertical dividing line (vLineX = 195)
+    // and NEVER overlap into the left column!
+    assert(loc.boxX >= vLineX + 4, "Test 15.5", `boxX (${loc.boxX}) MUST be >= ${vLineX + 4} (strictly right of column divider line at ${vLineX}), NEVER overlapping left column!`);
+    assert(loc.boxX + loc.boxW <= rightBorderX - 2, "Test 15.6", `boxX + boxW (${loc.boxX + loc.boxW}) must stay within right column border (${rightBorderX - 2})`);
+
+    // Also test signing as Annabel on a document where the signatory line is candidateSignerItem
+    const locAnnabelOnAceDoc = findPersonnelSignatureCoordinates(pdfDoc, "Odoño-Calimpong Annabel Cortez");
+    assert(locAnnabelOnAceDoc.appliedPosition === "above", "Test 15.7", `Fallback on signatory line appliedPosition must be "above"`);
+    assert(locAnnabelOnAceDoc.boxX >= vLineX + 4, "Test 15.8", `Annabel on Ace doc boxX (${locAnnabelOnAceDoc.boxX}) MUST be >= ${vLineX + 4}, NEVER overlapping left column!`);
+    assert(locAnnabelOnAceDoc.boxX + locAnnabelOnAceDoc.boxW <= rightBorderX - 2, "Test 15.9", `Annabel on Ace doc boxX + boxW (${locAnnabelOnAceDoc.boxX + locAnnabelOnAceDoc.boxW}) must stay within right border`);
+  }
+
+  // ─────────────────────────────────────────────────────────────────
   // SUMMARY
   // ─────────────────────────────────────────────────────────────────
   console.log("\n======================================================================");

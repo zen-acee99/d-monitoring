@@ -1872,6 +1872,108 @@ export function assembleTextItemsIntoLines(rawItems: PdfTextItem[]): PdfTextItem
   return result;
 }
 
+export interface PdfVerticalLine {
+  x: number;
+  minY: number;
+  maxY: number;
+}
+
+/**
+ * Extracts vertical line segments from a PDF content stream (lines drawn with 'm'/'l' or thin 're' rectangles).
+ * Used to detect table column dividers and boundaries so signatures never overlap adjacent columns.
+ */
+export function extractVerticalLinesFromContentStream(
+  sBytes: Uint8Array
+): PdfVerticalLine[] {
+  if (!sBytes || sBytes.length === 0) return [];
+  const lines: PdfVerticalLine[] = [];
+
+  const str = new TextDecoder("latin1").decode(sBytes);
+  const tokenRegex = /(-?\d*\.?\d+(?:[eE][-+]?\d+)?|[a-zA-Z*]+)/g;
+  let match: RegExpExecArray | null;
+
+  let stack: number[] = [];
+  let currentX = 0;
+  let currentY = 0;
+
+  let ctmA = 1, ctmB = 0, ctmC = 0, ctmD = 1, ctmE = 0, ctmF = 0;
+  const ctmStack: Array<[number, number, number, number, number, number]> = [];
+
+  function transformX(x: number, y: number) {
+    return x * ctmA + y * ctmC + ctmE;
+  }
+  function transformY(x: number, y: number) {
+    return x * ctmB + y * ctmD + ctmF;
+  }
+
+  while ((match = tokenRegex.exec(str)) !== null) {
+    const token = match[1];
+    const num = parseFloat(token);
+
+    if (!isNaN(num) && /^-?\d*\.?\d+/.test(token)) {
+      stack.push(num);
+      if (stack.length > 8) stack.shift();
+      continue;
+    }
+
+    if (token === "q") {
+      ctmStack.push([ctmA, ctmB, ctmC, ctmD, ctmE, ctmF]);
+    } else if (token === "Q") {
+      const prev = ctmStack.pop();
+      if (prev) {
+        [ctmA, ctmB, ctmC, ctmD, ctmE, ctmF] = prev;
+      }
+    } else if (token === "cm" && stack.length >= 6) {
+      const [a, b, c, d, e, f] = stack.slice(-6);
+      const nA = a * ctmA + b * ctmC;
+      const nB = a * ctmB + b * ctmD;
+      const nC = c * ctmA + d * ctmC;
+      const nD = c * ctmB + d * ctmD;
+      const nE = e * ctmA + f * ctmC + ctmE;
+      const nF = e * ctmB + f * ctmD + ctmF;
+      ctmA = nA; ctmB = nB; ctmC = nC; ctmD = nD; ctmE = nE; ctmF = nF;
+      stack = [];
+    } else if (token === "m" && stack.length >= 2) {
+      const [x, y] = stack.slice(-2);
+      currentX = transformX(x, y);
+      currentY = transformY(x, y);
+      stack = [];
+    } else if (token === "l" && stack.length >= 2) {
+      const [x, y] = stack.slice(-2);
+      const nx = transformX(x, y);
+      const ny = transformY(x, y);
+      if (Math.abs(currentX - nx) <= 2.5 && Math.abs(currentY - ny) >= 12.0) {
+        lines.push({
+          x: Math.round(((currentX + nx) / 2) * 10) / 10,
+          minY: Math.round(Math.min(currentY, ny) * 10) / 10,
+          maxY: Math.round(Math.max(currentY, ny) * 10) / 10,
+        });
+      }
+      currentX = nx;
+      currentY = ny;
+      stack = [];
+    } else if (token === "re" && stack.length >= 4) {
+      const [x, y, w, h] = stack.slice(-4);
+      const rx = transformX(x, y);
+      const ry = transformY(x, y);
+      const rw = Math.abs(w * ctmA);
+      const rh = Math.abs(h * ctmD);
+      if (rw <= 3.5 && rh >= 12.0) {
+        lines.push({
+          x: Math.round((rx + rw / 2) * 10) / 10,
+          minY: Math.round(Math.min(ry, ry + h * ctmD) * 10) / 10,
+          maxY: Math.round(Math.max(ry, ry + h * ctmD) * 10) / 10,
+        });
+      }
+      stack = [];
+    } else {
+      stack = [];
+    }
+  }
+
+  return lines;
+}
+
 /**
  * Searches the pages of an uploaded PDF to locate the exact page and coordinates
  * of the Provincial Officer / Supervisor approval section.
@@ -3498,6 +3600,8 @@ export function findPersonnelSignatureCoordinates(
         }
         distinctMatches.sort((a, b) => a.x - b.x); // sort left-to-right
 
+        const pageVLines = extractVerticalLinesFromContentStream(sBytes);
+
         const allBoxes = distinctMatches.map((item) => {
           // Precomputed cluster width isolates the exact personnel name column
           const clusterWidth = (item as any).width;
@@ -3520,28 +3624,91 @@ export function findPersonnelSignatureCoordinates(
             nameTextWidth = Math.max(measurePdfTextWidth(item.text.trim(), 10.5), rightmostX - item.x);
           }
 
-          // Box dimensions:
-          // Expanded by +5px (5pt) to each corner for bigger, roomier appearance
-          // boxH expanded from 18 to 28 pt (+5 top, +5 bottom)
-          // boxW expanded with +10 pt (+5 left, +5 right)
+          // ── Strict Column Boundary Detection ──
+          // "yun DigiSigned ni Annabel is nag overlapping parin dun sa left column part dapat nasa Gitna lang kapag my ganitong file assume always na hindi mag overlapping"
+          const relevantVLines = pageVLines.filter((vl) => vl.minY <= item.y + 45 && vl.maxY >= item.y - 30);
+          const leftVLines = relevantVLines.filter((vl) => vl.x <= item.x - 3);
+          const rightVLines = relevantVLines.filter((vl) => vl.x >= item.x + nameTextWidth + 3);
+
+          const leftVLine = leftVLines.length > 0 ? Math.max(...leftVLines.map((l) => l.x)) : null;
+          const rightVLine = rightVLines.length > 0 ? Math.min(...rightVLines.map((l) => l.x)) : null;
+
+          // Find labels to the left of the personnel name (e.g. "Signature", "Printed Name", "Position", "Date")
+          const labelsToLeft = textItems.filter(
+            (it) =>
+              Math.abs(it.y - item.y) <= 80 &&
+              it.x < item.x &&
+              (isTableFormLabel(it.text) ||
+                it.text.toLowerCase().includes("signature") ||
+                it.text.toLowerCase().includes("printed name") ||
+                it.text.toLowerCase().includes("position") ||
+                it.text.toLowerCase().includes("date"))
+          );
+          let maxLabelRight = 0;
+          for (const l of labelsToLeft) {
+            const lW = (l as any).width || measurePdfTextWidth(l.text, 10);
+            const r = l.x + lW;
+            if (r > maxLabelRight) maxLabelRight = r;
+          }
+
+          // Other signers on the left (e.g. side-by-side tables like Aivan Baloloy on left vs Annabel on right)
+          const otherSignersToLeft = textItems.filter(
+            (it) =>
+              Math.abs(it.y - item.y) <= 20 &&
+              it.x < item.x - 30 &&
+              !isTableFormLabel(it.text) &&
+              !isDecorationOrUnderline(it.text)
+          );
+          let otherSignerMaxRight = 0;
+          for (const o of otherSignersToLeft) {
+            const oW = (o as any).width || measurePdfTextWidth(o.text, 10);
+            const r = o.x + oW;
+            if (r > otherSignerMaxRight) otherSignerMaxRight = r;
+          }
+
+          // Effective Left Boundary that the DigiSigned box must NEVER cross
+          let effectiveLeftBound = 10;
+          if (leftVLine !== null) {
+            effectiveLeftBound = Math.max(effectiveLeftBound, leftVLine + 4);
+          } else if (maxLabelRight > 0) {
+            const labelDivider = Math.max(maxLabelRight + 6, (maxLabelRight + item.x) / 2);
+            effectiveLeftBound = Math.max(effectiveLeftBound, labelDivider);
+          }
+          if (otherSignerMaxRight > 0) {
+            const colDivider = (otherSignerMaxRight + item.x) / 2;
+            effectiveLeftBound = Math.max(effectiveLeftBound, Math.max(otherSignerMaxRight + 8, colDivider));
+          }
+
+          // Effective Right Boundary
+          let effectiveRightBound = width - 10;
+          if (rightVLine !== null) {
+            effectiveRightBound = Math.min(effectiveRightBound, rightVLine - 4);
+          }
+
+          const colAvailW = effectiveRightBound - effectiveLeftBound;
           let boxW = Math.max(125, Math.min(160, Math.round(48 + nameLen * 4.0)));
+          if (colAvailW >= 125 && boxW > colAvailW - 6) {
+            boxW = Math.max(110, Math.round(colAvailW - 6));
+          }
           const boxH = 28;
 
-          // HORIZONTAL CENTERING RULE (Strict Requirement):
-          // "The DigiSigned signature must be horizontally centered and aligned with the exact Personnel Name located directly below it."
-          // ALWAYS center relative to the personnel name:
+          // HORIZONTAL CENTERING ("nasa Gitna lang kapag my ganitong file"):
+          // Primary: center horizontally relative to the personnel name:
           const nameCenterX = item.x + nameTextWidth / 2;
           let boxX = Math.round(nameCenterX - boxW / 2);
 
-          // Never overflow page right edge, and keep at least 10 pt margin
-          if (boxX + boxW > width - 10) {
-            boxX = Math.max(10, width - 10 - boxW);
+          // STRICT NON-OVERLAPPING RULE ("assume always na hindi mag overlapping dun sa left column part"):
+          // Must NEVER invade or overlap the left column divider or labels:
+          if (boxX < effectiveLeftBound + 4) {
+            boxX = Math.round(effectiveLeftBound + 4);
           }
-          if (boxX < 10) {
-            boxX = 10;
-          }
-          if (boxX + boxW > width - 10) {
-            boxW = Math.max(110, width - 10 - boxX);
+
+          // Must never overflow page or column right boundary:
+          if (boxX + boxW > effectiveRightBound - 2) {
+            boxX = Math.max(Math.round(effectiveLeftBound + 2), Math.round(effectiveRightBound - 2 - boxW));
+            if (boxX + boxW > effectiveRightBound - 2) {
+              boxW = Math.max(100, Math.round(effectiveRightBound - 2 - boxX));
+            }
           }
 
           // VERTICAL SPACING RULE (Strict Requirement):
@@ -3581,16 +3748,83 @@ export function findPersonnelSignatureCoordinates(
   const lastPage = pages[lastPageIdx];
   const { width, height } = lastPage.getSize();
 
-  const rawTargetName = (personnelName || "").trim();
+  const lastPageBytes = extractPageContentStreamBytes(pdfDoc, lastPage);
+  const lastPageCMaps = lastPageBytes.length > 0 ? loadPageFontCMaps(pdfDoc, lastPage) : new Map();
+  const lastPageItems = lastPageBytes.length > 0 ? extractTextItemsFromContentStream(lastPageBytes, lastPageCMaps) : [];
+  const lastPageVLines = extractVerticalLinesFromContentStream(lastPageBytes);
+
+  // Check if there is an approval section or signatory block on the last page
+  let candidateSignerItem: any = null;
+  for (const it of lastPageItems) {
+    const t = it.text.trim().toUpperCase();
+    if (
+      t.includes("REGIONAL DIRECTOR") ||
+      t.includes("OIC-REGIONAL DIRECTOR") ||
+      t.includes("AUTHORIZED REPRESENTATIVE") ||
+      t.includes("HEAD, REQUESTING") ||
+      t.includes("APPROVED BY") ||
+      t.includes("NOTED BY") ||
+      t.includes("PREPARED BY")
+    ) {
+      // Find name above this title (dy between 10 and 35)
+      const nameAbove = lastPageItems.find(
+        (other) =>
+          other.y > it.y &&
+          other.y <= it.y + 35 &&
+          Math.abs(other.x - it.x) < 80 &&
+          other.text.length > 3 &&
+          !isTableFormLabel(other.text)
+      );
+      if (nameAbove) {
+        candidateSignerItem = nameAbove;
+        break;
+      }
+    }
+  }
+
+  const rawTargetName = (personnelName || candidateSignerItem?.text || "").trim();
   const nameLen = rawTargetName.length;
-  const boxW = Math.max(125, Math.min(160, Math.round(48 + nameLen * 4.0)));
+  let boxW = Math.max(120, Math.min(160, Math.round(48 + nameLen * 4.0)));
   const boxH = 28;
+
   let boxX = Math.round(width * 0.50 - boxW / 2);
+  const stackOffset = csIndex > 0 ? csIndex * (boxH + 6) : 0;
+  let boxY = Math.min(height - boxH - 4, Math.max(10, Math.round(height * 0.18 + 10 + stackOffset)));
+
+  if (candidateSignerItem) {
+    const nameTextW = (candidateSignerItem as any).width || measurePdfTextWidth(candidateSignerItem.text, 10.5);
+    const relevantVLines = lastPageVLines.filter((vl) => vl.minY <= candidateSignerItem.y + 45 && vl.maxY >= candidateSignerItem.y - 30);
+    const leftVLines = relevantVLines.filter((vl) => vl.x <= candidateSignerItem.x - 3);
+    const rightVLines = relevantVLines.filter((vl) => vl.x >= candidateSignerItem.x + nameTextW + 3);
+
+    const leftVLine = leftVLines.length > 0 ? Math.max(...leftVLines.map((l) => l.x)) : null;
+    const rightVLine = rightVLines.length > 0 ? Math.min(...rightVLines.map((l) => l.x)) : null;
+
+    let effectiveLeftBound = leftVLine !== null ? leftVLine + 4 : 10;
+    let effectiveRightBound = rightVLine !== null ? rightVLine - 4 : width - 10;
+
+    boxX = Math.round(candidateSignerItem.x + nameTextW / 2 - boxW / 2);
+    if (boxX < effectiveLeftBound + 4) {
+      boxX = Math.round(effectiveLeftBound + 4);
+    }
+    if (boxX + boxW > effectiveRightBound - 2) {
+      boxX = Math.max(Math.round(effectiveLeftBound + 2), Math.round(effectiveRightBound - 2 - boxW));
+    }
+    boxY = Math.min(height - boxH - 2, Math.max(10, Math.round(candidateSignerItem.y + 13 + stackOffset)));
+  } else if (lastPageVLines.length > 0) {
+    // If vertical lines exist near the center, ensure the signature never straddles a vertical column line
+    const centerLines = lastPageVLines.filter((vl) => vl.minY <= boxY + 30 && vl.maxY >= boxY - 30 && vl.x >= 150 && vl.x <= width - 150);
+    for (const cl of centerLines) {
+      if (boxX <= cl.x && boxX + boxW >= cl.x) {
+        // Straddling! Move safely to the right of the vertical line
+        boxX = Math.round(cl.x + 6);
+      }
+    }
+  }
+
   if (boxX + boxW > width - 15) {
     boxX = Math.max(15, width - boxW - 15);
   }
-  const stackOffset = csIndex > 0 ? csIndex * (boxH + 6) : 0;
-  const boxY = Math.min(height - boxH - 4, Math.max(10, Math.round(height * 0.18 + 10 + stackOffset)));
 
   return {
     pageIndex: lastPageIdx,
@@ -3664,14 +3898,14 @@ export async function signUploadedPersonnelPdfBytes(
   ).trim();
   let finalUint8 = incomingBytes;
 
-  // ── Incremental Mode for Already-Signed Documents (ISO 32000 Compliance) ──
-  // If the document already contains one or more digital signatures (Rev 1, Rev 2, etc.),
-  // WE MUST NEVER RUN pdfDoc.save() ON IT! pdfDoc.save() completely re-serializes the PDF,
-  // permanently corrupting and invalidating all existing cryptographic byte ranges.
-  // Instead, the original raw incomingBytes must be preserved 100% untouched byte-for-byte,
-  // and passed directly to the backend incremental signing pipeline which renders the visual
-  // appearance into the Appearance XObject (/AP /N) and appends the signature after the original %%EOF.
-  if (isAlreadySigned) {
+  const hasP12Credentials = Boolean(p12Options?.p12Base64 || p12Options?.profileId || p12Options?.user_Id);
+
+  // ── Cryptographic PNPKI .p12 Mode (Both Already-Signed and First-Signature) ──
+  // If p12 credentials are provided or the document is already signed, pass directly to backend
+  // signing pipeline (dtrGeneratorApi.signPdfDocument).
+  // The backend handles ISO 32000 digital signature embedding and renders the visual appearance into /AP /N once.
+  // We NEVER draw duplicate visual stamps client-side beforehand, which would cause blurry/doubled ghost text.
+  if (isAlreadySigned || hasP12Credentials) {
     const effectiveP12: P12SigningOptions = p12Options || {
       profileId: (resolvedSignerName.toLowerCase().includes("rene jane") || resolvedSignerName.toLowerCase().includes("buena"))
         ? "dtr-sig-sup-01"
@@ -3721,8 +3955,8 @@ export async function signUploadedPersonnelPdfBytes(
     return { bytes: finalUint8, resolvedSignerName, signatureCoordinates: loc };
   }
 
-  // ── First Signature Mode for Unsigned Documents ──
-  // Embed the visual signature stamp on the page
+  // ── First Signature Mode for Unsigned Documents (Pure Visual Stamp without P12) ──
+  // Embed the visual signature stamp on the page when no P12 credentials are provided
   const pages = pdfDoc.getPages();
   const targetPage = pages[loc.pageIndex];
 
@@ -3831,51 +4065,11 @@ export async function signUploadedPersonnelPdfBytes(
     }
   }
 
-  // CRITICAL: Save the modified PDF with the embedded visual stamp so it's permanently visible!
+  // Save the modified PDF with the embedded visual stamp
   try {
     finalUint8 = await pdfDoc.save({ useObjectStreams: false });
   } catch (saveErr) {
     console.warn("Could not save visual signature stamp into PDF bytes:", saveErr);
-  }
-
-  // Cryptographic PNPKI .p12 signing (via backend incremental update to preserve earlier signatures)
-  if (p12Options?.p12Base64 || p12Options?.profileId || p12Options?.user_Id) {
-    const rawPdfBase64 = arrayBufferToBase64(finalUint8);
-
-    const reason = isCounter
-      ? "Official Counter-Signature - DICT Region V Signing Workspace"
-      : "Official Digital Signature - DICT Region V Signing Workspace";
-
-    const fieldTag = (p12Options.signerName || "SIGNER").replace(/[^a-zA-Z0-9]/g, "_");
-    const fieldName = isCounter
-      ? `CounterSignature_${(options?.counterSignIndex || 0) + 1}_${fieldTag}`
-      : undefined;
-
-    const signResult = await dtrGeneratorApi.signPdfDocument({
-      pdfBase64: rawPdfBase64,
-      profileId: p12Options.profileId,
-      user_Id: p12Options.user_Id,
-      p12: p12Options.p12Base64,
-      p12_password: p12Options.p12Password,
-      account_password: p12Options.account_password,
-      isGoogleAuth: p12Options.isGoogleAuth,
-      reason,
-      fieldName,
-      sigRect: [boxX, boxY, boxW, boxH],
-      sigRects: (loc as any).sigRects && (loc as any).sigRects.length > 0 ? (loc as any).sigRects : [[boxX, boxY, boxX + boxW, boxY + boxH]],
-      pageIndex: loc.pageIndex,
-      isCounterSign: isCounter,
-      counterSignPosition: loc.appliedPosition || options?.counterSignPosition,
-      signerName: resolvedSignerName,
-      signatureImage: signatureImage || undefined,
-    });
-
-    if (signResult.success && signResult.signedPdfBase64) {
-      finalUint8 = base64ToUint8Array(signResult.signedPdfBase64);
-      if (signResult.signerName) {
-        resolvedSignerName = signResult.signerName;
-      }
-    }
   }
 
   return { bytes: finalUint8, resolvedSignerName, signatureCoordinates: loc };
