@@ -245,6 +245,379 @@ administrationRouter.put("/theme", async (req: Request, res: Response) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Real-Time User Presence & Online Users Telemetry (Must precede /:id)
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface PresenceEntry {
+  userId: string;
+  email: string;
+  name: string;
+  role: string;
+  avatarUrl?: string;
+  region?: string;
+  focalProvince?: string;
+  currentPage?: string;
+  userAgent?: string;
+  ipAddress?: string;
+  lastActive: number;
+  isOnline: boolean;
+}
+
+const activePresenceMap = new Map<string, PresenceEntry>();
+
+function parseSafeUtcMs(dateVal: any): number {
+  if (!dateVal) return 0;
+  if (typeof dateVal === "number") return dateVal;
+  const str = String(dateVal).trim();
+  if (!str || str === "null" || str === "undefined") return 0;
+  if (/^\d{10,13}$/.test(str)) {
+    const num = Number(str);
+    return str.length === 10 ? num * 1000 : num;
+  }
+  if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}/.test(str)) {
+    return new Date(str.replace(" ", "T") + "Z").getTime();
+  }
+  const parsed = new Date(str).getTime();
+  return isNaN(parsed) ? 0 : parsed;
+}
+
+function getPresenceStatus(lastActiveMs: number, isOnline: boolean): "online" | "away" | "offline" {
+  if (!isOnline || !lastActiveMs) return "offline";
+  const diff = Date.now() - lastActiveMs;
+  if (diff <= 120_000) return "online"; // active within 2 minutes
+  if (diff <= 600_000) return "away"; // active within 10 minutes
+  return "offline";
+}
+
+function formatRelativeTime(dateInput: string | number | null | undefined): string {
+  if (!dateInput) return "Offline";
+  const ms = typeof dateInput === "number" ? dateInput : parseSafeUtcMs(dateInput);
+  if (isNaN(ms) || ms <= 0) return "Offline";
+  const diffSec = Math.floor((Date.now() - ms) / 1000);
+  if (diffSec < 15) return "Active now";
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay === 1) return "Yesterday";
+  if (diffDay < 7) return `${diffDay}d ago`;
+  return new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+// POST /api/administration/heartbeat - Record client activity & keep alive
+administrationRouter.post("/heartbeat", async (req: Request, res: Response) => {
+  try {
+    const { userId, email, name, role, currentPage, avatarUrl, region, focalProvince } = req.body || {};
+    if (!email || typeof email !== "string") {
+      return res.status(400).json({ success: false, error: "Valid user email is required for presence heartbeat" });
+    }
+
+    const cleanEmail = email.toLowerCase().trim().replace(/[\u200B-\u200D\uFEFF]/g, "");
+    const rawIp = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "127.0.0.1";
+    const ipAddress = rawIp.replace(/^::ffff:/, "");
+    const userAgent = String(req.headers["user-agent"] || "Web Browser");
+    const nowMs = Date.now();
+    const nowIso = new Date().toISOString();
+
+    activePresenceMap.set(cleanEmail, {
+      userId: String(userId || `usr-${cleanEmail}`),
+      email: cleanEmail,
+      name: String(name || cleanEmail),
+      role: String(role || "Personnel"),
+      avatarUrl: avatarUrl ? String(avatarUrl) : undefined,
+      region: region ? String(region) : undefined,
+      focalProvince: focalProvince ? String(focalProvince) : undefined,
+      currentPage: currentPage ? String(currentPage) : "/overview",
+      userAgent,
+      ipAddress,
+      lastActive: nowMs,
+      isOnline: true,
+    });
+
+    // Persist presence to Turso Cloud (properly awaited for serverless environment)
+    await db.execute({
+      sql: `INSERT INTO user_presence (user_id, email, name, role, region, avatar_url, is_online, last_active_at, current_page, user_agent, ip_address, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(email) DO UPDATE SET
+              user_id = COALESCE(excluded.user_id, user_presence.user_id),
+              name = COALESCE(excluded.name, user_presence.name),
+              role = COALESCE(excluded.role, user_presence.role),
+              region = COALESCE(excluded.region, user_presence.region),
+              avatar_url = COALESCE(excluded.avatar_url, user_presence.avatar_url),
+              is_online = 1,
+              last_active_at = excluded.last_active_at,
+              current_page = excluded.current_page,
+              user_agent = excluded.user_agent,
+              ip_address = excluded.ip_address,
+              updated_at = CURRENT_TIMESTAMP`,
+      args: [
+        String(userId || `usr-${cleanEmail}`),
+        cleanEmail,
+        String(name || cleanEmail),
+        String(role || "Personnel"),
+        region ? String(region) : null,
+        avatarUrl ? String(avatarUrl) : null,
+        nowIso,
+        currentPage ? String(currentPage) : "/overview",
+        userAgent,
+        ipAddress,
+      ],
+    }).catch((err) => {
+      console.warn("Failed to persist user presence to DB:", err);
+    });
+
+    // Also mirror last_active_at to administration & users tables in parallel
+    await Promise.all([
+      db.execute({
+        sql: "UPDATE administration SET last_active_at = ? WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))",
+        args: [nowIso, cleanEmail],
+      }).catch(() => {}),
+      db.execute({
+        sql: "UPDATE users SET last_active_at = ? WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))",
+        args: [nowIso, cleanEmail],
+      }).catch(() => {}),
+    ]);
+
+    return res.json({ success: true, timestamp: nowMs, status: "online" });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /api/administration/logout-heartbeat - Mark user as explicitly offline upon logout
+administrationRouter.post("/logout-heartbeat", async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body || {};
+    if (email && typeof email === "string") {
+      const cleanEmail = email.toLowerCase().trim().replace(/[\u200B-\u200D\uFEFF]/g, "");
+      const existing = activePresenceMap.get(cleanEmail);
+      if (existing) {
+        existing.isOnline = false;
+        existing.lastActive = Date.now();
+      }
+
+      await db.execute({
+        sql: "UPDATE user_presence SET is_online = 0, updated_at = CURRENT_TIMESTAMP WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))",
+        args: [cleanEmail],
+      }).catch(() => {});
+    }
+    return res.json({ success: true });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /api/administration/online-users - List all users with live online/offline status (Super Admin ONLY)
+administrationRouter.get("/online-users", async (req: Request, res: Response) => {
+  try {
+    const callerEmail = String(
+      req.headers["x-user-email"] || req.query.email || ""
+    ).toLowerCase().trim().replace(/[\u200B-\u200D\uFEFF]/g, "");
+
+    const isSuperAdminAce = callerEmail === "ace.malto@dict.gov.ph" || callerEmail === "acemm.1599@gmail.com";
+    if (!isSuperAdminAce) {
+      return res.status(403).json({
+        success: false,
+        error: "Access Denied: Only Super Admin (ace.malto@dict.gov.ph) can view the Online Users module.",
+      });
+    }
+
+    // Fetch registered personnel across administration, users, and user_presence tables
+    const [adminResult, usersResult, presenceResult] = await Promise.all([
+      db.execute("SELECT * FROM administration ORDER BY status ASC, name ASC").catch(() => ({ rows: [] as any[] })),
+      db.execute("SELECT * FROM users ORDER BY created_at DESC").catch(() => ({ rows: [] as any[] })),
+      db.execute("SELECT * FROM user_presence").catch(() => ({ rows: [] as any[] })),
+    ]);
+
+    // Build unified personnel directory by email so no user is omitted
+    const userMap = new Map<string, any>();
+
+    for (const row of adminResult.rows) {
+      const email = String(row.email || "").toLowerCase().trim();
+      if (!email) continue;
+      userMap.set(email, {
+        id: row.id,
+        name: row.name,
+        email: row.email,
+        role: row.role || "Personnel",
+        region: row.region || "Region V (Bicol)",
+        focalProvince: row.focalProvince,
+        avatar_url: row.avatar_url,
+        auth_provider: row.auth_provider || "local",
+        status: row.status || "active",
+        lastLogin: row.lastLogin || "Never",
+        last_active_at: row.last_active_at,
+      });
+    }
+
+    for (const row of usersResult.rows) {
+      const email = String(row.email || "").toLowerCase().trim();
+      if (!email) continue;
+      const existing = userMap.get(email);
+      if (!existing) {
+        userMap.set(email, {
+          id: row.id,
+          name: row.name,
+          email: row.email,
+          role: row.role || "Personnel",
+          region: row.region || "Region V (Bicol)",
+          focalProvince: row.focalProvince,
+          avatar_url: row.avatar_url,
+          auth_provider: row.auth_provider || "local",
+          status: row.status || "active",
+          lastLogin: row.lastLogin || "Never",
+          last_active_at: row.last_active_at,
+        });
+      } else {
+        if (!existing.avatar_url && row.avatar_url) existing.avatar_url = row.avatar_url;
+        if ((!existing.role || existing.role === "Personnel") && row.role) existing.role = row.role;
+        if (!existing.focalProvince && row.focalProvince) existing.focalProvince = row.focalProvince;
+        if (existing.lastLogin === "Never" && row.lastLogin) existing.lastLogin = row.lastLogin;
+      }
+    }
+
+    const dbPresenceMap = new Map<string, any>();
+    for (const row of presenceResult.rows) {
+      const email = String(row.email || "").toLowerCase().trim();
+      if (!email) continue;
+      dbPresenceMap.set(email, row);
+      if (!userMap.has(email)) {
+        userMap.set(email, {
+          id: row.user_id || `usr-${email}`,
+          name: row.name || email,
+          email: row.email,
+          role: row.role || "Personnel",
+          region: row.region || "Region V (Bicol)",
+          focalProvince: row.focalProvince,
+          avatar_url: row.avatar_url,
+          auth_provider: "local",
+          status: "active",
+          lastLogin: row.last_login_at || "Recent Session",
+          last_active_at: row.last_active_at,
+        });
+      }
+    }
+
+    for (const [email, mem] of activePresenceMap.entries()) {
+      if (!userMap.has(email)) {
+        userMap.set(email, {
+          id: mem.userId,
+          name: mem.name,
+          email: mem.email,
+          role: mem.role,
+          region: mem.region || "Region V (Bicol)",
+          focalProvince: mem.focalProvince,
+          avatar_url: mem.avatarUrl,
+          auth_provider: "local",
+          status: "active",
+          lastLogin: "Active Session",
+          last_active_at: new Date(mem.lastActive).toISOString(),
+        });
+      }
+    }
+
+    const users = Array.from(userMap.values()).map((row: any) => {
+      const email = String(row.email || "").toLowerCase().trim();
+      const mem = activePresenceMap.get(email);
+      const dbRow = dbPresenceMap.get(email);
+
+      let lastActiveMs = 0;
+      let isOnlineFlag = false;
+      let currentPage = "/overview";
+      let userAgent = "";
+      let ipAddress = "";
+
+      // Prioritize in-memory if fresher, or fallback to Turso DB
+      if (mem && mem.lastActive) {
+        lastActiveMs = mem.lastActive;
+        isOnlineFlag = mem.isOnline;
+        currentPage = mem.currentPage || "/overview";
+        userAgent = mem.userAgent || "";
+        ipAddress = mem.ipAddress || "";
+      }
+
+      if (dbRow) {
+        const dbMs = parseSafeUtcMs(dbRow.last_active_at);
+        if (dbMs > lastActiveMs) {
+          lastActiveMs = dbMs;
+          isOnlineFlag = Boolean(dbRow.is_online === 1 || dbRow.is_online === true);
+          currentPage = dbRow.current_page || currentPage;
+          userAgent = dbRow.user_agent || userAgent;
+          ipAddress = dbRow.ip_address || ipAddress;
+        }
+      }
+
+      if (!lastActiveMs && row.last_active_at) {
+        lastActiveMs = parseSafeUtcMs(row.last_active_at);
+      }
+
+      const presenceStatus = getPresenceStatus(lastActiveMs, isOnlineFlag);
+      const isOnline = presenceStatus === "online";
+      const lastSeenText = formatRelativeTime(lastActiveMs);
+
+      // Clean browser / device info for UI display
+      let clientDevice = "Web Browser";
+      if (userAgent) {
+        if (userAgent.includes("Windows")) clientDevice = "Windows PC";
+        else if (userAgent.includes("Mac")) clientDevice = "macOS";
+        else if (userAgent.includes("Android")) clientDevice = "Android";
+        else if (userAgent.includes("iPhone") || userAgent.includes("iPad")) clientDevice = "iOS Device";
+        else if (userAgent.includes("Linux")) clientDevice = "Linux";
+      }
+
+      return {
+        id: row.id,
+        name: row.name,
+        email: row.email,
+        role: row.role,
+        region: row.region,
+        focalProvince: row.focalProvince,
+        avatar_url: row.avatar_url,
+        auth_provider: row.auth_provider || "local",
+        status: row.status,
+        lastLogin: row.lastLogin || "Never",
+        lastActiveAt: lastActiveMs ? new Date(lastActiveMs).toISOString() : null,
+        lastActiveMs,
+        lastSeenText,
+        isOnline,
+        presenceStatus,
+        currentPage,
+        ipAddress: ipAddress ? ipAddress.replace(/::ffff:/, "") : undefined,
+        clientDevice,
+      };
+    });
+
+    // Sort: Online users first, then Away, then Offline; tie breaker: latest active timestamp
+    users.sort((a, b) => {
+      const order = { online: 0, away: 1, offline: 2 };
+      const diff = order[a.presenceStatus] - order[b.presenceStatus];
+      if (diff !== 0) return diff;
+      return (b.lastActiveMs || 0) - (a.lastActiveMs || 0);
+    });
+
+    const onlineCount = users.filter((u: any) => u.presenceStatus === "online").length;
+    const awayCount = users.filter((u: any) => u.presenceStatus === "away").length;
+    const offlineCount = users.filter((u: any) => u.presenceStatus === "offline").length;
+
+    return res.json({
+      success: true,
+      stats: {
+        totalUsers: users.length,
+        onlineCount,
+        awayCount,
+        offlineCount,
+      },
+      users,
+    });
+  } catch (error: any) {
+    console.error("Error fetching online users:", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // GET /api/administration/:id - get single user
 administrationRouter.get("/:id", async (req: Request, res: Response) => {
   try {
@@ -1044,254 +1417,4 @@ administrationRouter.post("/reset-defaults", async (_req: Request, res: Response
   }
 });
 
-// ======================================================================
-// ONLINE USERS & PRESENCE MONITORING (SUPER ADMIN ace.malto@dict.gov.ph)
-// ======================================================================
 
-interface PresenceEntry {
-  userId: string;
-  email: string;
-  name: string;
-  role: string;
-  avatarUrl?: string;
-  region?: string;
-  focalProvince?: string;
-  currentPage?: string;
-  userAgent?: string;
-  ipAddress?: string;
-  lastActive: number;
-  isOnline: boolean;
-}
-
-const activePresenceMap = new Map<string, PresenceEntry>();
-
-function getPresenceStatus(lastActiveMs: number, isOnline: boolean): "online" | "away" | "offline" {
-  if (!isOnline) return "offline";
-  const diff = Date.now() - lastActiveMs;
-  if (diff <= 90_000) return "online"; // active within 90 seconds
-  if (diff <= 300_000) return "away"; // active within 5 minutes
-  return "offline";
-}
-
-function formatRelativeTime(dateInput: string | number | null | undefined): string {
-  if (!dateInput) return "Offline";
-  const ms = typeof dateInput === "number" ? dateInput : new Date(dateInput).getTime();
-  if (isNaN(ms) || ms <= 0) return "Offline";
-  const diffSec = Math.floor((Date.now() - ms) / 1000);
-  if (diffSec < 15) return "Active now";
-  if (diffSec < 60) return `${diffSec}s ago`;
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  if (diffDay === 1) return "Yesterday";
-  if (diffDay < 7) return `${diffDay}d ago`;
-  return new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
-// POST /api/administration/heartbeat - Record client activity & keep alive
-administrationRouter.post("/heartbeat", async (req: Request, res: Response) => {
-  try {
-    const { userId, email, name, role, currentPage, avatarUrl, region, focalProvince } = req.body || {};
-    if (!email || typeof email !== "string") {
-      return res.status(400).json({ success: false, error: "Valid user email is required for presence heartbeat" });
-    }
-
-    const cleanEmail = email.toLowerCase().trim().replace(/[\u200B-\u200D\uFEFF]/g, "");
-    const rawIp = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "127.0.0.1";
-    const ipAddress = rawIp.replace(/^::ffff:/, "");
-    const userAgent = String(req.headers["user-agent"] || "Web Browser");
-    const nowMs = Date.now();
-    const nowIso = new Date().toISOString();
-
-    activePresenceMap.set(cleanEmail, {
-      userId: String(userId || `usr-${cleanEmail}`),
-      email: cleanEmail,
-      name: String(name || cleanEmail),
-      role: String(role || "Personnel"),
-      avatarUrl: avatarUrl ? String(avatarUrl) : undefined,
-      region: region ? String(region) : undefined,
-      focalProvince: focalProvince ? String(focalProvince) : undefined,
-      currentPage: currentPage ? String(currentPage) : "/overview",
-      userAgent,
-      ipAddress,
-      lastActive: nowMs,
-      isOnline: true,
-    });
-
-    // Asynchronously persist presence to Turso Cloud
-    db.execute({
-      sql: `INSERT INTO user_presence (user_id, email, name, role, region, avatar_url, is_online, last_active_at, current_page, user_agent, ip_address, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(email) DO UPDATE SET
-              name = COALESCE(excluded.name, user_presence.name),
-              role = COALESCE(excluded.role, user_presence.role),
-              region = COALESCE(excluded.region, user_presence.region),
-              avatar_url = COALESCE(excluded.avatar_url, user_presence.avatar_url),
-              is_online = 1,
-              last_active_at = excluded.last_active_at,
-              current_page = excluded.current_page,
-              user_agent = excluded.user_agent,
-              ip_address = excluded.ip_address,
-              updated_at = CURRENT_TIMESTAMP`,
-      args: [
-        String(userId || `usr-${cleanEmail}`),
-        cleanEmail,
-        String(name || cleanEmail),
-        String(role || "Personnel"),
-        region ? String(region) : null,
-        avatarUrl ? String(avatarUrl) : null,
-        nowIso,
-        currentPage ? String(currentPage) : "/overview",
-        userAgent,
-        ipAddress,
-      ],
-    }).catch(() => {});
-
-    db.execute({
-      sql: "UPDATE administration SET last_active_at = ? WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))",
-      args: [nowIso, cleanEmail],
-    }).catch(() => {});
-
-    db.execute({
-      sql: "UPDATE users SET last_active_at = ? WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))",
-      args: [nowIso, cleanEmail],
-    }).catch(() => {});
-
-    return res.json({ success: true, timestamp: nowMs, status: "online" });
-  } catch (error: any) {
-    return res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// POST /api/administration/logout-heartbeat - Mark user as explicitly offline upon logout
-administrationRouter.post("/logout-heartbeat", async (req: Request, res: Response) => {
-  try {
-    const { email } = req.body || {};
-    if (email && typeof email === "string") {
-      const cleanEmail = email.toLowerCase().trim().replace(/[\u200B-\u200D\uFEFF]/g, "");
-      const existing = activePresenceMap.get(cleanEmail);
-      if (existing) {
-        existing.isOnline = false;
-        existing.lastActive = Date.now();
-      }
-
-      db.execute({
-        sql: "UPDATE user_presence SET is_online = 0, updated_at = CURRENT_TIMESTAMP WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))",
-        args: [cleanEmail],
-      }).catch(() => {});
-    }
-    return res.json({ success: true });
-  } catch (error: any) {
-    return res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// GET /api/administration/online-users - List all users with live online/offline status (Super Admin ONLY)
-administrationRouter.get("/online-users", async (req: Request, res: Response) => {
-  try {
-    const callerEmail = String(
-      req.headers["x-user-email"] || req.query.email || ""
-    ).toLowerCase().trim().replace(/[\u200B-\u200D\uFEFF]/g, "");
-
-    const isSuperAdminAce = callerEmail === "ace.malto@dict.gov.ph" || callerEmail === "acemm.1599@gmail.com";
-    if (!isSuperAdminAce) {
-      return res.status(403).json({
-        success: false,
-        error: "Access Denied: Only Super Admin (ace.malto@dict.gov.ph) can view the Online Users module.",
-      });
-    }
-
-    // Fetch registered personnel from administration table
-    const adminResult = await db.execute("SELECT * FROM administration ORDER BY status ASC, name ASC");
-    const presenceResult = await db.execute("SELECT * FROM user_presence").catch(() => ({ rows: [] as any[] }));
-    
-    const dbPresenceMap = new Map<string, any>();
-    for (const row of presenceResult.rows) {
-      if (row.email) {
-        dbPresenceMap.set(String(row.email).toLowerCase().trim(), row);
-      }
-    }
-
-    const users = adminResult.rows.map((row: any) => {
-      const email = String(row.email || "").toLowerCase().trim();
-      const mem = activePresenceMap.get(email);
-      const dbRow = dbPresenceMap.get(email);
-
-      let lastActiveMs = 0;
-      let isOnlineFlag = false;
-      let currentPage = "/overview";
-      let userAgent = "";
-      let ipAddress = "";
-
-      if (mem) {
-        lastActiveMs = mem.lastActive;
-        isOnlineFlag = mem.isOnline;
-        currentPage = mem.currentPage || "/overview";
-        userAgent = mem.userAgent || "";
-        ipAddress = mem.ipAddress || "";
-      } else if (dbRow) {
-        lastActiveMs = dbRow.last_active_at ? new Date(dbRow.last_active_at).getTime() : 0;
-        isOnlineFlag = Boolean(dbRow.is_online === 1 || dbRow.is_online === true);
-        currentPage = dbRow.current_page || "/overview";
-        userAgent = dbRow.user_agent || "";
-        ipAddress = dbRow.ip_address || "";
-      } else if (row.last_active_at) {
-        lastActiveMs = new Date(row.last_active_at).getTime();
-      }
-
-      const presenceStatus = getPresenceStatus(lastActiveMs, isOnlineFlag);
-      const isOnline = presenceStatus === "online";
-      const lastSeenText = formatRelativeTime(lastActiveMs);
-
-      // Clean browser / device info for UI display
-      let clientDevice = "Web Browser";
-      if (userAgent) {
-        if (userAgent.includes("Windows")) clientDevice = "Windows PC";
-        else if (userAgent.includes("Mac")) clientDevice = "macOS";
-        else if (userAgent.includes("Android")) clientDevice = "Android";
-        else if (userAgent.includes("iPhone") || userAgent.includes("iPad")) clientDevice = "iOS Device";
-        else if (userAgent.includes("Linux")) clientDevice = "Linux";
-      }
-
-      return {
-        id: row.id,
-        name: row.name,
-        email: row.email,
-        role: row.role,
-        region: row.region,
-        focalProvince: row.focalProvince,
-        avatar_url: row.avatar_url,
-        auth_provider: row.auth_provider || "local",
-        status: row.status,
-        lastLogin: row.lastLogin || "Never",
-        lastActiveAt: lastActiveMs ? new Date(lastActiveMs).toISOString() : null,
-        lastSeenText,
-        isOnline,
-        presenceStatus,
-        currentPage,
-        ipAddress: ipAddress ? ipAddress.replace(/::ffff:/, "") : undefined,
-        clientDevice,
-      };
-    });
-
-    const onlineCount = users.filter((u: any) => u.presenceStatus === "online").length;
-    const awayCount = users.filter((u: any) => u.presenceStatus === "away").length;
-    const offlineCount = users.filter((u: any) => u.presenceStatus === "offline").length;
-
-    return res.json({
-      success: true,
-      stats: {
-        totalUsers: users.length,
-        onlineCount,
-        awayCount,
-        offlineCount,
-      },
-      users,
-    });
-  } catch (error: any) {
-    console.error("Error fetching online users:", error);
-    return res.status(500).json({ success: false, error: error.message });
-  }
-});
