@@ -576,6 +576,57 @@ async function runTestSuite() {
   }
 
   // ─────────────────────────────────────────────────────────────────
+  // TEST 14: Side-by-Side Dual Personnel Table (AIVAN M. BALOLOY on Left vs ANNABEL C. ODOÑO-CALIMPONG on Right)
+  // Replicating media_1794380078101_c30e299d.png
+  // ─────────────────────────────────────────────────────────────────
+  console.log("\n[Test 14] Side-by-Side Dual Personnel Table (Aivan Baloloy Left vs Annabel Odoño-Calimpong Right)");
+  {
+    const rowY = 120;
+    // Left Box
+    const leftLabelX = 40;
+    const aivanX = 200;
+    // Right Box
+    const rightLabelX = 340;
+    const annabelX = 480;
+
+    const pdfBytes = await createTestPdfWithText(612, 792, [
+      // Left Box (Accountant)
+      { text: "Signature", x: leftLabelX, y: rowY + 35, size: 9 },
+      { text: "Printed Name", x: leftLabelX, y: rowY, size: 9 },
+      { text: "AIVAN M. BALOLOY", x: aivanX, y: rowY, size: 10 },
+      { text: "Position", x: leftLabelX, y: rowY - 20, size: 9 },
+      { text: "Accountant III / Agency Chief Accountant", x: aivanX, y: rowY - 20, size: 8 },
+
+      // Right Box (Regional Director)
+      { text: "Signature", x: rightLabelX, y: rowY + 35, size: 9 },
+      { text: "Printed Name", x: rightLabelX, y: rowY, size: 9 },
+      { text: "ANNABEL C. ODOÑO-CALIMPONG", x: annabelX, y: rowY, size: 10 },
+      { text: "Position", x: rightLabelX, y: rowY - 20, size: 9 },
+      { text: "OIC-Regional Director, Regional Office No. V", x: annabelX, y: rowY - 20, size: 8 },
+    ]);
+
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+
+    // 1. Target: ANNABEL C. ODOÑO-CALIMPONG (MUST BE ON THE RIGHT BOX)
+    const locAnnabel = findPersonnelSignatureCoordinates(pdfDoc, "ANNABEL C. ODOÑO-CALIMPONG");
+    assert(locAnnabel.appliedPosition === "above", "Test 14.1a", `Annabel appliedPosition must be "above", got "${locAnnabel.appliedPosition}"`);
+    assert(locAnnabel.boxY === Math.round(rowY + 13), "Test 14.1b", `Annabel boxY must be rowY + 13 (${Math.round(rowY + 13)}), got ${locAnnabel.boxY}`);
+    assert(locAnnabel.boxH === 28, "Test 14.1c", `Annabel boxH must be 28pt, got ${locAnnabel.boxH}`);
+    assert(locAnnabel.boxW >= 125, "Test 14.1d", `Annabel boxW must be >= 125pt, got ${locAnnabel.boxW}`);
+    // Annabel's signature MUST be on the right side (>= 430), NEVER on the left (< 340) over Aivan!
+    assert(locAnnabel.boxX >= 430, "Test 14.1e", `Annabel boxX (${locAnnabel.boxX}) MUST be on the right side (>= 430), NEVER on the left over Aivan`);
+    assert(locAnnabel.boxX <= 540, "Test 14.1f", `Annabel boxX (${locAnnabel.boxX}) must be centered directly above Annabel (annabelX = 480)`);
+
+    // 2. Target: AIVAN M. BALOLOY (MUST BE ON THE LEFT BOX)
+    const locAivan = findPersonnelSignatureCoordinates(pdfDoc, "AIVAN M. BALOLOY");
+    assert(locAivan.appliedPosition === "above", "Test 14.2a", `Aivan appliedPosition must be "above", got "${locAivan.appliedPosition}"`);
+    assert(locAivan.boxY === Math.round(rowY + 13), "Test 14.2b", `Aivan boxY must be rowY + 13 (${Math.round(rowY + 13)}), got ${locAivan.boxY}`);
+    // Aivan's signature MUST be on the left side (<= 280), NEVER on the right (> 340) over Annabel!
+    assert(locAivan.boxX <= 280, "Test 14.2c", `Aivan boxX (${locAivan.boxX}) MUST be on the left side (<= 280), NEVER on the right over Annabel`);
+    assert(locAivan.boxX >= 150, "Test 14.2d", `Aivan boxX (${locAivan.boxX}) must be centered directly above Aivan (aivanX = 200)`);
+  }
+
+  // ─────────────────────────────────────────────────────────────────
   // SUMMARY
   // ─────────────────────────────────────────────────────────────────
   console.log("\n======================================================================");

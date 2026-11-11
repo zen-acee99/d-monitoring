@@ -4310,9 +4310,17 @@ export function SigningWorkspace() {
       const matchedRequiredSigner = doc.requiredSigners.find((req) =>
         matchNames(req, signerToMatch) || matchNames(req, currentUserName)
       );
+
+      // If the signer is a specific person (from P12 certificate or signer selection),
+      // target that specific person rather than defaulting to the first subject on the form
+      const isSignerSpecificPerson =
+        Boolean(signerToMatch) &&
+        !signerToMatch.toLowerCase().includes("system") &&
+        !signerToMatch.toLowerCase().includes("admin");
+
       let targetPersonnelName = isCounter
         ? (options?.counterSignTargetPersonnel || doc.targetPersonnel || currentUserName).trim()
-        : (asSigner || matchedRequiredSigner || doc.targetPersonnel || currentUserName).trim();
+        : (asSigner || matchedRequiredSigner || (isSignerSpecificPerson ? signerToMatch : doc.targetPersonnel) || currentUserName).trim();
 
       // If user is Regional Director / ARD, or signing on behalf of RD/ARD, target the RD/ARD signatory line
       if (!isCounter && !asSigner && (!matchedRequiredSigner || !matchNames(matchedRequiredSigner, effectiveSignerName))) {

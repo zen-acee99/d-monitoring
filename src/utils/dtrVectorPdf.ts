@@ -1295,7 +1295,21 @@ export function isTableFormLabel(text: string): boolean {
     "NAME",
     "STATION",
   ];
-  return labels.some((lbl) => t === lbl || t.startsWith(lbl + " ") || t.endsWith(" " + lbl));
+  // A table form label is strictly the label itself (e.g. "Printed Name", "Signature:", "Date")
+  // It must never match composite strings containing personnel names (e.g. "AIVAN M. BALOLOY Printed Name")
+  return labels.some((lbl) => t === lbl || (t.startsWith(lbl + " ") && t.length <= lbl.length + 10));
+}
+
+export function stripTableFormLabels(text: string): string {
+  if (!text) return "";
+  let clean = text;
+  const labelPatterns = [
+    /\b(PRINTED\s+NAME\s+AND\s+SIGNATURE|SIGNATURE\s+OVER\s+PRINTED\s+NAME|NAME\s+AND\s+SIGNATURE|PRINTED\s+NAME|SIGNATURE|POSITION|DESIGNATION|DATE\s+SIGNED|DATE)\b/gi,
+  ];
+  for (const pat of labelPatterns) {
+    clean = clean.replace(pat, " ");
+  }
+  return clean.replace(/\s+/g, " ").trim();
 }
 
 export function normalizeNameForMatch(str: string): string {
@@ -2606,24 +2620,27 @@ export async function scanPdfForSigners(
 
       // If single item didn't match, check composite lines on the same baseline
       if (userMatches.length === 0) {
+        const uNorm = normalizeNameForMatch(u.name);
+        const uParts = uNorm.split(/\s+/).filter((p) => p.length > 2);
         for (const [lineY, itemsOnLine] of lineBuckets.entries()) {
-          itemsOnLine.sort((a, b) => a.x - b.x);
-          const lineCompositeText = itemsOnLine.map((it) => it.text).join(" ");
-          if (matchNames(lineCompositeText, u.name)) {
-            // Filter out table labels (e.g. "Printed Name", "Signature") to anchor strictly to personnel name
-            const nonLabelItems = itemsOnLine.filter((it) => !isTableFormLabel(it.text) && !isDecorationOrUnderline(it.text));
-            const candidateItems = nonLabelItems.length > 0 ? nonLabelItems : itemsOnLine;
-            const matchingItems = candidateItems.filter((it) => matchNames(it.text, u.name) || (u.name && normalizeNameForMatch(u.name).includes(normalizeNameForMatch(it.text))));
-            const finalItems = matchingItems.length > 0 ? matchingItems : candidateItems;
-            finalItems.sort((a, b) => a.x - b.x);
-            const minX = finalItems[0].x;
-            userMatches = [{
-              text: finalItems.map((it) => it.text).join(" "),
-              x: minX,
-              y: lineY,
-            }];
-            break;
+          const clusters = clusterLineItemsIntoPhrases(itemsOnLine, lineY);
+          for (const cluster of clusters) {
+            const cNorm = normalizeNameForMatch(cluster.text);
+            const isMatch =
+              matchNames(cluster.text, u.name) ||
+              (uNorm && (cNorm === uNorm || cNorm.includes(uNorm))) ||
+              (uParts.length >= 2 && uParts.every((p) => cNorm.includes(p)));
+
+            if (isMatch) {
+              userMatches = [{
+                text: cluster.text,
+                x: cluster.x,
+                y: lineY,
+              }];
+              break;
+            }
           }
+          if (userMatches.length > 0) break;
         }
       }
 
@@ -3137,6 +3154,91 @@ export function measurePdfTextWidth(text: string, fontSize = 10.5): number {
   return width;
 }
 
+export interface TextPhraseCluster {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  items: PdfTextItem[];
+}
+
+/**
+ * Clusters text items on the same horizontal baseline into distinct contiguous phrases / columns.
+ * Items belong to the same cluster if the gap between them is small (< 25 pt)
+ * and neither item is a table form label (e.g. "Printed Name", "Signature", "Position").
+ * This prevents multi-column tables (e.g. Column 1: AIVAN M. BALOLOY, Column 2: ANNABEL C. ODOÑO-CALIMPONG)
+ * from ever merging together or cross-contaminating coordinates.
+ */
+export function clusterLineItemsIntoPhrases(
+  itemsOnLine: PdfTextItem[],
+  lineY: number
+): TextPhraseCluster[] {
+  if (!itemsOnLine || itemsOnLine.length === 0) return [];
+
+  // Sort strictly left-to-right
+  const sorted = [...itemsOnLine].sort((a, b) => a.x - b.x);
+
+  const clusters: TextPhraseCluster[] = [];
+  let currentItems: PdfTextItem[] = [];
+
+  const buildCluster = (items: PdfTextItem[]): TextPhraseCluster => {
+    items.sort((a, b) => a.x - b.x);
+    const minX = items[0].x;
+    const last = items[items.length - 1];
+    const lastW = measurePdfTextWidth(last.text.trim(), 10.5);
+    const width = Math.max(lastW, last.x + lastW - minX);
+    const rawText = items
+      .map((i) => i.text.trim())
+      .filter(Boolean)
+      .join(" ");
+    const text = stripTableFormLabels(rawText) || rawText;
+    return {
+      text,
+      x: minX,
+      y: lineY,
+      width,
+      items,
+    };
+  };
+
+  for (const it of sorted) {
+    if (isDecorationOrUnderline(it.text) || isDigitalSignatureBadge(it.text)) continue;
+    if (it.text.trim().length === 0) continue;
+
+    // Table labels (like "Printed Name", "Signature", "Position", "Date") act as column boundaries
+    if (isTableFormLabel(it.text)) {
+      if (currentItems.length > 0) {
+        clusters.push(buildCluster(currentItems));
+        currentItems = [];
+      }
+      continue;
+    }
+
+    if (currentItems.length === 0) {
+      currentItems.push(it);
+    } else {
+      const prev = currentItems[currentItems.length - 1];
+      const prevWidth = measurePdfTextWidth(prev.text.trim(), 10.5);
+      const gap = it.x - (prev.x + prevWidth);
+
+      // Normal word spacing in PDF fonts is 2..15 pt.
+      // A gap >= 25 pt indicates a column jump or separated field.
+      if (gap > 25) {
+        clusters.push(buildCluster(currentItems));
+        currentItems = [it];
+      } else {
+        currentItems.push(it);
+      }
+    }
+  }
+
+  if (currentItems.length > 0) {
+    clusters.push(buildCluster(currentItems));
+  }
+
+  return clusters;
+}
+
 /**
  * Accurately finds signature coordinates for a specific personnel in an uploaded document:
  * - Placed directly ABOVE the personnel's name for normal signers (isCounterSign = false)
@@ -3320,9 +3422,10 @@ export function findPersonnelSignatureCoordinates(
         if (isDecorationOrUnderline(item.text) || isDigitalSignatureBadge(item.text)) return false;
         if (item.text.trim().startsWith(":")) return false; // Exclude memo addressee headers
         if (isTableFormLabel(item.text)) return false; // Strict exclusion of table headers/labels
-        if (matchNames(item.text, personnelName)) return true;
+        const strippedText = stripTableFormLabels(item.text);
+        if (matchNames(item.text, personnelName) || (strippedText && matchNames(strippedText, personnelName))) return true;
         // Prioritize signature area matches over top form headers
-        const normItem = normalizeNameForMatch(item.text);
+        const normItem = normalizeNameForMatch(strippedText || item.text);
         const isExactMatch = normTarget && (normItem === normTarget || normItem.includes(normTarget));
         const isPartsMatch = targetParts.length >= 2 && targetParts.every((part) => normItem.includes(part));
         return isExactMatch || isPartsMatch;
@@ -3349,28 +3452,22 @@ export function findPersonnelSignatureCoordinates(
         }
 
         for (const [lineY, itemsOnLine] of lineBuckets.entries()) {
-          itemsOnLine.sort((a, b) => a.x - b.x);
-          const lineCompositeText = itemsOnLine.map((it) => it.text).join(" ");
-          if (matchNames(lineCompositeText, personnelName) || (normTarget && normalizeNameForMatch(lineCompositeText).includes(normTarget))) {
-            // Isolate the items belonging to the personnel name, strictly ignoring table labels
-            const nonLabelItems = itemsOnLine.filter((it) => !isTableFormLabel(it.text) && !isDecorationOrUnderline(it.text));
-            const candidateItems = nonLabelItems.length > 0 ? nonLabelItems : itemsOnLine;
-            // Identify which candidate items match the personnel name tokens
-            const matchingItems = candidateItems.filter((it) => {
-              const norm = normalizeNameForMatch(it.text);
-              return matchNames(it.text, personnelName) || (normTarget && normTarget.includes(norm)) || targetParts.some((p) => norm.includes(p));
-            });
-            const finalNameItems = matchingItems.length > 0 ? matchingItems : candidateItems;
-            finalNameItems.sort((a, b) => a.x - b.x);
-            const minX = finalNameItems[0].x;
-            const lastItem = finalNameItems[finalNameItems.length - 1];
-            const fullW = lastItem.x + measurePdfTextWidth(lastItem.text, 10.5) - minX;
-            matches.push({
-              text: finalNameItems.map((it) => it.text).join(" "),
-              x: minX,
-              y: lineY,
-              width: fullW,
-            } as any);
+          const clusters = clusterLineItemsIntoPhrases(itemsOnLine, lineY);
+          for (const cluster of clusters) {
+            const clusterNorm = normalizeNameForMatch(cluster.text);
+            const isMatch =
+              matchNames(cluster.text, personnelName) ||
+              (normTarget && (clusterNorm === normTarget || clusterNorm.includes(normTarget))) ||
+              (targetParts.length >= 2 && targetParts.every((part) => clusterNorm.includes(part)));
+
+            if (isMatch) {
+              matches.push({
+                text: cluster.text,
+                x: cluster.x,
+                y: lineY,
+                width: cluster.width,
+              } as any);
+            }
           }
         }
       }
@@ -3402,21 +3499,26 @@ export function findPersonnelSignatureCoordinates(
         distinctMatches.sort((a, b) => a.x - b.x); // sort left-to-right
 
         const allBoxes = distinctMatches.map((item) => {
-          // Locate full name text width on this line (supports multi-token names on the same line)
-          const sameLineItems = textItems
-            .filter((it) => Math.abs(it.y - item.y) < 4 && it.x >= item.x - 5 && it.x <= item.x + 250 && !isTableFormLabel(it.text))
-            .sort((a, b) => a.x - b.x);
+          // Precomputed cluster width isolates the exact personnel name column
+          const clusterWidth = (item as any).width;
+          let nameTextWidth = typeof clusterWidth === "number" && clusterWidth > 10 ? clusterWidth : 0;
+          if (!nameTextWidth) {
+            // Locate full name text width on this line (supports multi-token names on the same line)
+            const sameLineItems = textItems
+              .filter((it) => Math.abs(it.y - item.y) < 4 && it.x >= item.x - 5 && it.x <= item.x + 250 && !isTableFormLabel(it.text))
+              .sort((a, b) => a.x - b.x);
 
-          let rightmostX = item.x + measurePdfTextWidth(item.text.trim(), 10.5);
-          for (const it of sameLineItems) {
-            if (it.x <= rightmostX + 22) {
-              const itEnd = it.x + measurePdfTextWidth(it.text.trim(), 10.5);
-              if (itEnd > rightmostX) {
-                rightmostX = itEnd;
+            let rightmostX = item.x + measurePdfTextWidth(item.text.trim(), 10.5);
+            for (const it of sameLineItems) {
+              if (it.x <= rightmostX + 22) {
+                const itEnd = it.x + measurePdfTextWidth(it.text.trim(), 10.5);
+                if (itEnd > rightmostX) {
+                  rightmostX = itEnd;
+                }
               }
             }
+            nameTextWidth = Math.max(measurePdfTextWidth(item.text.trim(), 10.5), rightmostX - item.x);
           }
-          const nameTextWidth = Math.max(measurePdfTextWidth(item.text.trim(), 10.5), rightmostX - item.x);
 
           // Box dimensions:
           // Expanded by +5px (5pt) to each corner for bigger, roomier appearance
@@ -3433,13 +3535,13 @@ export function findPersonnelSignatureCoordinates(
 
           // Never overflow page right edge, and keep at least 10 pt margin
           if (boxX + boxW > width - 10) {
-            boxW = Math.max(110, width - boxX - 10);
-            if (boxX + boxW > width - 10) {
-              boxX = Math.max(10, width - boxW - 10);
-            }
+            boxX = Math.max(10, width - 10 - boxW);
           }
           if (boxX < 10) {
             boxX = 10;
+          }
+          if (boxX + boxW > width - 10) {
+            boxW = Math.max(110, width - 10 - boxX);
           }
 
           // VERTICAL SPACING RULE (Strict Requirement):
