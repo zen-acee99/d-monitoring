@@ -1872,6 +1872,19 @@ export function assembleTextItemsIntoLines(rawItems: PdfTextItem[]): PdfTextItem
   return result;
 }
 
+export function fixMojibake(str?: string | null): string {
+  if (!str) return "";
+  return str
+    .replace(/Ã±/g, "ñ")
+    .replace(/Ã‘/g, "Ñ")
+    .replace(/OdoÃ±o/g, "Odoño")
+    .replace(/Odoño/g, "Odoño")
+    .replace(/Ã©/g, "é")
+    .replace(/Ã¨/g, "è")
+    .replace(/Ã-/g, "í")
+    .replace(/Ã³/g, "ó");
+}
+
 export interface PdfVerticalLine {
   x: number;
   minY: number;
@@ -3755,29 +3768,60 @@ export function findPersonnelSignatureCoordinates(
 
   // Check if there is an approval section or signatory block on the last page
   let candidateSignerItem: any = null;
-  for (const it of lastPageItems) {
-    const t = it.text.trim().toUpperCase();
-    if (
-      t.includes("REGIONAL DIRECTOR") ||
-      t.includes("OIC-REGIONAL DIRECTOR") ||
-      t.includes("AUTHORIZED REPRESENTATIVE") ||
-      t.includes("HEAD, REQUESTING") ||
-      t.includes("APPROVED BY") ||
-      t.includes("NOTED BY") ||
-      t.includes("PREPARED BY")
-    ) {
-      // Find name above this title (dy between 10 and 35)
-      const nameAbove = lastPageItems.find(
+
+  // 1. First priority: Check for explicit "Printed Name" table row label
+  const printedNameLabel = lastPageItems.find(
+    (it) =>
+      isTableFormLabel(it.text) &&
+      (it.text.toUpperCase().includes("PRINTED NAME") ||
+        it.text.toUpperCase().includes("NAME AND SIGNATURE") ||
+        it.text.toUpperCase().includes("SIGNATURE OVER PRINTED"))
+  );
+  if (printedNameLabel) {
+    const nameOnLine = lastPageItems
+      .filter(
         (other) =>
-          other.y > it.y &&
-          other.y <= it.y + 35 &&
-          Math.abs(other.x - it.x) < 80 &&
-          other.text.length > 3 &&
-          !isTableFormLabel(other.text)
-      );
-      if (nameAbove) {
-        candidateSignerItem = nameAbove;
-        break;
+          Math.abs(other.y - printedNameLabel.y) <= 4 &&
+          other.x > printedNameLabel.x &&
+          !isTableFormLabel(other.text) &&
+          other.text.trim().length > 3
+      )
+      .sort((a, b) => a.x - b.x)[0];
+    if (nameOnLine) {
+      candidateSignerItem = nameOnLine;
+    }
+  }
+
+  // 2. Second priority: Check for signatory title/role lines
+  if (!candidateSignerItem) {
+    for (const it of lastPageItems) {
+      const t = it.text.trim().toUpperCase();
+      if (
+        t.includes("REGIONAL DIRECTOR") ||
+        t.includes("OIC-REGIONAL DIRECTOR") ||
+        t.includes("AUTHORIZED REPRESENTATIVE") ||
+        t.includes("HEAD, REQUESTING") ||
+        t.includes("APPROVED BY") ||
+        t.includes("NOTED BY") ||
+        t.includes("PREPARED BY")
+      ) {
+        // Find person's name strictly ABOVE this title (dy between 10 and 50)
+        // Filter out agency names, offices, and sub-labels
+        const candidateNames = lastPageItems
+          .filter(
+            (other) =>
+              other.y > it.y + 8 &&
+              other.y <= it.y + 50 &&
+              Math.abs(other.x - it.x) < 100 &&
+              other.text.trim().length > 3 &&
+              !isTableFormLabel(other.text) &&
+              !/regional office|department of|dict|authorized rep|head,|office of|province of|bicol region|bureau/i.test(other.text)
+          )
+          .sort((a, b) => b.y - a.y); // Highest Y first = person name directly above title
+        if (candidateNames.length > 0) {
+          candidateSignerItem = candidateNames[0];
+          break;
+        }
       }
     }
   }
@@ -3890,7 +3934,7 @@ export async function signUploadedPersonnelPdfBytes(
     `[Personnel Signing] ${loc.detectedReason} => Placing DigiSigned signature strictly directly ABOVE "${targetName}" at [x=${boxX}, y=${boxY}, w=${boxW}, h=${boxH}] on page ${loc.pageIndex + 1}`
   );
 
-  let resolvedSignerName = (
+  let resolvedSignerName = fixMojibake(
     options?.signerName ||
     p12Options?.signerName ||
     (isCounter ? options?.signerName : targetName) ||

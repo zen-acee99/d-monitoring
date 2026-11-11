@@ -4382,9 +4382,15 @@ export function SigningWorkspace() {
         !signerToMatch.toLowerCase().includes("system") &&
         !signerToMatch.toLowerCase().includes("admin");
 
+      // Accurately resolve which signature line in the document to target:
+      // If the signer (e.g. asSigner / activeKeystore) is explicitly in the document's required signers list, target their line.
+      // Otherwise, if the user is signing an employee's document (e.g. Ace Malto) using an authorized keystore (e.g. Annabel),
+      // the signature must be anchored directly above the document's target personnel name (ACE MATA MALTO)!
+      const signerInDocSigners = doc.requiredSigners.find((req) => matchNames(req, signerToMatch));
+
       let targetPersonnelName = isCounter
         ? (options?.counterSignTargetPersonnel || doc.targetPersonnel || currentUserName).trim()
-        : (asSigner || matchedRequiredSigner || (isSignerSpecificPerson ? signerToMatch : doc.targetPersonnel) || currentUserName).trim();
+        : (signerInDocSigners || doc.targetPersonnel || matchedRequiredSigner || (isSignerSpecificPerson ? signerToMatch : "") || currentUserName).trim();
 
       // If user is Regional Director / ARD, or signing on behalf of RD/ARD, target the RD/ARD signatory line
       if (!isCounter && !asSigner && (!matchedRequiredSigner || !matchNames(matchedRequiredSigner, effectiveSignerName))) {

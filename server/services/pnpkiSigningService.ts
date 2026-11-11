@@ -325,8 +325,20 @@ function parsePdfObjects(pdfBuf: Buffer): Map<number, string> {
  * Guarantees names like "Annabel C. Odoño-Calimpong" break cleanly onto the next line
  * without clipping, overflowing, or shrinking to unreadable font sizes.
  */
+export function fixMojibake(str?: string | null): string {
+  if (!str) return "";
+  return str
+    .replace(/Ã±/g, "ñ")
+    .replace(/Ã‘/g, "Ñ")
+    .replace(/OdoÃ±o/g, "Odoño")
+    .replace(/Ã©/g, "é")
+    .replace(/Ã¨/g, "è")
+    .replace(/Ã-/g, "í")
+    .replace(/Ã³/g, "ó");
+}
+
 export function splitSignerNameToLines(rawSigner: string, maxLen: number = 20): string[] {
-  const clean = rawSigner.trim();
+  const clean = fixMojibake(rawSigner).trim();
   const withBy = `by ${clean}`;
   if (withBy.length <= maxLen) {
     return [withBy];
@@ -899,7 +911,7 @@ export async function signPdfBuffer(
   console.log("[pnpki] Validity Period:       ", signerIdentity.validFrom.toISOString(), "to", signerIdentity.validTo.toISOString());
   console.log("[pnpki] ========================================================\n");
 
-  const signerName = (options?.signerName || signerIdentity.commonName || "").trim();
+  const signerName = fixMojibake(options?.signerName || signerIdentity.commonName || "").trim();
   const reason =
     options?.reason ||
     "Civil Service Form No. 48 Official Daily Time Record Digital Certification";
