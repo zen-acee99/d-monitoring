@@ -1252,6 +1252,52 @@ export function isDigitalSignatureBadge(text: string): boolean {
   );
 }
 
+/**
+ * Detects common form labels, table column headers, and role markers.
+ * Used to ensure signature anchors strictly bind to the actual Personnel Name text,
+ * preventing signatures from erroneously shifting into adjacent label columns (e.g. "Printed Name").
+ */
+export function isTableFormLabel(text: string): boolean {
+  const clean = text.trim();
+  if (!clean) return false;
+  const t = clean.toUpperCase().replace(/[:\.\-_]/g, " ").replace(/\s+/g, " ").trim();
+  if (!t) return false;
+  const labels = [
+    "SIGNATURE",
+    "PRINTED NAME",
+    "PRINTED NAME AND SIGNATURE",
+    "NAME AND SIGNATURE",
+    "SIGNATURE OVER PRINTED NAME",
+    "POSITION",
+    "DESIGNATION",
+    "TITLE",
+    "DATE",
+    "DATE SIGNED",
+    "DATE AND TIME",
+    "TIME",
+    "HEAD REQUESTING OFFICE",
+    "AUTHORIZED REPRESENTATIVE",
+    "REQUESTING OFFICE",
+    "AGENCY HEAD",
+    "REGIONAL DIRECTOR",
+    "ASSISTANT REGIONAL DIRECTOR",
+    "DIVISION CHIEF",
+    "PROVINCIAL OFFICER",
+    "PREPARED BY",
+    "APPROVED BY",
+    "NOTED BY",
+    "CERTIFIED CORRECT",
+    "RECOMMENDING APPROVAL",
+    "VERIFIED BY",
+    "AUDITED BY",
+    "WITNESS",
+    "CONFORME",
+    "NAME",
+    "STATION",
+  ];
+  return labels.some((lbl) => t === lbl || t.startsWith(lbl + " ") || t.endsWith(" " + lbl));
+}
+
 export function normalizeNameForMatch(str: string): string {
   return str
     .normalize("NFD")
@@ -2564,9 +2610,16 @@ export async function scanPdfForSigners(
           itemsOnLine.sort((a, b) => a.x - b.x);
           const lineCompositeText = itemsOnLine.map((it) => it.text).join(" ");
           if (matchNames(lineCompositeText, u.name)) {
+            // Filter out table labels (e.g. "Printed Name", "Signature") to anchor strictly to personnel name
+            const nonLabelItems = itemsOnLine.filter((it) => !isTableFormLabel(it.text) && !isDecorationOrUnderline(it.text));
+            const candidateItems = nonLabelItems.length > 0 ? nonLabelItems : itemsOnLine;
+            const matchingItems = candidateItems.filter((it) => matchNames(it.text, u.name) || (u.name && normalizeNameForMatch(u.name).includes(normalizeNameForMatch(it.text))));
+            const finalItems = matchingItems.length > 0 ? matchingItems : candidateItems;
+            finalItems.sort((a, b) => a.x - b.x);
+            const minX = finalItems[0].x;
             userMatches = [{
-              text: lineCompositeText,
-              x: itemsOnLine[0].x,
+              text: finalItems.map((it) => it.text).join(" "),
+              x: minX,
               y: lineY,
             }];
             break;
@@ -3266,6 +3319,7 @@ export function findPersonnelSignatureCoordinates(
       let matches = textItems.filter((item) => {
         if (isDecorationOrUnderline(item.text) || isDigitalSignatureBadge(item.text)) return false;
         if (item.text.trim().startsWith(":")) return false; // Exclude memo addressee headers
+        if (isTableFormLabel(item.text)) return false; // Strict exclusion of table headers/labels
         if (matchNames(item.text, personnelName)) return true;
         // Prioritize signature area matches over top form headers
         const normItem = normalizeNameForMatch(item.text);
@@ -3298,10 +3352,21 @@ export function findPersonnelSignatureCoordinates(
           itemsOnLine.sort((a, b) => a.x - b.x);
           const lineCompositeText = itemsOnLine.map((it) => it.text).join(" ");
           if (matchNames(lineCompositeText, personnelName) || (normTarget && normalizeNameForMatch(lineCompositeText).includes(normTarget))) {
-            const minX = itemsOnLine[0].x;
-            const fullW = itemsOnLine[itemsOnLine.length - 1].x + measurePdfTextWidth(itemsOnLine[itemsOnLine.length - 1].text, 10.5) - minX;
+            // Isolate the items belonging to the personnel name, strictly ignoring table labels
+            const nonLabelItems = itemsOnLine.filter((it) => !isTableFormLabel(it.text) && !isDecorationOrUnderline(it.text));
+            const candidateItems = nonLabelItems.length > 0 ? nonLabelItems : itemsOnLine;
+            // Identify which candidate items match the personnel name tokens
+            const matchingItems = candidateItems.filter((it) => {
+              const norm = normalizeNameForMatch(it.text);
+              return matchNames(it.text, personnelName) || (normTarget && normTarget.includes(norm)) || targetParts.some((p) => norm.includes(p));
+            });
+            const finalNameItems = matchingItems.length > 0 ? matchingItems : candidateItems;
+            finalNameItems.sort((a, b) => a.x - b.x);
+            const minX = finalNameItems[0].x;
+            const lastItem = finalNameItems[finalNameItems.length - 1];
+            const fullW = lastItem.x + measurePdfTextWidth(lastItem.text, 10.5) - minX;
             matches.push({
-              text: lineCompositeText,
+              text: finalNameItems.map((it) => it.text).join(" "),
               x: minX,
               y: lineY,
               width: fullW,
@@ -3339,7 +3404,7 @@ export function findPersonnelSignatureCoordinates(
         const allBoxes = distinctMatches.map((item) => {
           // Locate full name text width on this line (supports multi-token names on the same line)
           const sameLineItems = textItems
-            .filter((it) => Math.abs(it.y - item.y) < 4 && it.x >= item.x - 5 && it.x <= item.x + 250)
+            .filter((it) => Math.abs(it.y - item.y) < 4 && it.x >= item.x - 5 && it.x <= item.x + 250 && !isTableFormLabel(it.text))
             .sort((a, b) => a.x - b.x);
 
           let rightmostX = item.x + measurePdfTextWidth(item.text.trim(), 10.5);
@@ -3353,20 +3418,22 @@ export function findPersonnelSignatureCoordinates(
           }
           const nameTextWidth = Math.max(measurePdfTextWidth(item.text.trim(), 10.5), rightmostX - item.x);
 
-          // Compact signature stamp width: strictly between 115 and 142 pt so column borders
-          // (such as in DV, Payroll, Abstract, Voucher tables) are never crossed or invaded
-          let boxW = Math.max(115, Math.min(142, Math.round(38 + nameLen * 3.8)));
-          const boxH = 18;
+          // Box dimensions:
+          // Expanded by +5px (5pt) to each corner for bigger, roomier appearance
+          // boxH expanded from 18 to 28 pt (+5 top, +5 bottom)
+          // boxW expanded with +10 pt (+5 left, +5 right)
+          let boxW = Math.max(125, Math.min(160, Math.round(48 + nameLen * 4.0)));
+          const boxH = 28;
 
-          // Align directly and strictly ABOVE the personnel name:
-          // If name is wider than the stamp, center over name; otherwise align snugly with start of name
-          let boxX = nameTextWidth > boxW
-            ? Math.round(item.x + (nameTextWidth - boxW) / 2)
-            : Math.round(item.x - 2);
+          // HORIZONTAL CENTERING RULE (Strict Requirement):
+          // "The DigiSigned signature must be horizontally centered and aligned with the exact Personnel Name located directly below it."
+          // ALWAYS center relative to the personnel name:
+          const nameCenterX = item.x + nameTextWidth / 2;
+          let boxX = Math.round(nameCenterX - boxW / 2);
 
           // Never overflow page right edge, and keep at least 10 pt margin
           if (boxX + boxW > width - 10) {
-            boxW = Math.max(90, width - boxX - 10);
+            boxW = Math.max(110, width - boxX - 10);
             if (boxX + boxW > width - 10) {
               boxX = Math.max(10, width - boxW - 10);
             }
@@ -3375,14 +3442,13 @@ export function findPersonnelSignatureCoordinates(
             boxX = 10;
           }
 
-          // Snug visual placement directly above name letters (eliminates awkward empty floating gap):
-          // In PDF fonts, item.y is the text baseline. Standard font cap height is ~7-8.5 pt.
-          // boxY = Math.round(item.y + 4.5 + stackOffset) positions the bottom of the 18pt stamp snugly
-          // right above the name letters, ensuring the text lines inside (at +3.0 and +9.5) clear
-          // the capital letters with a clean 1.5-2.5pt margin and zero overlap.
-          // Stack successive counter-signers above the primary signature if csIndex > 0
-          const stackOffset = csIndex > 0 ? csIndex * (boxH + 4) : 0;
-          const boxY = Math.min(height - boxH - 2, Math.max(10, Math.round(item.y + 4.5 + stackOffset)));
+          // VERTICAL SPACING RULE (Strict Requirement):
+          // "quite move the DigiSigned a bit top put some gap atleast 5px from the name"
+          // In PDF fonts, item.y is the text baseline. Standard font cap height is ~7.5-8.5 pt.
+          // boxY = Math.round(item.y + 13 + stackOffset) guarantees that the bottom edge of the box
+          // sits at least 5px (5pt) ABOVE the top of the printed capital letters!
+          const stackOffset = csIndex > 0 ? csIndex * (boxH + 6) : 0;
+          const boxY = Math.min(height - boxH - 2, Math.max(10, Math.round(item.y + 13 + stackOffset)));
           return { boxX, boxY, boxW, boxH, text: item.text };
         });
 
@@ -3415,9 +3481,9 @@ export function findPersonnelSignatureCoordinates(
 
   const rawTargetName = (personnelName || "").trim();
   const nameLen = rawTargetName.length;
-  const boxW = Math.max(115, Math.min(142, Math.round(38 + nameLen * 3.8)));
-  const boxH = 18;
-  let boxX = Math.round(width * 0.50);
+  const boxW = Math.max(125, Math.min(160, Math.round(48 + nameLen * 4.0)));
+  const boxH = 28;
+  let boxX = Math.round(width * 0.50 - boxW / 2);
   if (boxX + boxW > width - 15) {
     boxX = Math.max(15, width - boxW - 15);
   }

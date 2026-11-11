@@ -320,6 +320,36 @@ function parsePdfObjects(pdfBuf: Buffer): Map<number, string> {
  * and guarantees minimum bounds (>= 115pt width, >= 18pt height) so visual stamp
  * fits with a clean 5-8px gap directly above the user's name without invading columns.
  */
+/**
+ * Splits a signer name into clean multi-line display lines if long.
+ * Guarantees names like "Annabel C. Odoño-Calimpong" break cleanly onto the next line
+ * without clipping, overflowing, or shrinking to unreadable font sizes.
+ */
+export function splitSignerNameToLines(rawSigner: string, maxLen: number = 20): string[] {
+  const clean = rawSigner.trim();
+  const withBy = `by ${clean}`;
+  if (withBy.length <= maxLen) {
+    return [withBy];
+  }
+  const tokens = clean.split(/\s+/);
+  if (tokens.length >= 2) {
+    const half = Math.ceil(tokens.length / 2);
+    const line1 = `by ${tokens.slice(0, half).join(" ")}`;
+    const line2 = tokens.slice(half).join(" ");
+    return [line1, line2];
+  }
+  if (clean.includes("-")) {
+    const hTokens = clean.split("-");
+    return [`by ${hTokens[0]}-`, hTokens.slice(1).join("-")];
+  }
+  return [withBy];
+}
+
+/**
+ * Normalizes signature widget coordinates and guarantees proper bounding dimensions
+ * (>= 125pt width, >= 26pt height) with +5px padding in each corner for clear visual presentation
+ * directly above the user's name without invading columns.
+ */
 export function normalizeSignatureBoundingBox(coords: [number, number, number, number]): {
   minX: number;
   minY: number;
@@ -330,9 +360,6 @@ export function normalizeSignatureBoundingBox(coords: [number, number, number, n
 } {
   const [c0, c1, c2, c3] = coords;
   // Determine if coords is [x, y, width, height] vs [x1, y1, x2, y2].
-  // In [x, y, width, height], c2 is width (typically 80-350) and c3 is height (typically 14-50).
-  // If c3 > c1 happened simply because y was small (e.g. y = 15, h = 18), (c3 - c1) is < 10 or tiny.
-  // In [x1, y1, x2, y2], (c3 - c1) is the height (e.g. 18-50) and (c2 - c0) is the width (e.g. 80-350).
   const isWidthHeight =
     c3 > 0 && c3 <= 60 && c2 > 0 && c2 <= 400 &&
     (c3 - c1 < 10 || c3 - c1 > 60 || c2 - c0 < 50);
@@ -353,13 +380,13 @@ export function normalizeSignatureBoundingBox(coords: [number, number, number, n
   let bboxW = Math.max(20, maxX - minX);
   let bboxH = Math.max(14, maxY - minY);
 
-  // Guarantee minimum bounds so visual stamp fits with clean 5-8px gap
-  if (bboxW < 115) {
-    bboxW = 115;
+  // Guarantee minimum bounds (+5px corner padding: >= 125 width, >= 26 height)
+  if (bboxW < 125) {
+    bboxW = 125;
     maxX = minX + bboxW;
   }
-  if (bboxH < 18) {
-    bboxH = 18;
+  if (bboxH < 26) {
+    bboxH = 26;
     maxY = minY + bboxH;
   }
 
@@ -618,55 +645,49 @@ export async function appendSignatureIncremental(
       signerName.toLowerCase().includes("buena") ||
       signerName.toLowerCase().includes("rene jane");
     const escapedSigner = signerName.replace(/[()\\]/g, "\\$&");
+    const titleText = isCounter ? "DigiSigned" : (isReneJane ? "Digitally signed by" : "Digitally signed");
+    const nameLines = isReneJane
+      ? ["Buena Rene Jane Rosendo"]
+      : splitSignerNameToLines(escapedSigner, 18);
 
-    if (isCounter) {
-      // ── DigiSigned Stamp ABOVE Personnel Name (18pt height, 5-8px gap) ──
-      if (imgObjNum) {
-        const drawH = Math.max(10, bboxH - 4);
-        streamContent += `q\n30 0 0 ${drawH} 2 2 cm\n/SigImg Do\nQ\n`;
-      } else {
-        // Crisp vector checkmark on left if no image
-        streamContent += `q\n1.2 w\n0 0 0 RG\n4 9 m\n8 5 l\n15 14 l\nS\nQ\n`;
+    if (imgObjNum) {
+      const drawH = Math.max(16, bboxH - 6);
+      streamContent += `q\n32 0 0 ${drawH} 2 3 cm\n/SigImg Do\nQ\n`;
+    } else if (isCounter) {
+      // Crisp vector checkmark on left if no image
+      streamContent += `q\n1.4 w\n0 0 0 RG\n4 14 m\n8 9 l\n16 20 l\nS\nQ\n`;
+    }
+
+    const textX = imgObjNum ? 36 : (isCounter ? 20 : 6);
+    const availW = Math.max(55, bboxW - textX - 6);
+
+    if (nameLines.length >= 2) {
+      // ── Multi-line Name Layout (Enlarged +5px padding, clean line wrap for long names) ──
+      let fontSize = 6.2;
+      const charWidthFactor = 0.55;
+      for (const nl of nameLines) {
+        while (fontSize > 4.5 && nl.length * (fontSize * charWidthFactor) > availW) {
+          fontSize -= 0.1;
+        }
       }
-      const titleText = "DigiSigned";
-      const signerFullText = `by ${escapedSigner}`;
-      const textX = imgObjNum ? 34 : 18;
+      fontSize = Math.round(fontSize * 10) / 10;
+      const titleSize = Math.max(6.2, Math.round((fontSize + 0.3) * 10) / 10);
 
-      const availW = Math.max(50, bboxW - textX - 6);
-      let signerFontSize = signerFullText.length > 24 ? 5.2 : 5.8;
-      const charWidthFactor = 0.58;
-      let estimatedTextWidth = signerFullText.length * (signerFontSize * charWidthFactor);
-      while (signerFontSize > 3.2 && estimatedTextWidth > availW) {
-        signerFontSize -= 0.1;
-        estimatedTextWidth = signerFullText.length * (signerFontSize * charWidthFactor);
-      }
-      signerFontSize = Math.round(signerFontSize * 10) / 10;
-
-      streamContent += `q\nBT\n/Helv 5.5 Tf\n0 0 0 rg\n${textX} 10.5 Td\n(${titleText}) Tj\n0 -6.5 Td\n/Helv ${signerFontSize} Tf\n(${signerFullText}) Tj\nET\nQ\nQ\n`;
+      const l1 = nameLines[0].replace(/[()\\]/g, "\\$&");
+      const l2 = nameLines[1].replace(/[()\\]/g, "\\$&");
+      streamContent += `q\nBT\n/Helv ${titleSize} Tf\n0 0 0 rg\n${textX} 19.0 Td\n(${titleText}) Tj\n0 -7.5 Td\n/Helv ${fontSize} Tf\n(${l1}) Tj\n0 -7.5 Td\n(${l2}) Tj\nET\nQ\n`;
     } else {
-      // ── Standard Signature Stamp ABOVE Personnel Name (18pt height, 5-8px gap) ──
-      if (imgObjNum) {
-        const drawH = Math.max(10, bboxH - 4);
-        streamContent += `q\n30 0 0 ${drawH} 2 2 cm\n/SigImg Do\nQ\n`;
+      // ── Standard 2-Line Layout (Title + Single Line Name, font size enlarged ~6.4pt) ──
+      let fontSize = 6.4;
+      const charWidthFactor = 0.55;
+      while (fontSize > 4.5 && nameLines[0].length * (fontSize * charWidthFactor) > availW) {
+        fontSize -= 0.1;
       }
-      const textX = imgObjNum ? 34 : 4;
-      const titleText = isReneJane ? "Digitally signed by" : "Digitally signed";
-      const signerFullText = isReneJane ? "Buena Rene Jane Rosendo" : `by ${escapedSigner}`;
+      fontSize = Math.round(fontSize * 10) / 10;
+      const titleSize = Math.max(6.5, Math.round((fontSize + 0.3) * 10) / 10);
 
-      // Dynamic font size calculation to guarantee long names (e.g. Annabel C. Odoño-Calimpong) are NEVER cut off
-      const availW = Math.max(50, bboxW - textX - 6);
-      let signerFontSize = signerFullText.length > 24 ? 5.2 : 5.8;
-      const charWidthFactor = 0.58;
-      let estimatedTextWidth = signerFullText.length * (signerFontSize * charWidthFactor);
-      while (signerFontSize > 3.2 && estimatedTextWidth > availW) {
-        signerFontSize -= 0.1;
-        estimatedTextWidth = signerFullText.length * (signerFontSize * charWidthFactor);
-      }
-      signerFontSize = Math.round(signerFontSize * 10) / 10;
-
-      // Per user explicit instruction: Black text, normal font (not bold), no date/time
-      // Compact 18pt height layout: Line 1 at 9.5, Line 2 at 3.0 (snug above signatory name)
-      streamContent += `q\nBT\n/Helv 5.5 Tf\n0 0 0 rg\n${textX} 9.5 Td\n(${titleText}) Tj\n0 -6.5 Td\n/Helv ${signerFontSize} Tf\n(${signerFullText}) Tj\nET\nQ\nQ\n`;
+      const l1 = nameLines[0].replace(/[()\\]/g, "\\$&");
+      streamContent += `q\nBT\n/Helv ${titleSize} Tf\n0 0 0 rg\n${textX} 16.0 Td\n(${titleText}) Tj\n0 -9.0 Td\n/Helv ${fontSize} Tf\n(${l1}) Tj\nET\nQ\n`;
     }
 
     const streamLen = Buffer.from(streamContent, "binary").length;
@@ -1042,31 +1063,66 @@ export async function signPdfBuffer(
 
     if (helveticaFont) {
       try {
-        const textX = hasImg ? (options?.signatureImage ? minX + 34 : minX + 18) : minX + 4;
+        const textX = hasImg ? (options?.signatureImage ? minX + 36 : minX + 20) : minX + 6;
         const isReneJane =
           signerName.toLowerCase().includes("buena") ||
           signerName.toLowerCase().includes("rene jane");
         const titleText = isCounter ? "DigiSigned" : (isReneJane ? "Digitally signed by" : "Digitally signed");
-        const signerFullText = isCounter ? `by ${signerName}` : (isReneJane ? "Buena Rene Jane Rosendo" : `by ${signerName}`);
-        const availW = Math.max(50, rw - (textX - minX) - 4);
-        let signerFontSize = signerFullText.length > 24 ? 5.2 : 5.8;
-        while (signerFontSize > 3.2 && helveticaFont.widthOfTextAtSize(signerFullText, signerFontSize) > availW) {
-          signerFontSize -= 0.1;
+        const nameLines = isReneJane
+          ? ["Buena Rene Jane Rosendo"]
+          : splitSignerNameToLines(signerName, 18);
+        const availW = Math.max(55, rw - (textX - minX) - 6);
+
+        if (nameLines.length >= 2) {
+          let fontSize = 6.2;
+          for (const nl of nameLines) {
+            while (fontSize > 4.5 && helveticaFont.widthOfTextAtSize(nl, fontSize) > availW) {
+              fontSize -= 0.1;
+            }
+          }
+          const titleSize = Math.max(6.2, Math.round((fontSize + 0.3) * 10) / 10);
+          page.drawText(titleText, {
+            x: textX,
+            y: minY + 19.0,
+            size: titleSize,
+            font: helveticaFont,
+            color: rgb(0, 0, 0),
+          });
+          page.drawText(nameLines[0], {
+            x: textX,
+            y: minY + 11.5,
+            size: fontSize,
+            font: helveticaFont,
+            color: rgb(0, 0, 0),
+          });
+          page.drawText(nameLines[1], {
+            x: textX,
+            y: minY + 4.0,
+            size: fontSize,
+            font: helveticaFont,
+            color: rgb(0, 0, 0),
+          });
+        } else {
+          let fontSize = 6.4;
+          while (fontSize > 4.5 && helveticaFont.widthOfTextAtSize(nameLines[0], fontSize) > availW) {
+            fontSize -= 0.1;
+          }
+          const titleSize = Math.max(6.5, Math.round((fontSize + 0.3) * 10) / 10);
+          page.drawText(titleText, {
+            x: textX,
+            y: minY + 16.0,
+            size: titleSize,
+            font: helveticaFont,
+            color: rgb(0, 0, 0),
+          });
+          page.drawText(nameLines[0], {
+            x: textX,
+            y: minY + 7.0,
+            size: fontSize,
+            font: helveticaFont,
+            color: rgb(0, 0, 0),
+          });
         }
-        page.drawText(titleText, {
-          x: textX,
-          y: minY + 9.5,
-          size: 5.5,
-          font: helveticaFont,
-          color: rgb(0, 0, 0),
-        });
-        page.drawText(signerFullText, {
-          x: textX,
-          y: minY + 3.0,
-          size: signerFontSize,
-          font: helveticaFont,
-          color: rgb(0, 0, 0),
-        });
       } catch (e) {
         console.warn("[pnpki] Could not draw digital signature text in first-signature mode:", e);
       }
@@ -1091,15 +1147,23 @@ export async function signPdfBuffer(
       signerName.toLowerCase().includes("buena") ||
       signerName.toLowerCase().includes("rene jane");
     const apTitleText = isCounter ? "DigiSigned" : (isReneJane ? "Digitally signed by" : "Digitally signed");
-    const apSignerFullText = isCounter ? `by ${escapedSigner}` : (isReneJane ? "Buena Rene Jane Rosendo" : `by ${escapedSigner}`);
-    const apTextX = (isCounter && !options?.signatureImage) ? 18 : (options?.signatureImage ? 34 : 4);
-    const apSignerFontSize = apSignerFullText.length > 24 ? 5.0 : 5.6;
+    const apNameLines = isReneJane
+      ? ["Buena Rene Jane Rosendo"]
+      : splitSignerNameToLines(escapedSigner, 18);
+    const apTextX = (isCounter && !options?.signatureImage) ? 20 : (options?.signatureImage ? 36 : 6);
 
     let apStreamOps = "q\n";
     if (isCounter && !options?.signatureImage) {
-      apStreamOps += "1.2 w\n0 0 0 RG\n4 9 m\n8 5 l\n15 14 l\nS\n";
+      apStreamOps += "1.4 w\n0 0 0 RG\n4 14 m\n8 9 l\n16 20 l\nS\n";
     }
-    apStreamOps += `BT\n/F1 5.5 Tf\n0 0 0 rg\n${apTextX} 10.5 Td\n(${apTitleText}) Tj\nET\nBT\n/F1 ${apSignerFontSize.toFixed(1)} Tf\n0 0 0 rg\n${apTextX} 4.0 Td\n(${apSignerFullText}) Tj\nET\nQ\n`;
+    if (apNameLines.length >= 2) {
+      const l1 = apNameLines[0].replace(/[()\\]/g, "\\$&");
+      const l2 = apNameLines[1].replace(/[()\\]/g, "\\$&");
+      apStreamOps += `BT\n/F1 6.5 Tf\n0 0 0 rg\n${apTextX} 19.0 Td\n(${apTitleText}) Tj\n0 -7.5 Td\n/F1 6.0 Tf\n(${l1}) Tj\n0 -7.5 Td\n(${l2}) Tj\nET\nQ\n`;
+    } else {
+      const l1 = apNameLines[0].replace(/[()\\]/g, "\\$&");
+      apStreamOps += `BT\n/F1 6.5 Tf\n0 0 0 rg\n${apTextX} 16.0 Td\n(${apTitleText}) Tj\n0 -9.0 Td\n/F1 6.2 Tf\n(${l1}) Tj\nET\nQ\n`;
+    }
 
     const apStream = pdfDoc.context.stream(apStreamOps, {
       Type: "XObject",
