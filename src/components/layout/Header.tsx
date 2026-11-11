@@ -4,6 +4,7 @@ import { Menu, ChevronDown, Download, LogOut, Sun, Moon, Check, Snowflake } from
 import { getCurrentUser, setCurrentUser, AUTH_EVENT, getAllUsers } from "@/services/authStore";
 import { UserRecord } from "@/data/userStore";
 import { signOutGoogle } from "@/services/firebaseAuth";
+import { notifyLogout } from "@/services/presenceService";
 import { getTheme, toggleTheme, syncThemeFromDb, THEME_EVENT, AppTheme } from "@/services/themeStore";
 import { isSnowEnabled, toggleSnow, SNOW_EVENT } from "@/services/snowStore";
 
@@ -70,6 +71,11 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
   }, []);
 
   const handleLogout = async () => {
+    try {
+      if (currentUser?.email) {
+        await notifyLogout(currentUser.email);
+      }
+    } catch {}
     try {
       await signOutGoogle();
     } catch {}

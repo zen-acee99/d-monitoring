@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import JSZip from "jszip";
+import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import {
   PenLine,
   Upload,
@@ -139,6 +140,271 @@ function formatTimestamp(isoString: string): string {
 
 function normalizeName(name?: string): string {
   return (name || "").trim().toLowerCase();
+}
+
+export function formatTargetPdfFilename(doc: WorkspaceDocument): string {
+  let rawName = (doc.fileObj?.name || doc.fileName || `document_${doc.id}`).trim();
+  rawName = rawName.replace(/\.(txt|docx?|pdf)$/i, "");
+  return `${rawName}.pdf`;
+}
+
+function sanitizeForStandardPdf(text: string): string {
+  return (text || "")
+    .replace(/[✓✔]/g, "[V]")
+    .replace(/[•●]/g, "-")
+    .replace(/[—–]/g, "-")
+    .replace(/[""]/g, '"')
+    .replace(/['']/g, "'")
+    .replace(/[^\x20-\x7E\xA0-\xFF]/g, " ")
+    .trim();
+}
+
+export function parseDocTimestampSafe(val: any): number {
+  if (!val) return 0;
+  if (typeof val === "number" && !isNaN(val) && val > 0) return val;
+  if (typeof val === "string") {
+    const trimmed = val.trim();
+    if (!trimmed) return 0;
+    if (/^\d{10,13}$/.test(trimmed)) {
+      const num = Number(trimmed);
+      return num < 10000000000 ? num * 1000 : num;
+    }
+    // Normalize SQLite 'YYYY-MM-DD HH:MM:SS' or ISO strings without timezone to UTC
+    let str = trimmed;
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(str)) {
+      str = str.replace(" ", "T") + "Z";
+    } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(str)) {
+      str = str + "Z";
+    }
+    const t = new Date(str).getTime();
+    if (!isNaN(t) && t > 0) return t;
+  }
+  return 0;
+}
+
+export function getDocTimestamp(doc: WorkspaceDocument): number {
+  const fields = [
+    doc.uploadedAt,
+    (doc as any).uploaded_at,
+    (doc as any).submittedDate,
+    (doc as any).createdAt,
+    (doc as any).created_at,
+    (doc as any).updatedAt,
+    (doc as any).updated_at,
+  ];
+  for (const f of fields) {
+    const t = parseDocTimestampSafe(f);
+    if (t > 0) return t;
+  }
+  const match = doc.id?.match(/(?:doc-upload-|doc-|sw-)(\d{10,13})/);
+  if (match) {
+    const parsed = Number(match[1]);
+    if (!isNaN(parsed) && parsed > 0) {
+      return parsed < 10000000000 ? parsed * 1000 : parsed;
+    }
+  }
+  return 0;
+}
+
+export function sortDocumentsLatestFirst(docs: WorkspaceDocument[]): WorkspaceDocument[] {
+  return [...docs].sort((a, b) => {
+    // 1. Pending sync or actively uploading items stay on top
+    const aPending = Boolean(a.isPendingSync || a.status === "uploading");
+    const bPending = Boolean(b.isPendingSync || b.status === "uploading");
+    if (aPending && !bPending) return -1;
+    if (!aPending && bPending) return 1;
+
+    // 2. Sort by upload timestamp descending (newest on top)
+    const timeA = getDocTimestamp(a);
+    const timeB = getDocTimestamp(b);
+    if (timeA !== timeB) {
+      return timeB - timeA;
+    }
+
+    // 3. Fallback tie breaker: compare id descending
+    return (b.id || "").localeCompare(a.id || "");
+  });
+}
+
+
+export async function generateWorkspaceFallbackPdfBytes(doc: WorkspaceDocument): Promise<Uint8Array> {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([612, 792]);
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const { width, height } = page.getSize();
+
+  // Header Banner
+  page.drawRectangle({
+    x: 36,
+    y: height - 80,
+    width: width - 72,
+    height: 44,
+    color: rgb(0.04, 0.12, 0.28),
+  });
+
+  page.drawText(sanitizeForStandardPdf("DEPARTMENT OF INFORMATION AND COMMUNICATIONS TECHNOLOGY"), {
+    x: 48,
+    y: height - 56,
+    size: 11,
+    font: boldFont,
+    color: rgb(1, 1, 1),
+  });
+
+  page.drawText(sanitizeForStandardPdf("Region V - Bicol Region | Official Signing Workspace Transmittal Record"), {
+    x: 48,
+    y: height - 70,
+    size: 8.5,
+    font,
+    color: rgb(0.85, 0.9, 1),
+  });
+
+  let currentY = height - 110;
+
+  // Title
+  page.drawText(sanitizeForStandardPdf("OFFICIAL DOCUMENT RECORD & SIGNATURE TRANSMITTAL"), {
+    x: 36,
+    y: currentY,
+    size: 13,
+    font: boldFont,
+    color: rgb(0.1, 0.15, 0.25),
+  });
+  currentY -= 20;
+
+  // Document Info Table Box
+  page.drawRectangle({
+    x: 36,
+    y: currentY - 140,
+    width: width - 72,
+    height: 140,
+    borderColor: rgb(0.8, 0.85, 0.9),
+    borderWidth: 1,
+    color: rgb(0.97, 0.98, 1),
+  });
+
+  const targetFilename = formatTargetPdfFilename(doc);
+  const fields = [
+    ["Document File Name:", targetFilename],
+    ["Tracking / Document ID:", doc.id || "N/A"],
+    ["Subject Personnel:", doc.targetPersonnel || "DICT Personnel"],
+    ["Province / Station:", doc.province || "Regional Office V"],
+    ["Uploaded By:", `${doc.uploadedBy || "System User"} on ${formatTimestamp(doc.uploadedAt)}`],
+    ["Overall Signing Status:", (doc.status || "PENDING").toUpperCase()],
+  ];
+
+  let fieldY = currentY - 22;
+  fields.forEach(([label, value]) => {
+    page.drawText(sanitizeForStandardPdf(label), {
+      x: 48,
+      y: fieldY,
+      size: 9,
+      font: boldFont,
+      color: rgb(0.2, 0.25, 0.35),
+    });
+    page.drawText(sanitizeForStandardPdf(value).slice(0, 75), {
+      x: 180,
+      y: fieldY,
+      size: 9,
+      font,
+      color: rgb(0.08, 0.1, 0.15),
+    });
+    fieldY -= 20;
+  });
+
+  currentY -= 165;
+
+  // Signatures Section
+  page.drawText(sanitizeForStandardPdf("AUTHORIZED SIGNATORIES & MATRIX STATUS"), {
+    x: 36,
+    y: currentY,
+    size: 11,
+    font: boldFont,
+    color: rgb(0.1, 0.15, 0.25),
+  });
+  currentY -= 15;
+
+  const signers = doc.signers && doc.signers.length > 0
+    ? doc.signers
+    : (doc.requiredSigners || []).map((r) => ({ name: r, status: "pending" as const, role: "Signatory" }));
+
+  signers.slice(0, 10).forEach((s, idx) => {
+    const isSigned = s.status === "signed";
+    page.drawText(sanitizeForStandardPdf(`${idx + 1}. ${s.name || "Signer"} (${s.role || "Signatory"})`), {
+      x: 48,
+      y: currentY,
+      size: 8.5,
+      font: boldFont,
+      color: rgb(0.15, 0.2, 0.3),
+    });
+    page.drawText(
+      sanitizeForStandardPdf(isSigned ? `[COMPLETED] ${s.signedAt || "Signed"}` : `[PENDING] Awaiting Signature`),
+      {
+        x: 340,
+        y: currentY,
+        size: 8.5,
+        font,
+        color: isSigned ? rgb(0.05, 0.55, 0.2) : rgb(0.7, 0.3, 0.05),
+      }
+    );
+    currentY -= 16;
+  });
+
+  const counterSigners = doc.counterSigners || [];
+  if (counterSigners.length > 0) {
+    currentY -= 8;
+    page.drawText(sanitizeForStandardPdf("COUNTER-SIGNATORIES"), {
+      x: 36,
+      y: currentY,
+      size: 10,
+      font: boldFont,
+      color: rgb(0.1, 0.15, 0.25),
+    });
+    currentY -= 15;
+    counterSigners.slice(0, 6).forEach((c) => {
+      page.drawText(sanitizeForStandardPdf(`+ ${c.name} - Counter-Signed (${c.position || "beside"})`), {
+        x: 48,
+        y: currentY,
+        size: 8.5,
+        font,
+        color: rgb(0.1, 0.35, 0.6),
+      });
+      currentY -= 15;
+    });
+  }
+
+  // Footer Note
+  page.drawRectangle({
+    x: 36,
+    y: 36,
+    width: width - 72,
+    height: 38,
+    color: rgb(0.95, 0.96, 0.98),
+    borderColor: rgb(0.85, 0.88, 0.92),
+    borderWidth: 1,
+  });
+
+  page.drawText(
+    sanitizeForStandardPdf("Security & Authenticity Notice: Generated by DICT Region V Signing Workspace System."),
+    {
+      x: 48,
+      y: 58,
+      size: 7.5,
+      font: boldFont,
+      color: rgb(0.3, 0.35, 0.45),
+    }
+  );
+  page.drawText(
+    sanitizeForStandardPdf("This electronic transmittal document is certified valid and registered in the DICT cloud database."),
+    {
+      x: 48,
+      y: 45,
+      size: 7,
+      font,
+      color: rgb(0.4, 0.45, 0.55),
+    }
+  );
+
+  return await pdfDoc.save();
 }
 
 
@@ -1886,11 +2152,29 @@ function mapDtrRecordToWorkspaceDoc(record: any): WorkspaceDocument {
     });
   }
 
+  let resolvedUploadedAt =
+    record.uploadedAt ||
+    record.uploaded_at ||
+    record.submittedDate ||
+    record.createdAt ||
+    record.created_at;
+
+  if (!resolvedUploadedAt) {
+    const match = String(record.id || "").match(/(?:doc-upload-|doc-|sw-)(\d{10,13})/);
+    if (match) {
+      const parsed = Number(match[1]);
+      const ms = parsed < 10000000000 ? parsed * 1000 : parsed;
+      resolvedUploadedAt = new Date(ms).toISOString();
+    } else {
+      resolvedUploadedAt = "";
+    }
+  }
+
   const initialDoc: WorkspaceDocument = {
     id: String(record.id),
     fileName: resolvedFileName,
     fileSize: record.fileSize || record.file_size || record.pdfFileSize || "1.2 MB",
-    uploadedAt: record.uploadedAt || record.uploaded_at || record.submittedDate || record.createdAt || new Date().toISOString(),
+    uploadedAt: resolvedUploadedAt,
     uploadedBy: record.uploadedBy || record.uploaded_by || record.employeeName || "User",
     status: (record.status?.toLowerCase() === "signed"
       ? "signed"
@@ -3155,6 +3439,7 @@ export function SigningWorkspace() {
     completed: number;
     failedCount: number;
     failedItems: { doc: WorkspaceDocument; file: File; error: string }[];
+    currentFileName?: string;
   } | null>(null);
   const isBatchUploadingRef = useRef(false);
   const isSyncingRef = useRef(false);
@@ -3264,13 +3549,13 @@ export function SigningWorkspace() {
               pDoc &&
               !deletedIds.has(pDoc.id) &&
               !nextMap.has(pDoc.id) &&
-              (pDoc.isPendingSync || pDoc.status === "uploading" || pDoc.id.startsWith("doc-upload-"))
+              (pDoc.isPendingSync || pDoc.status === "uploading")
             ) {
               pendingLocal.push(pDoc);
             }
           });
 
-          const merged = [...pendingLocal, ...Array.from(nextMap.values())];
+          const merged = sortDocumentsLatestFirst([...pendingLocal, ...Array.from(nextMap.values())]);
 
           // Check if there are changes before triggering state & storage writes
           const hasDiff =
@@ -3360,7 +3645,7 @@ export function SigningWorkspace() {
               const { updatedDoc } = recheckDocWithLatestUsers(d, freshUsers);
               return updatedDoc as WorkspaceDocument;
             });
-          setDocuments(valid);
+          setDocuments(sortDocumentsLatestFirst(valid));
         }
       } catch {}
     }
@@ -3443,7 +3728,7 @@ export function SigningWorkspace() {
                 nextList = [...prev];
                 nextList[existingIdx] = updated;
               } else {
-                nextList = [mapped, ...prev];
+                nextList = sortDocumentsLatestFirst([mapped, ...prev]);
               }
               try {
                 localStorage.setItem(
@@ -3553,70 +3838,72 @@ export function SigningWorkspace() {
       }
     }
 
-    const targetFilename = doc.fileObj?.name || doc.fileName || `document_${doc.id}.pdf`;
+    const targetFilename = formatTargetPdfFilename(doc);
+    let blob: Blob | null = null;
 
-    // 1. Download cryptographically signed PDF if available
+    // 1. Download cryptographically signed PDF or remote data if available
     if (pdfUrl) {
-      try {
-        const base64 = pdfUrl.includes(",")
-          ? pdfUrl.split(",")[1]
-          : pdfUrl;
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i);
+      if (pdfUrl.startsWith("blob:")) {
+        try {
+          const res = await fetch(pdfUrl);
+          const buf = await res.arrayBuffer();
+          if (buf.byteLength > 0) {
+            blob = new Blob([buf], { type: "application/pdf" });
+          }
+        } catch {}
+      }
+      if (!blob) {
+        try {
+          const base64 = (pdfUrl.includes(",") ? pdfUrl.split(",")[1] : pdfUrl).replace(/\s/g, "");
+          const binary = atob(base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          blob = new Blob([bytes], { type: "application/pdf" });
+        } catch (err) {
+          console.warn("Could not decode base64 pdfUrl:", err);
         }
-        const blob = new Blob([bytes], { type: "application/pdf" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = targetFilename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-        showNotif(`✓ Downloaded digitally signed ${targetFilename}`);
-        return;
-      } catch {
-        const a = document.createElement("a");
-        a.href = doc.pdfDataUrl;
-        a.download = targetFilename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        showNotif(`✓ Downloaded ${targetFilename}`);
-        return;
       }
     }
 
     // 2. Download original uploaded file
-    if (doc.fileObj) {
-      const url = URL.createObjectURL(doc.fileObj);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = targetFilename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      showNotif(`✓ Downloaded ${targetFilename}`);
+    if (!blob && doc.fileObj) {
+      try {
+        const buf = await doc.fileObj.arrayBuffer();
+        if (buf.byteLength > 0) {
+          blob = new Blob([buf], { type: "application/pdf" });
+        }
+      } catch {}
+    }
+
+    // 3. Fallback: Generate real, valid PDF transmittal document (Never .txt)
+    if (!blob) {
+      try {
+        const pdfBytes = await generateWorkspaceFallbackPdfBytes(doc);
+        blob = new Blob([pdfBytes], { type: "application/pdf" });
+      } catch (err) {
+        console.error("Failed to generate fallback PDF for single download:", err);
+      }
+    }
+
+    if (!blob) {
+      showNotif(`⚠️ Failed to generate PDF for ${targetFilename}`);
       return;
     }
 
-    const sampleContent = `Republic of the Philippines\nDEPARTMENT OF INFORMATION AND COMMUNICATIONS TECHNOLOGY\nRegion V - Bicol Region\n\nOFFICIAL DOCUMENT: ${targetFilename}\nTracking ID: ${doc.id}\nPrimary Subject: ${doc.targetPersonnel}\nUploaded By: ${doc.uploadedBy}\nUploaded At: ${doc.uploadedAt}\nSigning Status: ${doc.status.toUpperCase()}\n\nScanned Required Signers (${doc.requiredSigners.length}):\n${doc.requiredSigners.map((s, i) => `  ${i + 1}. ${s}`).join("\n")}\n\nCompleted Signatures:\n${doc.signers.filter((s) => s.status === "signed").map((s) => `  ✓ ${s.name} (${s.role || "Signer"}) - Placed Above Name`).join("\n")}\n${(doc.counterSigners || []).map((c) => `  ✓ ${c.name} - Counter-Signed Beside Name (${c.position || "beside"})`).join("\n")}\n\nThis electronic document has been verified under the DICT Signing Workspace.`;
-    const blob = new Blob([sampleContent], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = targetFilename.replace(/\.pdf$/i, ".txt");
+    a.download = targetFilename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    showNotif(`✓ Downloaded transmittal for ${targetFilename}`);
+    showNotif(`✓ Downloaded ${targetFilename}`);
   };
 
-  // Helper to extract file blob and filename for single or batch downloading
+  // Helper to extract file blob and filename for single or batch downloading (Guaranteed .pdf)
   const getDocumentFile = async (
     doc: WorkspaceDocument
   ): Promise<{ fileName: string; blob: Blob } | null> => {
@@ -3642,35 +3929,57 @@ export function SigningWorkspace() {
       }
     }
 
+    const targetFilename = formatTargetPdfFilename(doc);
+    let blob: Blob | null = null;
+
     if (pdfUrl) {
-      try {
-        const base64 = pdfUrl.includes(",") ? pdfUrl.split(",")[1] : pdfUrl;
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i);
+      if (pdfUrl.startsWith("blob:")) {
+        try {
+          const res = await fetch(pdfUrl);
+          const buf = await res.arrayBuffer();
+          if (buf.byteLength > 0) {
+            blob = new Blob([buf], { type: "application/pdf" });
+          }
+        } catch {}
+      }
+      if (!blob) {
+        try {
+          const base64 = (pdfUrl.includes(",") ? pdfUrl.split(",")[1] : pdfUrl).replace(/\s/g, "");
+          const binary = atob(base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          blob = new Blob([bytes], { type: "application/pdf" });
+        } catch (e) {
+          console.warn("Error decoding pdfUrl for batch doc:", doc.id, e);
         }
-        return {
-          fileName: doc.fileObj?.name || doc.fileName || `document_${doc.id}.pdf`,
-          blob: new Blob([bytes], { type: "application/pdf" }),
-        };
-      } catch (e) {
-        console.warn("Error decoding pdfUrl for doc:", doc.id, e);
       }
     }
 
-    if (doc.fileObj) {
-      return {
-        fileName: doc.fileObj.name || doc.fileName,
-        blob: doc.fileObj,
-      };
+    if (!blob && doc.fileObj) {
+      try {
+        const buf = await doc.fileObj.arrayBuffer();
+        if (buf.byteLength > 0) {
+          blob = new Blob([buf], { type: "application/pdf" });
+        }
+      } catch {}
     }
 
-    const targetFilename = doc.fileObj?.name || doc.fileName || `${doc.id}`;
-    const sampleContent = `Republic of the Philippines\nDEPARTMENT OF INFORMATION AND COMMUNICATIONS TECHNOLOGY\nRegion V - Bicol Region\n\nOFFICIAL DOCUMENT: ${targetFilename}\nTracking ID: ${doc.id}\nPrimary Subject: ${doc.targetPersonnel}\nUploaded By: ${doc.uploadedBy}\nUploaded At: ${doc.uploadedAt}\nSigning Status: ${doc.status.toUpperCase()}\n\nScanned Required Signers (${doc.requiredSigners.length}):\n${doc.requiredSigners.map((s, i) => `  ${i + 1}. ${s}`).join("\n")}\n\nCompleted Signatures:\n${doc.signers.filter((s) => s.status === "signed").map((s) => `  ✓ ${s.name} (${s.role || "Signer"}) - Placed Above Name`).join("\n")}\n${(doc.counterSigners || []).map((c) => `  ✓ ${c.name} - Counter-Signed Beside Name (${c.position || "beside"})`).join("\n")}\n\nThis electronic document has been verified under the DICT Signing Workspace.`;
+    if (!blob) {
+      try {
+        const pdfBytes = await generateWorkspaceFallbackPdfBytes(doc);
+        blob = new Blob([pdfBytes], { type: "application/pdf" });
+      } catch (err) {
+        console.error("Failed to generate fallback PDF for batch item:", err);
+      }
+    }
+
+    if (!blob) return null;
+
     return {
-      fileName: targetFilename.replace(/\.pdf$/i, ".txt"),
-      blob: new Blob([sampleContent], { type: "text/plain;charset=utf-8" }),
+      fileName: targetFilename,
+      blob,
     };
   };
 
@@ -4479,7 +4788,7 @@ export function SigningWorkspace() {
   const handleUploadScanned = async (scannedEntries: ScannedFileEntry[]) => {
     if (scannedEntries.length === 0) return;
 
-    const now = new Date().toISOString();
+    const baseTime = Date.now();
     const activeUser = getCurrentUser() || currentUser;
     const defaultUser = activeUser?.name || "Personnel";
     const userProv = (activeUser as any)?.focalProvince || activeUser?.province || "Regional Office";
@@ -4518,11 +4827,16 @@ export function SigningWorkspace() {
               position: "above",
             }));
 
+      // Offset by index descending so the first file selected in a batch stays on the top/first row,
+      // and newer uploads always have higher timestamps than existing documents:
+      const offsetMs = scannedEntries.length - 1 - i;
+      const uploadedTime = new Date(baseTime + offsetMs).toISOString();
+
       const docItem: WorkspaceDocument = {
-        id: `doc-upload-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`,
+        id: `doc-upload-${baseTime}-${i}-${Math.random().toString(36).substring(2, 6)}`,
         fileName: entry.file.name,
         fileSize: formatFileSize(entry.file.size),
-        uploadedAt: now,
+        uploadedAt: uploadedTime,
         uploadedBy: activeUser?.name || "Unknown User",
         status: "pending",
         targetPersonnel: primary,
@@ -4546,8 +4860,9 @@ export function SigningWorkspace() {
       return docItem;
     });
 
-    // 2. Immediate non-blocking UI update: All 100-200 files display instantly
-    setDocuments((prev) => [...newDocs, ...prev]);
+    // 2. Immediate non-blocking UI update: All 100-200 files display instantly, newest on top
+    setDocuments((prev) => sortDocumentsLatestFirst([...newDocs, ...prev]));
+    setCurrentPage(1);
 
     // 3. Mark batch upload active so polling & foreign SSE refetches are paused
     isBatchUploadingRef.current = true;
@@ -4561,18 +4876,13 @@ export function SigningWorkspace() {
 
     showNotif(`⚡ Queued ${newDocs.length} documents. Turbo batch streaming active (boosted micro-chunks).`);
 
-    // 4. Group items into micro-batches of 4 records
-    // Micro-batching eliminates individual HTTP roundtrips and keeps payloads lean (<10MB)
-    const BATCH_CHUNK_SIZE = 4;
+    // 4. Stream items individually with controlled concurrency of 2 parallel workers
+    // Uploading individually keeps each HTTP payload lean (<2MB, well within Vercel's 4.5MB ceiling)
+    // and updates the progress counter smoothly in real-time for every single file.
     const itemsToUpload = newDocs.map((doc, idx) => ({
       doc,
       file: scannedEntries[idx].file,
     }));
-
-    const chunks: (typeof itemsToUpload)[] = [];
-    for (let i = 0; i < itemsToUpload.length; i += BATCH_CHUNK_SIZE) {
-      chunks.push(itemsToUpload.slice(i, i + BATCH_CHUNK_SIZE));
-    }
 
     let completedCounter = 0;
     let failedCounter = 0;
@@ -4580,143 +4890,104 @@ export function SigningWorkspace() {
     const activeUserId = String(activeUser?.id || "USER-001");
     const activeEmpId = String(activeUser?.employeeId || "EMP-001");
 
-    // Process micro-batch chunks with controlled concurrency of 2 parallel workers (8 items in flight max)
-    await asyncPool(2, chunks, async (chunk, chunkIdx) => {
-      const isLastChunk = chunkIdx === chunks.length - 1;
+    await asyncPool(2, itemsToUpload, async (item) => {
+      let dataUrl: string | undefined = undefined;
+      try {
+        dataUrl = await fileToDataUrl(item.file);
+        item.doc.pdfDataUrl = dataUrl;
+      } catch (err) {
+        console.warn(`Failed reading file data for ${item.doc.fileName}:`, err);
+      }
 
-      // Step A: Read files for this chunk concurrently (ordered mapping, minimal memory)
-      const chunkPayloads = await Promise.all(
-        chunk.map(async (item) => {
-          let dataUrl: string | undefined = undefined;
-          try {
-            dataUrl = await fileToDataUrl(item.file);
-            item.doc.pdfDataUrl = dataUrl;
-          } catch (err) {
-            console.warn(`Failed reading file data for ${item.doc.fileName}:`, err);
-          }
+      const originalFileName = item.file?.name || item.doc.fileName;
+      item.doc.fileName = originalFileName;
 
-          const originalFileName = item.file?.name || item.doc.fileName;
-          item.doc.fileName = originalFileName;
-
-          const uploadPayload = {
-            id: item.doc.id,
-            userId: activeUserId,
-            employeeName: item.doc.targetPersonnel,
-            employeeId: activeEmpId,
-            module: "SIGNING_WORKSPACE",
-            province: item.doc.province || userProv,
-            sectionDivision: "Regional Office V",
-            periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
-            month: new Date().getMonth() + 1,
-            year: new Date().getFullYear(),
-            scope: "full-month",
-            status: item.doc.status,
-            submittedDate: item.doc.uploadedAt,
-            pdfFileName: originalFileName,
-            pdfFileSize: item.doc.fileSize,
-            pdfDataUrl: dataUrl,
-            docType: "AR",
-            remarks: JSON.stringify({
-              originalFileName: originalFileName,
-              targetPersonnel: item.doc.targetPersonnel,
-              requiredSigners: item.doc.requiredSigners,
-              signers: item.doc.signers,
-              counterSigners: item.doc.counterSigners,
-              scannedInfo: item.doc.scannedInfo,
-              notes: item.doc.notes,
-            }),
-          };
-
-          return { payload: uploadPayload, doc: item.doc, file: item.file, dataUrl };
-        })
+      setBatchUploadProgress((prev) =>
+        prev
+          ? {
+              ...prev,
+              currentFileName: originalFileName,
+            }
+          : null
       );
 
-      // Step B: Send micro-batch via signingWorkspaceApi.saveBatch with automatic retry
-      const chunkDocs = chunkPayloads.map((c) => ({
-        id: c.doc.id,
-        fileName: c.doc.fileName,
-        fileSize: c.doc.fileSize,
-        uploadedBy: c.doc.uploadedBy,
-        status: c.doc.status,
-        targetPersonnel: c.doc.targetPersonnel,
-        requiredSigners: c.doc.requiredSigners,
-        signers: c.doc.signers,
-        scannedInfo: c.doc.scannedInfo,
-        pdfDataUrl: c.dataUrl,
-        province: c.doc.province,
-        notes: c.doc.notes,
-      }));
+      let itemSuccess = false;
+      let lastErr = "";
 
-      let batchSuccess = false;
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          const swBatchResult = await signingWorkspaceApi.saveBatch(chunkDocs);
-          if (swBatchResult && swBatchResult.success !== false) {
-            batchSuccess = true;
+          const res = await signingWorkspaceApi.saveDocument({
+            id: item.doc.id,
+            fileName: originalFileName,
+            fileSize: item.doc.fileSize,
+            uploadedAt: item.doc.uploadedAt,
+            uploadedBy: item.doc.uploadedBy,
+            status: item.doc.status,
+            targetPersonnel: item.doc.targetPersonnel,
+            requiredSigners: item.doc.requiredSigners,
+            signers: item.doc.signers,
+            scannedInfo: item.doc.scannedInfo,
+            pdfDataUrl: dataUrl,
+            province: item.doc.province || userProv,
+            notes: item.doc.notes,
+          });
+
+          if (res && res.success !== false) {
+            itemSuccess = true;
             break;
           }
+          lastErr = res?.error || `Upload failed on attempt ${attempt}`;
         } catch (e: any) {
-          console.warn(`signingWorkspaceApi.saveBatch attempt ${attempt} failed:`, e);
+          lastErr = e?.message || "Network error";
         }
+
         if (attempt < 2) {
-          await new Promise((r) => setTimeout(r, 200));
+          await new Promise((r) => setTimeout(r, 150));
         }
       }
 
-      // Also replicate to legacy dtrStorageApi in the background if needed
-      dtrStorageApi.saveBatch(chunkPayloads.map((c) => c.payload), { isLastChunk }).catch(() => {});
+      // Replicate to legacy dtrStorageApi in the background
+      const uploadPayload = {
+        id: item.doc.id,
+        userId: activeUserId,
+        employeeName: item.doc.targetPersonnel,
+        employeeId: activeEmpId,
+        module: "SIGNING_WORKSPACE",
+        province: item.doc.province || userProv,
+        sectionDivision: "Regional Office V",
+        periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+        month: new Date().getMonth() + 1,
+        year: new Date().getFullYear(),
+        scope: "full-month",
+        status: item.doc.status,
+        submittedDate: item.doc.uploadedAt,
+        pdfFileName: originalFileName,
+        pdfFileSize: item.doc.fileSize,
+        pdfDataUrl: dataUrl,
+        docType: "AR",
+        remarks: JSON.stringify({
+          originalFileName,
+          targetPersonnel: item.doc.targetPersonnel,
+          requiredSigners: item.doc.requiredSigners,
+          signers: item.doc.signers,
+          counterSigners: item.doc.counterSigners,
+          scannedInfo: item.doc.scannedInfo,
+          notes: item.doc.notes,
+        }),
+      };
+      dtrStorageApi.saveRecord(uploadPayload).catch(() => {});
 
-      if (batchSuccess) {
-        const succeededIds = new Set(chunkPayloads.map((c) => c.doc.id));
+      if (itemSuccess) {
         setDocuments((prev) =>
-          prev.map((d) => (succeededIds.has(d.id) ? { ...d, isPendingSync: false } : d))
+          prev.map((d) => (d.id === item.doc.id ? { ...d, isPendingSync: false } : d))
         );
-        completedCounter += chunkPayloads.length;
+        completedCounter++;
       } else {
-        // Fallback: Individual upload with retry for items in failed chunk
-        for (const c of chunkPayloads) {
-          let singleSuccess = false;
-          let singleErr = "";
-          for (let attempt = 1; attempt <= 2; attempt++) {
-            try {
-              const res = await signingWorkspaceApi.saveDocument({
-                id: c.doc.id,
-                fileName: c.doc.fileName,
-                fileSize: c.doc.fileSize,
-                uploadedBy: c.doc.uploadedBy,
-                status: c.doc.status,
-                targetPersonnel: c.doc.targetPersonnel,
-                requiredSigners: c.doc.requiredSigners,
-                signers: c.doc.signers,
-                scannedInfo: c.doc.scannedInfo,
-                pdfDataUrl: c.dataUrl,
-                province: c.doc.province,
-                notes: c.doc.notes,
-              });
-              if (res && res.success !== false) {
-                singleSuccess = true;
-                break;
-              }
-              singleErr = res?.error || `Upload failed on attempt ${attempt}`;
-            } catch (e: any) {
-              singleErr = e?.message || "Network error";
-            }
-            if (attempt < 2) await new Promise((r) => setTimeout(r, 150));
-          }
-
-          if (singleSuccess) {
-            setDocuments((prev) =>
-              prev.map((d) => (d.id === c.doc.id ? { ...d, isPendingSync: false } : d))
-            );
-            completedCounter++;
-          } else {
-            failedCounter++;
-            failedCollector.push({ doc: c.doc, file: c.file, error: singleErr });
-          }
-        }
+        failedCounter++;
+        failedCollector.push({ doc: item.doc, file: item.file, error: lastErr });
       }
 
-      // Smooth progress update
+      // Immediate real-time progress update for EVERY single file
       setBatchUploadProgress((prev) =>
         prev
           ? {
@@ -4743,7 +5014,7 @@ export function SigningWorkspace() {
       showNotif(`✓ All ${newDocs.length} documents uploaded and synced to Turso Cloud repository!`);
       setTimeout(() => {
         setBatchUploadProgress((curr) => (curr?.failedCount === 0 ? null : curr));
-      }, 4000);
+      }, 3500);
     } else {
       showNotif(`⚠️ ${failedCounter} file(s) encountered network issues. Click 'Retry Failed' in progress bar to re-sync.`);
       setBatchUploadProgress((prev) =>
@@ -4777,123 +5048,100 @@ export function SigningWorkspace() {
     const activeUserId = String(activeUser?.id || "USER-001");
     const activeEmpId = String(activeUser?.employeeId || "EMP-001");
 
-    const BATCH_CHUNK_SIZE = 4;
-    const chunks: (typeof toRetry)[] = [];
-    for (let i = 0; i < toRetry.length; i += BATCH_CHUNK_SIZE) {
-      chunks.push(toRetry.slice(i, i + BATCH_CHUNK_SIZE));
-    }
+    await asyncPool(2, toRetry, async (item) => {
+      let dataUrl = item.doc.pdfDataUrl;
+      if (!dataUrl && item.file) {
+        try {
+          dataUrl = await fileToDataUrl(item.file);
+          item.doc.pdfDataUrl = dataUrl;
+        } catch {}
+      }
 
-    await asyncPool(2, chunks, async (chunk, chunkIdx) => {
-      const isLastChunk = chunkIdx === chunks.length - 1;
+      const originalFileName = item.file?.name || item.doc.fileName;
+      item.doc.fileName = originalFileName;
 
-      const chunkPayloads = await Promise.all(
-        chunk.map(async (item) => {
-          let dataUrl = item.doc.pdfDataUrl;
-          if (!dataUrl && item.file) {
-            try {
-              dataUrl = await fileToDataUrl(item.file);
-              item.doc.pdfDataUrl = dataUrl;
-            } catch {}
-          }
-
-          const originalFileName = item.file?.name || item.doc.fileName;
-          item.doc.fileName = originalFileName;
-
-          const uploadPayload = {
-            id: item.doc.id,
-            userId: activeUserId,
-            employeeName: item.doc.targetPersonnel,
-            employeeId: activeEmpId,
-            module: "SIGNING_WORKSPACE",
-            province: item.doc.province || userProv,
-            sectionDivision: "Regional Office V",
-            periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
-            month: new Date().getMonth() + 1,
-            year: new Date().getFullYear(),
-            scope: "full-month",
-            status: item.doc.status,
-            submittedDate: item.doc.uploadedAt,
-            pdfFileName: originalFileName,
-            pdfFileSize: item.doc.fileSize,
-            pdfDataUrl: dataUrl,
-            docType: "AR",
-            remarks: JSON.stringify({
-              originalFileName: originalFileName,
-              targetPersonnel: item.doc.targetPersonnel,
-              requiredSigners: item.doc.requiredSigners,
-              signers: item.doc.signers,
-              counterSigners: item.doc.counterSigners,
-              scannedInfo: item.doc.scannedInfo,
-              notes: item.doc.notes,
-            }),
-          };
-
-          return { payload: uploadPayload, doc: item.doc, file: item.file };
-        })
+      setBatchUploadProgress((prev) =>
+        prev
+          ? {
+              ...prev,
+              currentFileName: originalFileName,
+            }
+          : null
       );
 
-      let batchSuccess = false;
-      const chunkDocs = chunkPayloads.map((c) => ({
-        id: c.doc.id,
-        fileName: c.doc.fileName,
-        fileSize: c.doc.fileSize,
-        uploadedBy: c.doc.uploadedBy,
-        status: c.doc.status,
-        targetPersonnel: c.doc.targetPersonnel,
-        requiredSigners: c.doc.requiredSigners,
-        signers: c.doc.signers,
-        scannedInfo: c.doc.scannedInfo,
-        pdfDataUrl: (c.payload as any).pdfDataUrl,
-        province: c.doc.province,
-        notes: c.doc.notes,
-      }));
+      let itemSuccess = false;
+      let lastErr = "";
 
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          const res = await signingWorkspaceApi.saveBatch(chunkDocs);
+          const res = await signingWorkspaceApi.saveDocument({
+            id: item.doc.id,
+            fileName: originalFileName,
+            fileSize: item.doc.fileSize,
+            uploadedAt: item.doc.uploadedAt,
+            uploadedBy: item.doc.uploadedBy,
+            status: item.doc.status,
+            targetPersonnel: item.doc.targetPersonnel,
+            requiredSigners: item.doc.requiredSigners,
+            signers: item.doc.signers,
+            scannedInfo: item.doc.scannedInfo,
+            pdfDataUrl: dataUrl,
+            province: item.doc.province || userProv,
+            notes: item.doc.notes,
+          });
+
           if (res && res.success !== false) {
-            batchSuccess = true;
+            itemSuccess = true;
             break;
           }
-        } catch {}
-        if (attempt < 2) await new Promise((r) => setTimeout(r, 200));
-      }
-      dtrStorageApi.saveBatch(chunkPayloads.map((c) => c.payload), { isLastChunk }).catch(() => {});
-
-      if (batchSuccess) {
-        const succeededIds = new Set(chunkPayloads.map((c) => c.doc.id));
-        setDocuments((prev) =>
-          prev.map((d) => (succeededIds.has(d.id) ? { ...d, isPendingSync: false } : d))
-        );
-        reCompleted += chunkPayloads.length;
-      } else {
-        for (const c of chunkPayloads) {
-          let singleSuccess = false;
-          let singleErr = "";
-          for (let attempt = 1; attempt <= 2; attempt++) {
-            try {
-              const res = await dtrStorageApi.saveRecord(c.payload);
-              if (res && res.success !== false) {
-                singleSuccess = true;
-                break;
-              }
-              singleErr = res?.error || `Upload failed on attempt ${attempt}`;
-            } catch (e: any) {
-              singleErr = e?.message || "Network error";
-            }
-            if (attempt < 2) await new Promise((r) => setTimeout(r, 150));
-          }
-
-          if (singleSuccess) {
-            setDocuments((prev) =>
-              prev.map((d) => (d.id === c.doc.id ? { ...d, isPendingSync: false } : d))
-            );
-            reCompleted++;
-          } else {
-            reFailed++;
-            stillFailed.push({ doc: c.doc, file: c.file, error: singleErr });
-          }
+          lastErr = res?.error || `Upload failed on attempt ${attempt}`;
+        } catch (e: any) {
+          lastErr = e?.message || "Network error";
         }
+
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 150));
+        }
+      }
+
+      const uploadPayload = {
+        id: item.doc.id,
+        userId: activeUserId,
+        employeeName: item.doc.targetPersonnel,
+        employeeId: activeEmpId,
+        module: "SIGNING_WORKSPACE",
+        province: item.doc.province || userProv,
+        sectionDivision: "Regional Office V",
+        periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+        month: new Date().getMonth() + 1,
+        year: new Date().getFullYear(),
+        scope: "full-month",
+        status: item.doc.status,
+        submittedDate: item.doc.uploadedAt,
+        pdfFileName: originalFileName,
+        pdfFileSize: item.doc.fileSize,
+        pdfDataUrl: dataUrl,
+        docType: "AR",
+        remarks: JSON.stringify({
+          originalFileName,
+          targetPersonnel: item.doc.targetPersonnel,
+          requiredSigners: item.doc.requiredSigners,
+          signers: item.doc.signers,
+          counterSigners: item.doc.counterSigners,
+          scannedInfo: item.doc.scannedInfo,
+          notes: item.doc.notes,
+        }),
+      };
+      dtrStorageApi.saveRecord(uploadPayload).catch(() => {});
+
+      if (itemSuccess) {
+        setDocuments((prev) =>
+          prev.map((d) => (d.id === item.doc.id ? { ...d, isPendingSync: false } : d))
+        );
+        reCompleted++;
+      } else {
+        reFailed++;
+        stillFailed.push({ doc: item.doc, file: item.file, error: lastErr });
       }
 
       setBatchUploadProgress((prev) =>
@@ -5274,7 +5522,7 @@ export function SigningWorkspace() {
   // ─── Filtered & Paginated List for 100-200 Files ─────────────────────────────
 
   const filtered = useMemo(() => {
-    return documents.filter((d) => {
+    const list = documents.filter((d) => {
       const matchSearch =
         !searchQuery ||
         (d.fileObj?.name || d.fileName).toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -5285,6 +5533,7 @@ export function SigningWorkspace() {
       const matchStatus = statusFilter === "all" || effectiveStatus === statusFilter;
       return matchSearch && matchStatus;
     });
+    return sortDocumentsLatestFirst(list);
   }, [documents, searchQuery, statusFilter]);
 
   // Reset page when filter changes
@@ -5602,7 +5851,7 @@ export function SigningWorkspace() {
                 <div className="flex items-center gap-2">
                   <h3 className="text-xs sm:text-sm font-bold text-white">
                     {batchUploadProgress.inFlight
-                      ? "Turbo Batch Sync in Progress (Boosted Micro-Chunks)"
+                      ? "Turbo Batch Sync in Progress (Live Cloud Streaming)"
                       : batchUploadProgress.failedCount > 0
                       ? "Batch Upload Finished with Some Network Retries"
                       : "Batch Upload & Sync 100% Completed"}
@@ -5613,10 +5862,12 @@ export function SigningWorkspace() {
                 </div>
                 <p className="text-[10px] sm:text-[11px] text-slate-400">
                   {batchUploadProgress.inFlight
-                    ? "Direct streaming to Turso Cloud repository • Zero UI blocking"
+                    ? batchUploadProgress.currentFileName
+                      ? `Syncing to Turso Cloud: ${batchUploadProgress.currentFileName} • Documents ready to sign below`
+                      : "Direct streaming to Turso Cloud repository • Documents ready to sign below"
                     : batchUploadProgress.failedCount > 0
-                    ? `${batchUploadProgress.failedCount} file(s) failed after 3 retries due to connection timeout.`
-                    : "All documents successfully verified, stored, and ready for digital signing."}
+                    ? `${batchUploadProgress.failedCount} file(s) encountered network timeout, but documents are ready locally. Tap 'Retry Failed' or sign now.`
+                    : "All documents successfully synced with Turso Cloud and ready for digital signing."}
                 </p>
               </div>
             </div>
@@ -5632,16 +5883,14 @@ export function SigningWorkspace() {
                   <span>Retry Failed ({batchUploadProgress.failedCount})</span>
                 </button>
               )}
-              {!batchUploadProgress.inFlight && (
-                <button
-                  type="button"
-                  onClick={() => setBatchUploadProgress(null)}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-                  title="Dismiss Progress Banner"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setBatchUploadProgress(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                title={batchUploadProgress.inFlight ? "Dismiss banner (sync continues in background)" : "Dismiss Progress Banner"}
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
           </div>
 

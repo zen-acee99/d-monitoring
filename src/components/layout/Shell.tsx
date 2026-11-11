@@ -1,8 +1,10 @@
 import React from "react";
 import { Sidebar } from "./Sidebar";
 import { Header } from "./Header";
+import { usePresenceHeartbeat } from "@/services/presenceService";
 
 export function Shell({ children }: { children: React.ReactNode }) {
+  usePresenceHeartbeat();
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(false);
 
   return (

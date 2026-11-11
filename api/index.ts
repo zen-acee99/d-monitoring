@@ -13,6 +13,7 @@ import { openTimeClockRouter } from "../server/routes/openTimeClock.js";
 import { modulesRouter } from "../server/routes/modules.js";
 import { usersRouter } from "../server/routes/users.js";
 import { omadaRouter } from "../server/routes/omada.js";
+import { signingWorkspaceRouter } from "../server/routes/signingWorkspace.js";
 
 dotenv.config();
 
@@ -247,6 +248,7 @@ apiRouter.use("/dtr-schedule-settings", dtrScheduleSettingsRouter);
 apiRouter.use("/opentimeclock", openTimeClockRouter);
 apiRouter.use("/dtr-storage", dtrStorageRouter);
 apiRouter.use("/dtr/storage", dtrStorageRouter);
+apiRouter.use("/signing-workspace", signingWorkspaceRouter);
 apiRouter.use("/modules", modulesRouter);
 apiRouter.use("/omada", omadaRouter);
 apiRouter.use("/", projectsRouter);

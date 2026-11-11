@@ -184,7 +184,7 @@ dtrStorageRouter.get("/", async (req: Request, res: Response) => {
       sql += " WHERE " + conditions.join(" AND ");
     }
 
-    sql += " ORDER BY created_at DESC, id DESC";
+    sql += " ORDER BY COALESCE(submitted_date, created_at) DESC, created_at DESC, id DESC";
 
     const result = await db.execute({ sql, args });
     const records = result.rows.map(formatDtrStorageRow);

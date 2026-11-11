@@ -136,7 +136,7 @@ signingWorkspaceRouter.get("/", async (req: Request, res: Response) => {
       sql += " WHERE " + conditions.join(" AND ");
     }
 
-    sql += " ORDER BY created_at DESC, id DESC";
+    sql += " ORDER BY COALESCE(uploaded_at, created_at) DESC, created_at DESC, id DESC";
 
     const result = await db.execute({ sql, args });
     const documents = result.rows.map((r) => formatSigningDocRow(r, includePdf));
@@ -175,6 +175,7 @@ signingWorkspaceRouter.post("/", async (req: Request, res: Response) => {
     const id = String(body.id || `doc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
     const fileName = String(body.fileName || body.file_name || body.pdfFileName || "Document.pdf");
     const fileSize = String(body.fileSize || body.file_size || body.pdfFileSize || "");
+    const uploadedAt = body.uploadedAt || body.uploaded_at || null;
     const uploadedBy = String(body.uploadedBy || body.uploaded_by || "System");
     const status = String(body.status || "pending");
     const targetPersonnel = String(body.targetPersonnel || body.target_personnel || body.employeeName || "PERSONNEL");
@@ -190,14 +191,15 @@ signingWorkspaceRouter.post("/", async (req: Request, res: Response) => {
 
     await db.execute({
       sql: `INSERT INTO signing_workspace_documents (
-        id, file_name, file_size, uploaded_by, status, target_personnel,
+        id, file_name, file_size, uploaded_at, uploaded_by, status, target_personnel,
         required_signers, signers_matrix, scanned_info, pdf_data,
         province, section_division, notes, has_p12, signature_image,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ) VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       ON CONFLICT(id) DO UPDATE SET
         file_name = excluded.file_name,
         file_size = excluded.file_size,
+        uploaded_at = COALESCE(excluded.uploaded_at, signing_workspace_documents.uploaded_at),
         status = excluded.status,
         target_personnel = excluded.target_personnel,
         required_signers = excluded.required_signers,
@@ -214,6 +216,7 @@ signingWorkspaceRouter.post("/", async (req: Request, res: Response) => {
         id,
         fileName,
         fileSize,
+        uploadedAt,
         uploadedBy,
         status,
         targetPersonnel,
@@ -233,6 +236,7 @@ signingWorkspaceRouter.post("/", async (req: Request, res: Response) => {
       id,
       fileName,
       fileSize,
+      uploadedAt: uploadedAt || new Date().toISOString(),
       uploadedBy,
       status,
       targetPersonnel,
@@ -262,6 +266,7 @@ signingWorkspaceRouter.post("/batch", async (req: Request, res: Response) => {
       const id = String(doc.id || `doc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
       const fileName = String(doc.fileName || doc.file_name || doc.pdfFileName || "Document.pdf");
       const fileSize = String(doc.fileSize || doc.file_size || doc.pdfFileSize || "");
+      const uploadedAt = doc.uploadedAt || doc.uploaded_at || null;
       const uploadedBy = String(doc.uploadedBy || doc.uploaded_by || "System");
       const status = String(doc.status || "pending");
       const targetPersonnel = String(doc.targetPersonnel || doc.target_personnel || doc.employeeName || "PERSONNEL");
@@ -277,14 +282,15 @@ signingWorkspaceRouter.post("/batch", async (req: Request, res: Response) => {
 
       await db.execute({
         sql: `INSERT INTO signing_workspace_documents (
-          id, file_name, file_size, uploaded_by, status, target_personnel,
+          id, file_name, file_size, uploaded_at, uploaded_by, status, target_personnel,
           required_signers, signers_matrix, scanned_info, pdf_data,
           province, section_division, notes, has_p12, signature_image,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ) VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON CONFLICT(id) DO UPDATE SET
           file_name = excluded.file_name,
           file_size = excluded.file_size,
+          uploaded_at = COALESCE(excluded.uploaded_at, signing_workspace_documents.uploaded_at),
           status = excluded.status,
           target_personnel = excluded.target_personnel,
           required_signers = excluded.required_signers,
@@ -301,6 +307,7 @@ signingWorkspaceRouter.post("/batch", async (req: Request, res: Response) => {
           id,
           fileName,
           fileSize,
+          uploadedAt,
           uploadedBy,
           status,
           targetPersonnel,
@@ -316,7 +323,7 @@ signingWorkspaceRouter.post("/batch", async (req: Request, res: Response) => {
         ],
       });
 
-      savedRecords.push({ id, fileName, status });
+      savedRecords.push({ id, fileName, status, uploadedAt: uploadedAt || new Date().toISOString() });
     }
 
     broadcastSigningWorkspaceEvent({ type: "BATCH", batchCount: savedRecords.length });

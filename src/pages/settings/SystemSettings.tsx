@@ -45,8 +45,10 @@ import {
   Phone,
   Mail,
   User,
-  CheckCircle
+  CheckCircle,
+  Radio
 } from "lucide-react";
+import { OnlineUsersModule } from "./OnlineUsersModule";
 import { PROJECTS } from "@/config/projects";
 import { getStoredUsers, saveStoredUsers, UserRecord } from "@/data/userStore";
 import { UserModal, ROLE_OPTIONS, REGION_OPTIONS } from "@/components/users/UserModal";
@@ -96,7 +98,7 @@ const ToggleSwitch: React.FC<{
 export function SystemSettings({
   defaultTab,
 }: {
-  defaultTab?: "directory" | "modules" | "schedule" | "profile";
+  defaultTab?: "directory" | "modules" | "schedule" | "profile" | "online_users";
 } = {}) {
   const [currentUser, setCurrentUserSession] = useState(() => getCurrentUser());
   const currentUserEmail = (currentUser?.email || "").toLowerCase().trim();
@@ -122,7 +124,10 @@ export function SystemSettings({
   const canGlobalEdit = isSuperAdminOrDirector || (currentUser?.canEdit && hasModuleAccess(currentUser, "MOD_ADMIN"));
 
   const [users, setUsers] = useState<UserRecord[]>([]);
-  const [activeTab, setActiveTab] = useState<"directory" | "modules" | "schedule" | "profile">(() => {
+  const [activeTab, setActiveTab] = useState<"directory" | "modules" | "schedule" | "profile" | "online_users">(() => {
+    if (requestedTab === "online_users" && isAceUser) {
+      return "online_users";
+    }
     if (requestedTab === "profile" || requestedTab === "modules" || requestedTab === "schedule" || requestedTab === "directory") {
       return requestedTab;
     }
@@ -131,10 +136,12 @@ export function SystemSettings({
 
   useEffect(() => {
     const tabParam = searchParams.get("tab");
-    if (tabParam === "profile" || tabParam === "modules" || tabParam === "schedule" || tabParam === "directory") {
+    if (tabParam === "online_users" && isAceUser) {
+      setActiveTab("online_users");
+    } else if (tabParam === "profile" || tabParam === "modules" || tabParam === "schedule" || tabParam === "directory") {
       setActiveTab(tabParam as any);
     }
-  }, [searchParams]);
+  }, [searchParams, isAceUser]);
 
   // Personnel Profile & PNPKI .p12 Keystore State
   const [profileName, setProfileName] = useState(currentUser?.name || "");
@@ -1458,10 +1465,32 @@ export function SystemSettings({
             {isAceUser ? (isP12Unlocked ? "Verified" : p12File ? "Locked" : "Setup") : (signatureImage ? "Ready" : "Setup")}
           </span>
         </button>
+
+        {isAceUser && (
+          <button
+            type="button"
+            onClick={() => setActiveTab("online_users")}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+              activeTab === "online_users"
+                ? "bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-900/30"
+                : "bg-[#0C101D] text-slate-400 border border-[#18233C] hover:text-white hover:border-slate-700"
+            }`}
+          >
+            <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
+            Online Users (Who&apos;s Online)
+            <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/20 text-emerald-300 font-mono flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping inline-block" />
+              Live
+            </span>
+          </button>
+        )}
       </div>
 
-      {/* Main Table Container */}
-      <div className="bg-[#0C101D] border border-[#18233C] rounded-2xl overflow-hidden shadow-xl flex flex-col">
+      {activeTab === "online_users" && isAceUser ? (
+        <OnlineUsersModule isAceUser={isAceUser} />
+      ) : (
+        /* Main Table Container */
+        <div className="bg-[#0C101D] border border-[#18233C] rounded-2xl overflow-hidden shadow-xl flex flex-col">
         
         {/* Filter / Search Bar */}
         {activeTab === "modules" ? (
@@ -2870,6 +2899,7 @@ export function SystemSettings({
         )}
 
       </div>
+      )}
 
       {/* Delete Confirmation Dialog */}
       {deleteConfirmId && (

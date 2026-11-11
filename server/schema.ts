@@ -268,6 +268,16 @@ export const DEFAULT_MODULES = [
     route_path: "/signing-workspace",
     is_active: 1,
   },
+  {
+    id: "mod-online-users",
+    code: "MOD_ONLINE_USERS",
+    name: "Online Users & Live Presence Monitor",
+    shortName: "Online Users",
+    category: "Administration",
+    description: "Live real-time monitoring of online and offline personnel, active sessions, and client status (Super Admin only).",
+    route_path: "/settings/online-users",
+    is_active: 1,
+  },
   // Management Modules
   {
     id: "mod-project-data",
@@ -367,6 +377,7 @@ export async function initDatabase() {
     "ALTER TABLE administration ADD COLUMN auth_provider TEXT DEFAULT 'local';",
     "ALTER TABLE administration ADD COLUMN google_id TEXT;",
     "ALTER TABLE administration ADD COLUMN avatar_url TEXT;",
+    "ALTER TABLE administration ADD COLUMN last_active_at TEXT;",
     "ALTER TABLE users ADD COLUMN password TEXT;",
     "ALTER TABLE users ADD COLUMN focalProvince TEXT;",
     "ALTER TABLE users ADD COLUMN pnpkiRole TEXT;",
@@ -374,6 +385,7 @@ export async function initDatabase() {
     "ALTER TABLE users ADD COLUMN auth_provider TEXT DEFAULT 'local';",
     "ALTER TABLE users ADD COLUMN google_id TEXT;",
     "ALTER TABLE users ADD COLUMN avatar_url TEXT;",
+    "ALTER TABLE users ADD COLUMN last_active_at TEXT;",
   ]) {
     try {
       await db.execute(col);
@@ -681,6 +693,30 @@ export async function initDatabase() {
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_sw_docs_status ON signing_workspace_documents(status);`);
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_sw_docs_uploaded_at ON signing_workspace_documents(uploaded_at);`);
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_sw_docs_target ON signing_workspace_documents(target_personnel);`);
+  } catch {}
+
+  // 3e. Create dedicated user_presence table (for live online/offline tracking)
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS user_presence (
+      user_id TEXT PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      role TEXT,
+      region TEXT,
+      avatar_url TEXT,
+      is_online INTEGER DEFAULT 0,
+      last_active_at TEXT NOT NULL,
+      last_login_at TEXT,
+      current_page TEXT,
+      user_agent TEXT,
+      ip_address TEXT,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  try {
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_user_presence_email ON user_presence(email);`);
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_user_presence_online ON user_presence(is_online);`);
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_user_presence_active ON user_presence(last_active_at);`);
   } catch {}
 
   // 4. Create module table (Module management, specific module codes, and active/deactive status)

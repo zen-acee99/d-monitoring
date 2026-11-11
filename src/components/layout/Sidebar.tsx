@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { getCurrentUser, setCurrentUser, hasModuleAccess, AUTH_EVENT, refreshCurrentUser, refreshSystemModules, getCachedSystemModules } from "@/services/authStore";
 import { UserRecord } from "@/data/userStore";
 import { signOutGoogle } from "@/services/firebaseAuth";
+import { notifyLogout } from "@/services/presenceService";
 import { SystemModule } from "@/services/api";
 import { getDtrStorage, syncDtrStorageWithBackend } from "@/data/dtrStorage";
 
@@ -76,6 +77,18 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
       ]
     : mainNav;
 
+  const effectiveSettingsNav = isAceUser
+    ? [
+        ...settingsNav,
+        {
+          name: "Online Users",
+          path: "/settings/online-users",
+          icon: Radio,
+          code: "MOD_ADMIN",
+        },
+      ]
+    : settingsNav;
+
   const updateDtrCounts = () => {
     try {
       const records = getDtrStorage();
@@ -89,6 +102,9 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
   };
 
   const handleLogout = async () => {
+    try {
+      await notifyLogout(userEmail);
+    } catch {}
     try {
       await signOutGoogle();
     } catch {}
@@ -450,10 +466,12 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
         <div>
           <h4 className="px-4 text-[10px] font-semibold text-slate-500 tracking-wider mb-2">SETTINGS</h4>
           <div className="space-y-0.5">
-            {settingsNav.map((item) => {
+            {effectiveSettingsNav.map((item) => {
               const displayName = item.path === "/settings/profile" && !isAceUser ? "My Profile" : item.name;
               const isActive = location.pathname.startsWith(item.path);
               const hasAccess = hasModuleAccess(currentUser, item.code);
+              const isOnlineUsers = item.path === "/settings/online-users";
+
               return (
                 <Link
                   key={item.name}
@@ -471,13 +489,32 @@ export function Sidebar({ isOpen, setIsOpen }: any) {
                     !hasAccess
                       ? "text-slate-500/60 opacity-50 cursor-not-allowed hover:bg-transparent border border-transparent"
                       : isActive
-                      ? "bg-gradient-to-r from-purple-600/20 to-transparent text-purple-400 border border-purple-500/30 cursor-pointer"
+                      ? isOnlineUsers
+                        ? "bg-gradient-to-r from-emerald-600/20 to-transparent text-emerald-400 border border-emerald-500/30 cursor-pointer"
+                        : "bg-gradient-to-r from-purple-600/20 to-transparent text-purple-400 border border-purple-500/30 cursor-pointer"
                       : "text-slate-400 hover:bg-white/5 hover:text-white border border-transparent cursor-pointer"
                   )}
                 >
-                  {isActive && hasAccess && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-purple-500 rounded-r-full shadow-[0_0_10px_rgba(168,85,247,0.8)]" />}
+                  {isActive && hasAccess && (
+                    <div
+                      className={cn(
+                        "absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 rounded-r-full",
+                        isOnlineUsers
+                          ? "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.8)]"
+                          : "bg-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.8)]"
+                      )}
+                    />
+                  )}
                   <item.icon className="h-[18px] w-[18px] shrink-0" />
                   <span className="truncate">{displayName}</span>
+
+                  {isOnlineUsers && (
+                    <span className="ml-auto flex h-2 w-2 relative">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                    </span>
+                  )}
+
                   {!hasAccess && (
                     <Lock className="w-3.5 h-3.5 ml-auto text-amber-500/80 shrink-0" />
                   )}
