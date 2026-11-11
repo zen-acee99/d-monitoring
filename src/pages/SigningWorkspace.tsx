@@ -836,6 +836,7 @@ function DocumentPreviewModal({
   onDownload,
   onShowValidationStatus,
   currentUser,
+  activeKeystore,
 }: {
   doc: WorkspaceDocument | null;
   onClose: () => void;
@@ -844,6 +845,7 @@ function DocumentPreviewModal({
   onDownload?: (doc: WorkspaceDocument) => void;
   onShowValidationStatus?: (signerName: string, date?: string) => void;
   currentUser: any;
+  activeKeystore?: any;
 }) {
   const [zoom, setZoom] = useState(100);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
@@ -1040,8 +1042,15 @@ function DocumentPreviewModal({
 
   const effectiveStatus = computeEffectiveDocStatus(doc);
   const sc = statusConfig[effectiveStatus] || statusConfig.pending;
-  const userIsRequired = isUserAuthorizedToSignDoc(doc, currentUser);
-  const userHasSigned = hasUserAlreadySigned(doc, currentUser?.name);
+  const effectiveSignerUser = useMemo(() => {
+    if (activeKeystore?.signerName) {
+      return { ...currentUser, name: activeKeystore.signerName };
+    }
+    return currentUser;
+  }, [currentUser, activeKeystore]);
+  const effectiveSignerName = effectiveSignerUser?.name || "";
+  const userIsRequired = isUserAuthorizedToSignDoc(doc, effectiveSignerUser);
+  const userHasSigned = hasUserAlreadySigned(doc, effectiveSignerName);
   const isAllRequiredSigned = effectiveStatus === "signed";
 
   // Group signers matching DICT standard layout (PREPARED BY, REVIEWED BY, NOTED BY, ARD, REGIONAL DIRECTOR)
@@ -1367,7 +1376,7 @@ function DocumentPreviewModal({
             {userHasSigned ? (
               <span className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-1.5">
                 <BadgeCheck className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Signed by You</span>
+                <span>Signed as {activeKeystore?.signerName ? fixMojibake(activeKeystore.signerName).split(" ")[0] : "You"}</span>
               </span>
             ) : isAllRequiredSigned ? (
               <span className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-1.5">
@@ -1380,10 +1389,10 @@ function DocumentPreviewModal({
                   type="button"
                   onClick={() => onSign(doc.id)}
                   className="flex items-center gap-1.5 px-3 sm:px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white text-xs font-bold transition-all shadow-md active:scale-95 cursor-pointer"
-                  title="You are a required signer in this document. Places signature ABOVE your name."
+                  title={`Sign directly above name using active PNPKI keystore (${effectiveSignerName})`}
                 >
                   <PenLine className="w-3.5 h-3.5" />
-                  <span>Sign (Above Name)</span>
+                  <span>Sign as {activeKeystore?.signerName ? fixMojibake(activeKeystore.signerName).split(" ")[0] : "Above Name"}</span>
                 </button>
               )
             ) : (
@@ -4218,9 +4227,11 @@ export function SigningWorkspace() {
       } catch {}
     }
 
-    // Signer name: strictly targetSignerName if specified (e.g. Super Admin bulk signing as another user)
+    // Signer name: strictly targetSignerName if specified (e.g. Super Admin bulk signing as another user),
+    // OR if Super Admin (Ace) has activated a specific PNPKI keystore in the modal, sign as that activated keystore!
     const effectiveSignerName = (
       targetSignerName ||
+      (isAceUser && activeKeystore?.signerName ? activeKeystore.signerName : null) ||
       currentUserName ||
       liveUser?.name ||
       "Authorized Signer"
@@ -4236,7 +4247,7 @@ export function SigningWorkspace() {
         userSigProfile =
           all.find(
             (p) =>
-              (!targetSignerName && liveUser?.id && (String(p.user_Id) === String(liveUser.id) || p.id === `dtr-sig-${liveUser.id}`)) ||
+              (activeKeystore?.profileId && (p.id === activeKeystore.profileId || String(p.user_Id) === String(activeKeystore.userId))) ||
               matchNames(p.Name, effectiveSignerName) ||
               normalizeName(p.Name) === normalizeName(effectiveSignerName) ||
               (p.Name && effectiveSignerName && p.Name.toLowerCase().includes(effectiveSignerName.toLowerCase()))
@@ -4248,8 +4259,8 @@ export function SigningWorkspace() {
       console.warn("Could not load digital signature profile:", err);
     }
 
-    // Signature image: check chosen user's profile first
-    let signatureImage = userSigProfile?.image_digiSigned || null;
+    // Signature image: check activeKeystore first, then chosen user's profile
+    let signatureImage = activeKeystore?.signatureImage || userSigProfile?.image_digiSigned || null;
     const isReneJane =
       matchNames(effectiveSignerName, "Rene Jane Rosendo Buena") ||
       matchNames(effectiveSignerName, "Rene Jane R. Buena") ||
@@ -4276,17 +4287,18 @@ export function SigningWorkspace() {
     }
 
     // Determine P12 cryptographic keystore:
-    // 1. Signatory's own P12 if uploaded in database
-    // 2. Active keystore if SuperAdmin unlocked one in the PNPKI modal
+    // 1. Active keystore if SuperAdmin unlocked one in the PNPKI modal
+    // 2. Signatory's own P12 if uploaded in database
     // 3. Fallback keystore profile
-    const chosenP12Profile = (userSigProfile?.hasP12 || userSigProfile?.p12)
-      ? userSigProfile
-      : (activeKeystore?.p12Base64 || activeKeystore?.profileId)
+    const chosenP12Profile = (activeKeystore?.p12Base64 || activeKeystore?.profileId)
       ? activeKeystore
+      : (userSigProfile?.hasP12 || userSigProfile?.p12)
+      ? userSigProfile
       : fallbackKeystoreProfile;
 
     const hasP12Available = Boolean(
       activeKeystore?.p12Base64 ||
+      activeKeystore?.profileId ||
       chosenP12Profile?.p12Base64 ||
       chosenP12Profile?.p12 ||
       chosenP12Profile?.hasP12
@@ -4294,10 +4306,10 @@ export function SigningWorkspace() {
 
     const p12Options = hasP12Available
       ? {
-          profileId: userSigProfile?.p12 ? userSigProfile.id : (chosenP12Profile?.id || activeKeystore?.profileId),
-          user_Id: userSigProfile?.p12 ? userSigProfile.user_Id : (chosenP12Profile?.user_Id || activeKeystore?.userId),
+          profileId: activeKeystore?.profileId || (userSigProfile?.p12 ? userSigProfile.id : chosenP12Profile?.id),
+          user_Id: activeKeystore?.userId || (userSigProfile?.p12 ? userSigProfile.user_Id : chosenP12Profile?.user_Id),
           p12Base64: activeKeystore?.p12Base64 || userSigProfile?.p12 || chosenP12Profile?.p12 || undefined,
-          p12Password: activeKeystore?.p12Password,
+          p12Password: activeKeystore?.p12Password || userSigProfile?.p12_password,
           signerName: effectiveSignerName, // strictly the chosen user name
           signerRole: "supervisor" as const,
         }
@@ -4334,8 +4346,11 @@ export function SigningWorkspace() {
     try {
       const liveUser = getCurrentUser() || currentUser;
       const currentUserName = (liveUser?.name || "").trim();
-      const asSigner = options?.asSignerName?.trim();
-      const isReq = asSigner ? true : isUserAuthorizedToSignDoc(doc, liveUser || currentUser);
+      const activeKeystore = isAceUser ? activeKeystoreProfile : null;
+      const effectiveSignerFromActiveKs = isAceUser && activeKeystore?.signerName ? activeKeystore.signerName.trim() : null;
+      const asSigner = options?.asSignerName?.trim() || effectiveSignerFromActiveKs || undefined;
+      const effectiveUserForAuth = asSigner ? { ...liveUser, name: asSigner } : (liveUser || currentUser);
+      const isReq = asSigner ? true : isUserAuthorizedToSignDoc(doc, effectiveUserForAuth);
       const isCounter = options?.isCounterSign !== undefined ? options.isCounterSign : !isReq;
       const counterPos = options?.counterSignPosition || "above";
 
@@ -6319,8 +6334,11 @@ export function SigningWorkspace() {
                 {paginatedDocs.map((doc) => {
                   const effectiveStatus = computeEffectiveDocStatus(doc);
                   const sc = statusConfig[effectiveStatus];
-                  const userIsReq = isUserAuthorizedToSignDoc(doc, currentUser);
-                  const userSigned = hasUserAlreadySigned(doc, currentUser?.name);
+                  const effectiveSignerUser = (isAceUser && activeKeystoreProfile?.signerName)
+                    ? { ...currentUser, name: activeKeystoreProfile.signerName }
+                    : currentUser;
+                  const userIsReq = isUserAuthorizedToSignDoc(doc, effectiveSignerUser);
+                  const userSigned = hasUserAlreadySigned(doc, effectiveSignerUser?.name);
                   const isRecentUpload = isDocUploadedWithin5Minutes(doc, currentTime);
                   const completedSignersCount = (doc.requiredSigners || []).filter((reqName) => {
                     const sObj = doc.signers?.find(
@@ -6475,7 +6493,7 @@ export function SigningWorkspace() {
                           {userSigned ? (
                             <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 text-xs font-bold">
                               <BadgeCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                              <span>Signed by You</span>
+                              <span>Signed as {activeKeystoreProfile?.signerName ? fixMojibake(activeKeystoreProfile.signerName).split(" ")[0] : "You"}</span>
                             </span>
                           ) : isAllRequiredSigned ? (
                             <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 text-xs font-bold">
@@ -6489,7 +6507,7 @@ export function SigningWorkspace() {
                               className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-bold text-xs shadow-md transition-all cursor-pointer active:scale-95"
                             >
                               <PenLine className="w-3.5 h-3.5 shrink-0" />
-                              <span>Sign (Above Name)</span>
+                              <span>Sign as {activeKeystoreProfile?.signerName ? fixMojibake(activeKeystoreProfile.signerName).split(" ")[0] : "Above Name"}</span>
                             </button>
                           ) : (
                             <button
@@ -6581,8 +6599,11 @@ export function SigningWorkspace() {
                     {paginatedDocs.map((doc) => {
                     const effectiveStatus = computeEffectiveDocStatus(doc);
                     const sc = statusConfig[effectiveStatus];
-                    const userIsReq = isUserAuthorizedToSignDoc(doc, currentUser);
-                    const userSigned = hasUserAlreadySigned(doc, currentUser?.name);
+                    const effectiveSignerUser = (isAceUser && activeKeystoreProfile?.signerName)
+                      ? { ...currentUser, name: activeKeystoreProfile.signerName }
+                      : currentUser;
+                    const userIsReq = isUserAuthorizedToSignDoc(doc, effectiveSignerUser);
+                    const userSigned = hasUserAlreadySigned(doc, effectiveSignerUser?.name);
                     const isRecentUpload = isDocUploadedWithin5Minutes(doc, currentTime);
 
                     const completedSignersCount = (doc.requiredSigners || []).filter((reqName) => {
@@ -6760,7 +6781,7 @@ export function SigningWorkspace() {
                           {userSigned ? (
                             <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 text-[11px] font-bold">
                               <BadgeCheck className="w-3.5 h-3.5 text-emerald-400" />
-                              Signed by You
+                              Signed as {activeKeystoreProfile?.signerName ? fixMojibake(activeKeystoreProfile.signerName).split(" ")[0] : "You"}
                             </span>
                           ) : isAllRequiredSigned ? (
                             <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 text-[11px] font-bold">
@@ -6772,10 +6793,10 @@ export function SigningWorkspace() {
                               type="button"
                               onClick={() => handleSignSingle(doc.id)}
                               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-bold text-xs shadow-md transition-all cursor-pointer active:scale-95"
-                              title="You are in the required signers list. Places digital signature stamp ABOVE personnel name."
+                              title={`Places digital signature stamp ABOVE personnel name as ${effectiveSignerUser.name}.`}
                             >
                               <PenLine className="w-3.5 h-3.5" />
-                              <span>Sign (Above)</span>
+                              <span>Sign as {activeKeystoreProfile?.signerName ? fixMojibake(activeKeystoreProfile.signerName).split(" ")[0] : "Above"}</span>
                             </button>
                           ) : (
                             <button
@@ -6905,6 +6926,7 @@ export function SigningWorkspace() {
           onDownload={handleDownload}
           onShowValidationStatus={handleOpenValidationModal}
           currentUser={currentUser}
+          activeKeystore={activeKeystoreProfile}
         />
       )}
 
