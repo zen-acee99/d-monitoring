@@ -234,9 +234,11 @@ html[data-theme="light"] .glass-panel {
     print-color-adjust: exact !important;
   }
 
-  /* Force hide all non-printable UI */
+  /* Force hide all non-printable UI and falling snow canvas */
   .print-hidden,
-  .print\:hidden {
+  .print\:hidden,
+  [data-falling-snow],
+  canvas[data-falling-snow] {
     display: none !important;
   }
 

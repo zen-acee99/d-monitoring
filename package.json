@@ -4,15 +4,20 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -p \"[{name}]\" -n \"SERVER,CLIENT\" -c \"cyan.bold,magenta.bold\" \"npm run server:dev\" \"npm run client\"",
+    "dev": "concurrently -k -p \"[{name}]\" -n \"MON-SRV,MON-WEB,DTR-SRV,DTR-WEB,LB\" -c \"cyan.bold,magenta.bold,blue.bold,green.bold,yellow.bold\" \"npm run server:dev\" \"npm run client\" \"npm --prefix ../dict-dtr-generator run server:dev\" \"npm --prefix ../dict-dtr-generator run client\" \"npm run lb\"",
+    "dev:single": "concurrently -k -p \"[{name}]\" -n \"SERVER,CLIENT,LB\" -c \"cyan.bold,magenta.bold,yellow.bold\" \"npm run server:dev\" \"npm run client\" \"npm run lb\"",
     "client": "vite --port=3000 --host=0.0.0.0",
     "server": "tsx server/index.ts",
     "server:dev": "tsx watch server/index.ts",
-    "start": "concurrently -k -p \"[{name}]\" -n \"SERVER,CLIENT\" -c \"cyan.bold,magenta.bold\" \"npm run server\" \"npm run client\"",
-    "build": "vite build",
+    "lb": "tsx server/load-balancer.ts",
+    "lb:dev": "tsx watch server/load-balancer.ts",
+    "cluster": "concurrently -k -p \"[{name}]\" -n \"MON-SRV,MON-WEB,DTR-SRV,DTR-WEB,LB\" -c \"cyan.bold,magenta.bold,blue.bold,green.bold,yellow.bold\" \"npm run server\" \"npm run client\" \"npm --prefix ../dict-dtr-generator run server\" \"npm --prefix ../dict-dtr-generator run client\" \"npm run lb\"",
+    "cluster:dev": "concurrently -k -p \"[{name}]\" -n \"MON-SRV,MON-WEB,DTR-SRV,DTR-WEB,LB\" -c \"cyan.bold,magenta.bold,blue.bold,green.bold,yellow.bold\" \"npm run server:dev\" \"npm run client\" \"npm --prefix ../dict-dtr-generator run server:dev\" \"npm --prefix ../dict-dtr-generator run client\" \"npm run lb\"",
+    "start": "concurrently -k -p \"[{name}]\" -n \"MON-SRV,MON-WEB,DTR-SRV,DTR-WEB,LB\" -c \"cyan.bold,magenta.bold,blue.bold,green.bold,yellow.bold\" \"npm run server\" \"npm run client\" \"npm --prefix ../dict-dtr-generator run server\" \"npm --prefix ../dict-dtr-generator run client\" \"npm run lb\"",
+    "build": "node --max-old-space-size=4096 ./node_modules/vite/bin/vite.js build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc --noEmit"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -31,6 +36,7 @@
     "date-fns": "^4.4.0",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
+    "falling-snow": "^1.0.0",
     "ffmpeg-static": "^5.3.0",
     "firebase": "^12.18.0",
     "html2canvas": "^1.4.1",
@@ -63,5 +69,10 @@
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.3"
-  }
+  },
+  "description": "",
+  "main": "index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
 }

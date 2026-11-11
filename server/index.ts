@@ -14,6 +14,7 @@ import { modulesRouter } from "./routes/modules.js";
 import { usersRouter } from "./routes/users.js";
 import { omadaRouter } from "./routes/omada.js";
 import { omadaService } from "./services/omadaService.js";
+import { signingWorkspaceRouter } from "./routes/signingWorkspace.js";
 
 dotenv.config();
 
@@ -255,6 +256,7 @@ app.use("/api/dtr-schedule-settings", dtrScheduleSettingsRouter);
 app.use("/api/opentimeclock", openTimeClockRouter);
 app.use("/api/dtr-storage", dtrStorageRouter);
 app.use("/api/dtr/storage", dtrStorageRouter);
+app.use("/api/signing-workspace", signingWorkspaceRouter);
 app.use("/api/modules", modulesRouter);
 app.use("/api/omada", omadaRouter);
 app.use("/api", projectsRouter);

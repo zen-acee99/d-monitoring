@@ -238,8 +238,8 @@ export function detectSignatureCoordinatesForReneJane(
         return (
           u.includes("BUENA") ||
           u.includes("RENE JANE") ||
-          (u.includes("APPROVED BY") && it.x > width * 0.4) ||
-          (u.includes("PROVINCIAL OFFICER") && it.x > width * 0.4)
+          u.includes("APPROVED BY") ||
+          u.includes("PROVINCIAL OFFICER")
         );
       });
 
@@ -280,9 +280,8 @@ export function detectSignatureCoordinatesForReneJane(
       const u = item.text.toUpperCase();
       const isSupervisorName = u.includes("BUENA") && (u.includes("RENE") || u.includes("JANE"));
       const isApprovedBy =
-        (u.includes("APPROVED BY") || u.includes("APPROVED:") || u.includes("RECOMMENDING APPROVAL")) &&
-        item.x > width * 0.3;
-      const isProvincialOfficer = u.includes("PROVINCIAL OFFICER") && item.x > width * 0.3;
+        u.includes("APPROVED BY") || u.includes("APPROVED:") || u.includes("RECOMMENDING APPROVAL");
+      const isProvincialOfficer = u.includes("PROVINCIAL OFFICER");
 
       if (isSupervisorName || isApprovedBy || isProvincialOfficer) {
         const boxW = 195;

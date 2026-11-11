@@ -3799,7 +3799,7 @@ function DtrFormCopy({
                 />
               )}
               <div className="text-[7.5px] font-sans text-left leading-tight text-black">
-                <div className="font-bold text-[8px]">Digitally signed</div>
+                <div className="font-normal text-[8px]">Digitally signed</div>
                 <div>by {(p12SignerName || config.employeeName || "PERSONNEL").trim()}</div>
                 {config.includeDateTime !== false && (
                   <div className="text-[6.5px] font-mono text-slate-800">

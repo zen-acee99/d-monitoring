@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { Menu, ChevronDown, Download, LogOut, Sun, Moon, Check } from "lucide-react";
+import { Menu, ChevronDown, Download, LogOut, Sun, Moon, Check, Snowflake } from "lucide-react";
 import { getCurrentUser, setCurrentUser, AUTH_EVENT, getAllUsers } from "@/services/authStore";
 import { UserRecord } from "@/data/userStore";
 import { signOutGoogle } from "@/services/firebaseAuth";
 import { getTheme, toggleTheme, syncThemeFromDb, THEME_EVENT, AppTheme } from "@/services/themeStore";
+import { isSnowEnabled, toggleSnow, SNOW_EVENT } from "@/services/snowStore";
 
 export function Header({ onMenuClick }: { onMenuClick: () => void }) {
   const navigate = useNavigate();
@@ -13,7 +14,17 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
   const [theme, setThemeState] = useState<AppTheme>(() => getTheme());
   const [isSavingTheme, setIsSavingTheme] = useState(false);
   const [themeSavedBadge, setThemeSavedBadge] = useState(false);
+  const [snowActive, setSnowActive] = useState<boolean>(() => isSnowEnabled());
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleSnow = (e: Event) => {
+      const customEv = e as CustomEvent<boolean>;
+      setSnowActive(customEv.detail ?? isSnowEnabled());
+    };
+    window.addEventListener(SNOW_EVENT, handleSnow);
+    return () => window.removeEventListener(SNOW_EVENT, handleSnow);
+  }, []);
 
   useEffect(() => {
     syncThemeFromDb().then((dbTheme) => setThemeState(dbTheme));
@@ -90,6 +101,24 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
       </div>
 
       <div className="flex flex-1 items-center justify-end gap-3 sm:gap-4 max-w-2xl">
+        {/* Snowfall Effect Toggle */}
+        <button
+          type="button"
+          onClick={() => {
+            const next = toggleSnow();
+            setSnowActive(next);
+          }}
+          className={`flex items-center justify-center w-9 h-9 rounded-xl border transition-all cursor-pointer ${
+            snowActive
+              ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-400 hover:bg-cyan-500/25 shadow-[0_0_12px_rgba(6,182,212,0.25)]"
+              : "bg-[#111520] border-[#1A2235] text-slate-400 hover:bg-white/5 hover:text-slate-200"
+          }`}
+          title={snowActive ? "Falling Snow: ON (Click to disable)" : "Falling Snow: OFF (Click to enable)"}
+          aria-label="Toggle Falling Snow"
+        >
+          <Snowflake className={`w-4 h-4 ${snowActive ? "text-cyan-400" : "text-slate-400"}`} />
+        </button>
+
         {/* Dark / White Theme Toggle Button (Saved to Turso DB) */}
         <button
           type="button"

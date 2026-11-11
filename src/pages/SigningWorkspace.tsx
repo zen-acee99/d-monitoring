@@ -36,8 +36,14 @@ import {
   Table as TableIcon,
 } from "lucide-react";
 import { getCurrentUser, AUTH_EVENT } from "@/services/authStore";
-import { getStoredUsers } from "@/data/userStore";
-import { dtrGeneratorApi, dtrStorageApi, DtrGeneratorSignatureRecord } from "@/services/api";
+import { getStoredUsers, UserRecord } from "@/data/userStore";
+import {
+  dtrGeneratorApi,
+  dtrStorageApi,
+  signingWorkspaceApi,
+  subscribeToSigningWorkspaceRealtime,
+  DtrGeneratorSignatureRecord,
+} from "@/services/api";
 import {
   matchNames,
   signUploadedPersonnelPdfBytes,
@@ -168,6 +174,8 @@ export function isUserSuperAdmin(user: any): boolean {
     designation === "administrator" ||
     designation.includes("system administrator") ||
     (user as any).isSuperAdmin === true ||
+    email === "ace.malto@dict.gov.ph" ||
+    email === "acemm.1599@gmail.com" ||
     email.startsWith("admin@") ||
     name === "super admin" ||
     name === "super administrator" ||
@@ -553,7 +561,7 @@ function DocumentPreviewModal({
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [isLoadingPdf, setIsLoadingPdf] = useState(false);
   const [activeTab, setActiveTab] = useState<"viewer" | "signatures">("viewer");
-  const [selectedCounterPos, setSelectedCounterPos] = useState<CounterSignPosition>("auto");
+  const [selectedCounterPos, setSelectedCounterPos] = useState<CounterSignPosition>("above");
 
   // Dynamically resolve signatories with latest User List
   const doc = useMemo(() => {
@@ -659,23 +667,42 @@ function DocumentPreviewModal({
     let createdUrl: string | null = null;
     setIsLoadingPdf(true);
 
-    dtrStorageApi
-      .getRecord(rawDoc.id)
-      .then((fullRec) => {
-        if (!isCancelled && fullRec && fullRec.pdfDataUrl) {
-          rawDoc.pdfDataUrl = fullRec.pdfDataUrl;
-          createdUrl = safeCreateBlobUrl(fullRec.pdfDataUrl);
+    const loadPdfOnDemand = async () => {
+      try {
+        let pdfData: string | undefined;
+        try {
+          const docRes = await signingWorkspaceApi.getDocument(rawDoc.id);
+          if (docRes && (docRes.pdfDataUrl || docRes.pdf_data)) {
+            pdfData = docRes.pdfDataUrl || docRes.pdf_data;
+          }
+        } catch {}
+
+        if (!pdfData) {
+          try {
+            const fullRec = await dtrStorageApi.getRecord(rawDoc.id);
+            if (fullRec && fullRec.pdfDataUrl) {
+              pdfData = fullRec.pdfDataUrl;
+            }
+          } catch {}
+        }
+
+        if (!isCancelled && pdfData) {
+          rawDoc.pdfDataUrl = pdfData;
+          createdUrl = safeCreateBlobUrl(pdfData);
           if (createdUrl) {
             setBlobUrl(createdUrl);
           }
         }
-      })
-      .catch((e) => console.warn("Failed to fetch full PDF record for preview:", e))
-      .finally(() => {
+      } catch (e) {
+        console.warn("Failed to fetch full PDF record for preview:", e);
+      } finally {
         if (!isCancelled) {
           setIsLoadingPdf(false);
         }
-      });
+      }
+    };
+
+    loadPdfOnDemand();
 
     return () => {
       isCancelled = true;
@@ -816,22 +843,22 @@ function DocumentPreviewModal({
             <div className="text-[10px] text-slate-400 italic">[Signature Area Above Name]</div>
           )}
 
-          {/* Counter-signatures placed to the right (compact horizontal: sign on left, DigiSigned on right) */}
+          {/* DigiSigned Counter-signatures placed directly ABOVE name */}
           {allCounterSigners
-            .filter((c) => c.position === "right" || c.position === "auto")
+            .filter((c) => c.position === "above" || c.position === "auto" || !c.position)
             .map((cs, i) => (
               <div
                 key={i}
                 onClick={() => onShowValidationStatus?.(cs.name, cs.signedAt)}
-                className="bg-transparent inline-flex items-center gap-1 px-1 py-0.5 text-left shrink-0 cursor-pointer hover:scale-105 transition-all"
-                title={`Counter-Signed beside name by ${cs.name} - Click to view official PNPKI Digital Signature Validation Status`}
+                className="bg-transparent inline-flex items-center gap-1 px-1.5 py-0.5 text-left shrink-0 cursor-pointer hover:scale-105 transition-all"
+                title={`Counter-Signed directly above name by ${cs.name} - Click to view official PNPKI Digital Signature Validation Status`}
               >
                 <div className="w-3.5 h-3.5 flex items-center justify-center shrink-0">
-                  <ShieldCheck className="w-3 h-3 text-slate-900" />
+                  <ShieldCheck className="w-3.5 h-3.5 text-slate-900" />
                 </div>
-                <div className="leading-tight text-[6px] text-black font-bold shrink-0">
+                <div className="leading-tight text-[7px] text-black font-bold shrink-0">
                   <div className="leading-none">DigiSigned</div>
-                  <div className="leading-none truncate max-w-[50px]">
+                  <div className="leading-none truncate max-w-[65px]">
                     by {cs.name.split(" ").pop() || cs.name}
                   </div>
                 </div>
@@ -1042,21 +1069,19 @@ function DocumentPreviewModal({
                     value={selectedCounterPos}
                     onChange={(e) => setSelectedCounterPos(e.target.value as CounterSignPosition)}
                     className="bg-transparent text-[11px] text-cyan-300 font-semibold px-1.5 py-1 outline-none cursor-pointer"
-                    title="Placement beside name (Right, Left, or Bottom)"
+                    title="Placement strictly directly above name"
                   >
-                    <option value="auto" className="bg-[#0C101A] text-white">Beside (Auto)</option>
-                    <option value="right" className="bg-[#0C101A] text-white">Beside (Right)</option>
-                    <option value="left" className="bg-[#0C101A] text-white">Beside (Left)</option>
-                    <option value="bottom" className="bg-[#0C101A] text-white">Beside (Bottom)</option>
+                    <option value="above" className="bg-[#0C101A] text-white">Above Name (Clean Gap)</option>
+                    <option value="auto" className="bg-[#0C101A] text-white">Above Name (Auto)</option>
                   </select>
                   <button
                     type="button"
                     onClick={() => onCounterSign(doc.id, selectedCounterPos)}
                     className="flex items-center gap-1 px-2.5 sm:px-3 py-1 rounded-md bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white text-xs font-bold transition-all shadow-md active:scale-95 cursor-pointer"
-                    title="Places counter-signature beside the personnel name."
+                    title="Places DigiSigned signature strictly directly above the personnel name with a clean 5-8px gap."
                   >
                     <ShieldCheck className="w-3.5 h-3.5" />
-                    <span>Counter Sign</span>
+                    <span>Counter Sign (Above Name)</span>
                   </button>
                 </div>
               )
@@ -1740,24 +1765,71 @@ function mapDtrRecordToWorkspaceDoc(record: any): WorkspaceDocument {
     }
   } catch {}
 
-  const target = remarksData.targetPersonnel || record.employeeName || "PERSONNEL";
-  const required = remarksData.requiredSigners || (record.signerName ? [record.signerName] : [target]);
-  const signers: DocumentSigner[] = remarksData.signers || [
-    {
-      name: target,
-      role: "Signatory",
-      status: record.status === "signed" ? "signed" : "pending",
-      position: "above",
-    },
-  ];
-  const counterSigners: DocumentSigner[] = remarksData.counterSigners || [];
+  const target =
+    record.targetPersonnel ||
+    record.target_personnel ||
+    remarksData.targetPersonnel ||
+    record.employeeName ||
+    "PERSONNEL";
+
+  let rawRequired =
+    record.requiredSigners ||
+    record.required_signers ||
+    remarksData.requiredSigners;
+  if (typeof rawRequired === "string") {
+    try {
+      rawRequired = JSON.parse(rawRequired);
+    } catch {}
+  }
+
+  let rawSigners =
+    record.signers ||
+    record.signers_matrix ||
+    remarksData.signers;
+  if (typeof rawSigners === "string") {
+    try {
+      rawSigners = JSON.parse(rawSigners);
+    } catch {}
+  }
+
+  let rawScannedInfo =
+    record.scannedInfo ||
+    record.scanned_info ||
+    remarksData.scannedInfo;
+  if (typeof rawScannedInfo === "string") {
+    try {
+      rawScannedInfo = JSON.parse(rawScannedInfo);
+    } catch {}
+  }
+
+  const required =
+    Array.isArray(rawRequired) && rawRequired.length > 0
+      ? rawRequired
+      : (record.signerName ? [record.signerName] : [target]);
+
+  const signers: DocumentSigner[] =
+    Array.isArray(rawSigners) && rawSigners.length > 0
+      ? rawSigners
+      : [
+          {
+            name: target,
+            role: "Signatory",
+            status: record.status === "signed" ? "signed" : "pending",
+            position: "above",
+          },
+        ];
+
+  const counterSigners: DocumentSigner[] = record.counterSigners || remarksData.counterSigners || [];
 
   // Retain authentic original file name:
-  // 1. remarksData.originalFileName (persisted during upload)
-  // 2. remarksData.fileName
-  // 3. record.pdfFileName
-  // 4. Fallback to record.id
+  // 1. record.fileName
+  // 2. remarksData.originalFileName (persisted during upload)
+  // 3. remarksData.fileName
+  // 4. record.pdfFileName
+  // 5. Fallback to record.id
   let resolvedFileName =
+    record.fileName ||
+    record.file_name ||
     remarksData.originalFileName ||
     remarksData.fileName ||
     record.pdfFileName ||
@@ -1781,8 +1853,8 @@ function mapDtrRecordToWorkspaceDoc(record: any): WorkspaceDocument {
   const isAnnabelDoc = resolvedFileName.toUpperCase().includes("ANNABEL") || String(target).toUpperCase().includes("ANNABEL");
 
   let sanitizedRequired: string[] =
-    Array.isArray(remarksData.requiredSigners) && remarksData.requiredSigners.length > 0
-      ? [...remarksData.requiredSigners]
+    Array.isArray(rawRequired) && rawRequired.length > 0
+      ? [...rawRequired]
       : record.signerName
       ? [record.signerName]
       : target && target !== "PERSONNEL"
@@ -1790,8 +1862,8 @@ function mapDtrRecordToWorkspaceDoc(record: any): WorkspaceDocument {
       : [];
 
   let sanitizedSigners: DocumentSigner[] =
-    Array.isArray(remarksData.signers) && remarksData.signers.length > 0
-      ? [...remarksData.signers]
+    Array.isArray(rawSigners) && rawSigners.length > 0
+      ? [...rawSigners]
       : sanitizedRequired.map((r) => ({
           name: r,
           role: "Signatory",
@@ -1815,11 +1887,11 @@ function mapDtrRecordToWorkspaceDoc(record: any): WorkspaceDocument {
   }
 
   const initialDoc: WorkspaceDocument = {
-    id: record.id,
+    id: String(record.id),
     fileName: resolvedFileName,
-    fileSize: record.pdfFileSize || "1.2 MB",
-    uploadedAt: record.submittedDate || new Date().toISOString(),
-    uploadedBy: record.employeeName || "User",
+    fileSize: record.fileSize || record.file_size || record.pdfFileSize || "1.2 MB",
+    uploadedAt: record.uploadedAt || record.uploaded_at || record.submittedDate || record.createdAt || new Date().toISOString(),
+    uploadedBy: record.uploadedBy || record.uploaded_by || record.employeeName || "User",
     status: (record.status?.toLowerCase() === "signed"
       ? "signed"
       : record.status?.toLowerCase() === "partially_signed"
@@ -1830,9 +1902,9 @@ function mapDtrRecordToWorkspaceDoc(record: any): WorkspaceDocument {
     signers: sanitizedSigners,
     counterSigners,
     fileType: resolvedFileName.endsWith(".docx") ? "docx" : "pdf",
-    notes: remarksData.notes || record.remarks,
-    pdfDataUrl: record.pdfDataUrl,
-    scannedInfo: remarksData.scannedInfo || undefined,
+    notes: record.notes || remarksData.notes || record.remarks || "",
+    pdfDataUrl: record.pdfDataUrl || record.pdf_data,
+    scannedInfo: rawScannedInfo || undefined,
     province: record.province || remarksData.province || "",
   };
 
@@ -1886,14 +1958,14 @@ interface SingleCounterSignModalProps {
 function SingleCounterSignModal({
   isOpen,
   doc,
-  initialPosition = "right",
+  initialPosition = "above",
   onClose,
   onConfirm,
   isProcessing,
 }: SingleCounterSignModalProps) {
   const [selectedPersonnel, setSelectedPersonnel] = useState<string>("");
   const [selectedPosition, setSelectedPosition] = useState<CounterSignPosition>(
-    initialPosition === "auto" ? "right" : initialPosition
+    initialPosition === "auto" ? "above" : initialPosition
   );
 
   // Gather all unique personnel from this document's signer chain AND fresh User List
@@ -1931,7 +2003,7 @@ function SingleCounterSignModal({
 
   useEffect(() => {
     if (isOpen) {
-      setSelectedPosition(initialPosition === "auto" ? "right" : initialPosition);
+      setSelectedPosition(initialPosition === "auto" ? "above" : initialPosition);
     }
   }, [isOpen, initialPosition]);
 
@@ -2049,45 +2121,19 @@ function SingleCounterSignModal({
                 Compact (Sign + DigiSigned)
               </span>
             </label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 gap-2">
               <button
                 type="button"
                 disabled={isProcessing}
-                onClick={() => setSelectedPosition("right")}
+                onClick={() => setSelectedPosition("above")}
                 className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
-                  selectedPosition === "right"
+                  selectedPosition === "above" || selectedPosition === "auto"
                     ? "bg-cyan-500/15 border-cyan-500 text-cyan-300 font-bold shadow-sm shadow-cyan-950/40"
                     : "bg-[#111728] border-[#1C2844] text-slate-400 hover:text-white"
                 }`}
               >
-                <div className="text-xs font-bold">Beside (Right)</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">Right of name</div>
-              </button>
-              <button
-                type="button"
-                disabled={isProcessing}
-                onClick={() => setSelectedPosition("left")}
-                className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
-                  selectedPosition === "left"
-                    ? "bg-cyan-500/15 border-cyan-500 text-cyan-300 font-bold shadow-sm shadow-cyan-950/40"
-                    : "bg-[#111728] border-[#1C2844] text-slate-400 hover:text-white"
-                }`}
-              >
-                <div className="text-xs font-bold">Beside (Left)</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">Left of name</div>
-              </button>
-              <button
-                type="button"
-                disabled={isProcessing}
-                onClick={() => setSelectedPosition("bottom")}
-                className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
-                  selectedPosition === "bottom"
-                    ? "bg-cyan-500/15 border-cyan-500 text-cyan-300 font-bold shadow-sm shadow-cyan-950/40"
-                    : "bg-[#111728] border-[#1C2844] text-slate-400 hover:text-white"
-                }`}
-              >
-                <div className="text-xs font-bold">Below (Bottom)</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">Underneath name</div>
+                <div className="text-xs font-bold">Directly Above Name (Clean 5-8px Gap)</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Strictly positioned directly above signatory's name</div>
               </button>
             </div>
           </div>
@@ -2158,7 +2204,7 @@ function BulkCounterSignModal({
   isProcessing,
 }: BulkCounterSignModalProps) {
   const [selectedPersonnel, setSelectedPersonnel] = useState<string>("");
-  const [selectedPosition, setSelectedPosition] = useState<CounterSignPosition>("right");
+  const [selectedPosition, setSelectedPosition] = useState<CounterSignPosition>("above");
 
   useEffect(() => {
     if (availablePersonnel.length > 0) {
@@ -2182,7 +2228,7 @@ function BulkCounterSignModal({
             <div>
               <h2 className="text-sm font-bold text-white">Bulk Counter-Sign Documents</h2>
               <p className="text-[10px] sm:text-[11px] text-slate-400">
-                Compact 20×20 px counter-signature stamp with transparent background beside or below chosen personnel
+                Official DigiSigned visual stamp with transparent background placed strictly directly above chosen personnel name with clean 5-8px gap
               </p>
             </div>
           </div>
@@ -2200,7 +2246,7 @@ function BulkCounterSignModal({
         <div className="p-4 sm:p-6 space-y-4">
           <div className="space-y-2">
             <label className="text-xs font-bold text-slate-200 flex items-center justify-between">
-              <span>Select Personnel to Place Counter-Signature Beside:</span>
+              <span>Select Personnel to Place Counter-Signature Above:</span>
               <span className="text-cyan-400 font-mono text-[10px]">
                 {availablePersonnel.length} Signer{availablePersonnel.length !== 1 ? "s" : ""} Uploaded
               </span>
@@ -2237,45 +2283,19 @@ function BulkCounterSignModal({
                 Compact Square (20×20 px)
               </span>
             </label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 gap-2">
               <button
                 type="button"
                 disabled={isProcessing}
-                onClick={() => setSelectedPosition("right")}
+                onClick={() => setSelectedPosition("above")}
                 className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
-                  selectedPosition === "right"
+                  selectedPosition === "above" || selectedPosition === "auto"
                     ? "bg-cyan-500/15 border-cyan-500 text-cyan-300 font-bold shadow-sm shadow-cyan-950/40"
                     : "bg-[#111728] border-[#1C2844] text-slate-400 hover:text-white"
                 }`}
               >
-                <div className="text-xs font-bold">Beside (Right)</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">Right of name</div>
-              </button>
-              <button
-                type="button"
-                disabled={isProcessing}
-                onClick={() => setSelectedPosition("left")}
-                className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
-                  selectedPosition === "left"
-                    ? "bg-cyan-500/15 border-cyan-500 text-cyan-300 font-bold shadow-sm shadow-cyan-950/40"
-                    : "bg-[#111728] border-[#1C2844] text-slate-400 hover:text-white"
-                }`}
-              >
-                <div className="text-xs font-bold">Beside (Left)</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">Left of name</div>
-              </button>
-              <button
-                type="button"
-                disabled={isProcessing}
-                onClick={() => setSelectedPosition("bottom")}
-                className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
-                  selectedPosition === "bottom"
-                    ? "bg-cyan-500/15 border-cyan-500 text-cyan-300 font-bold shadow-sm shadow-cyan-950/40"
-                    : "bg-[#111728] border-[#1C2844] text-slate-400 hover:text-white"
-                }`}
-              >
-                <div className="text-xs font-bold">Below (Bottom)</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">Underneath name</div>
+                <div className="text-xs font-bold">Directly Above Name (Clean 5-8px Gap)</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Strictly positioned directly above signatory's name</div>
               </button>
             </div>
           </div>
@@ -2284,12 +2304,12 @@ function BulkCounterSignModal({
           <div className="p-3.5 rounded-xl bg-cyan-500/5 border border-cyan-500/20 space-y-2 text-xs">
             <div className="flex items-center gap-2 text-cyan-300 font-bold">
               <ShieldCheck className="w-4 h-4 text-cyan-400 shrink-0" />
-              <span>Compact Counter-Signature Placement</span>
+              <span>DigiSigned Counter-Signature Placement</span>
             </div>
             <p className="text-slate-300 text-[11px] leading-relaxed">
-              When confirmed, a <strong className="text-white">compact horizontal</strong> counter-signature with transparent background and no border (signature on the left, &quot;DigiSigned by {getCurrentUser()?.name || "you"}&quot; on the right in black text) will be placed{" "}
+              When confirmed, a <strong className="text-white">DigiSigned</strong> counter-signature with transparent background and no border (signature stroke on left, &quot;DigiSigned by {getCurrentUser()?.name || "you"}&quot; on right in black text) will be placed{" "}
               <strong className="text-cyan-300 font-bold">
-                {selectedPosition === "bottom" ? "directly below" : selectedPosition === "left" ? "directly to the left of" : "directly to the right of"} {selectedPersonnel || "the selected personnel"}
+                strictly directly ABOVE {selectedPersonnel || "the selected personnel"}
               </strong>{" "}
               across <strong className="text-white">{eligibleDocsCount} document(s)</strong>.
             </p>
@@ -2324,6 +2344,322 @@ function BulkCounterSignModal({
               <>
                 <Award className="w-3.5 h-3.5" />
                 <span>Counter-Sign All ({eligibleDocsCount} Docs)</span>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Super Admin Bulk Sign Personnel Picker Modal ───────────────────────────
+
+interface SuperAdminBulkSignModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onConfirm: (selectedSignerName: string, targetDocs: WorkspaceDocument[]) => void;
+  isProcessing: boolean;
+  documents: WorkspaceDocument[];
+  selectedDocs: WorkspaceDocument[];
+  currentUser: any;
+}
+
+function SuperAdminBulkSignModal({
+  isOpen,
+  onClose,
+  onConfirm,
+  isProcessing,
+  documents,
+  selectedDocs,
+  currentUser,
+}: SuperAdminBulkSignModalProps) {
+  // STRICT REQUIREMENT: "only the user name is in the user list if not dont show it"
+  const registeredUsers = useMemo(() => {
+    return getStoredUsers().filter(
+      (u) => u && u.name && u.name.trim().length >= 3 && u.status !== "inactive"
+    );
+  }, [isOpen]);
+
+  const candidateDocs = useMemo(() => {
+    const pool = selectedDocs.length > 0 ? selectedDocs : documents;
+    return pool.filter((d) => computeEffectiveDocStatus(d) !== "signed");
+  }, [selectedDocs, documents]);
+
+  // For each registered user from the user list, calculate how many pending documents require their signature
+  const eligibleSigners = useMemo(() => {
+    const list: Array<{
+      user: UserRecord;
+      matchingDocs: WorkspaceDocument[];
+    }> = [];
+
+    for (const u of registeredUsers) {
+      const uNorm = normalizeName(u.name);
+      const matchingDocs = candidateDocs.filter((doc) => {
+        // If this user already signed this document, skip
+        if (hasUserAlreadySigned(doc, u.name)) return false;
+
+        // Check if listed in requiredSigners
+        const inReq = (doc.requiredSigners || []).some(
+          (req) => matchNames(req, u.name) || normalizeName(req) === uNorm
+        );
+        if (inReq) return true;
+
+        // Check if listed in targetPersonnel
+        if (
+          (!doc.requiredSigners || doc.requiredSigners.length === 0) &&
+          doc.targetPersonnel &&
+          (matchNames(doc.targetPersonnel, u.name) || normalizeName(doc.targetPersonnel) === uNorm)
+        ) {
+          return true;
+        }
+
+        return false;
+      });
+
+      if (matchingDocs.length > 0) {
+        list.push({
+          user: u,
+          matchingDocs,
+        });
+      }
+    }
+
+    // Sort descending by pending document count
+    return list.sort((a, b) => b.matchingDocs.length - a.matchingDocs.length);
+  }, [registeredUsers, candidateDocs]);
+
+  const [selectedSignerName, setSelectedSignerName] = useState<string>("");
+
+  useEffect(() => {
+    if (isOpen) {
+      if (eligibleSigners.length > 0) {
+        setSelectedSignerName(eligibleSigners[0].user.name);
+      } else if (registeredUsers.length > 0) {
+        setSelectedSignerName(registeredUsers[0].name);
+      }
+    }
+  }, [isOpen, eligibleSigners, registeredUsers]);
+
+  const targetDocsToSign = useMemo(() => {
+    if (!selectedSignerName) return [];
+    const matchedSigner = eligibleSigners.find(
+      (item) => matchNames(item.user.name, selectedSignerName) || item.user.name === selectedSignerName
+    );
+    if (matchedSigner) return matchedSigner.matchingDocs;
+
+    // Fallback: If user picked from all registered users, match candidate docs where targetPersonnel matches
+    return candidateDocs.filter(
+      (d) =>
+        matchNames(d.targetPersonnel, selectedSignerName) ||
+        (d.requiredSigners || []).some((r) => matchNames(r, selectedSignerName))
+    );
+  }, [selectedSignerName, eligibleSigners, candidateDocs]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
+      <div className="bg-[#0C101A] border border-[#1A2235] rounded-xl sm:rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 sm:py-4 border-b border-[#1A2235] bg-[#080B13]">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-violet-500/15 border border-violet-500/30 flex items-center justify-center text-violet-400 shrink-0">
+              <PenLine className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm sm:text-base font-bold text-white">Super Admin Bulk Sign</h2>
+                <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 uppercase tracking-wider">
+                  Select Signatory
+                </span>
+              </div>
+              <p className="text-[10px] sm:text-[11px] text-slate-400">
+                Logged in as Super Admin ({currentUser?.email || "ace.malto@dict.gov.ph"}). Choose which user name to sign as.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isProcessing}
+            className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer shrink-0 disabled:opacity-50"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Content Body */}
+        <div className="p-4 sm:p-6 space-y-4 overflow-y-auto">
+          {/* Security Banner: Strictly User List Only */}
+          <div className="p-3 rounded-xl bg-violet-500/10 border border-violet-500/20 flex items-start gap-2.5">
+            <ShieldCheck className="w-4 h-4 text-violet-400 shrink-0 mt-0.5" />
+            <div className="text-xs text-slate-300 leading-relaxed">
+              <span className="font-semibold text-violet-300">Active User List Protected:</span>{" "}
+              Only registered user names from the official DICT User List are shown. Non-registered or third-party OCR names are strictly excluded.
+            </div>
+          </div>
+
+          {/* Section 1: Signatories with Pending Documents */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-slate-200">
+                Signatories with Pending Documents ({eligibleSigners.length}):
+              </label>
+              <span className="text-[10px] text-slate-400 font-mono">
+                {candidateDocs.length} total pending in queue
+              </span>
+            </div>
+
+            {eligibleSigners.length === 0 ? (
+              <div className="p-3.5 rounded-xl bg-[#111728] border border-[#1C2844] text-xs text-slate-400 text-center">
+                ℹ️ No pending required signers matched automatically in the queue. You can select any registered user from the DICT User List below.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto pr-1">
+                {eligibleSigners.map(({ user, matchingDocs }) => {
+                  const isSelected = selectedSignerName === user.name;
+                  return (
+                    <div
+                      key={user.id || user.name}
+                      onClick={() => !isProcessing && setSelectedSignerName(user.name)}
+                      className={`p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                        isSelected
+                          ? "bg-violet-600/15 border-violet-500 text-white shadow-md shadow-violet-950/40 ring-1 ring-violet-500/50"
+                          : "bg-[#111728] border-[#1C2844] text-slate-300 hover:bg-[#161F36] hover:border-slate-700"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div
+                          className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${
+                            isSelected
+                              ? "border-violet-500 bg-violet-500"
+                              : "border-slate-600 bg-transparent"
+                          }`}
+                        >
+                          {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold truncate text-white">
+                            {user.name}
+                          </div>
+                          <div className="text-[10px] text-slate-400 flex items-center gap-2 mt-0.5">
+                            <span className="text-violet-300 font-medium">{user.role || "DICT Staff"}</span>
+                            {user.focalProvince && <span>• {user.focalProvince}</span>}
+                          </div>
+                        </div>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 shrink-0">
+                        {matchingDocs.length} Doc{matchingDocs.length !== 1 ? "s" : ""}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Section 2: Choose from All Registered DICT Users */}
+          <div className="space-y-1.5 pt-1">
+            <label className="text-xs font-bold text-slate-200 flex items-center justify-between">
+              <span>Or Select Any Registered DICT User:</span>
+              <span className="text-[10px] text-slate-400 font-mono">
+                {registeredUsers.length} Registered Users
+              </span>
+            </label>
+            <div className="relative">
+              <select
+                value={selectedSignerName}
+                onChange={(e) => setSelectedSignerName(e.target.value)}
+                disabled={isProcessing}
+                className="w-full bg-[#111728] border border-[#1C2844] focus:border-violet-500 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-white font-bold tracking-wide outline-none transition-colors cursor-pointer appearance-none pr-9"
+              >
+                {registeredUsers.map((u) => (
+                  <option key={u.id || u.name} value={u.name} className="bg-[#0C101A] text-white">
+                    {u.name} — {u.role || "Signatory"} {u.focalProvince ? `(${u.focalProvince})` : ""}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+            </div>
+          </div>
+
+          {/* Section 3: Target Documents Preview */}
+          <div className="space-y-1.5 pt-1">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-bold text-slate-200">
+                Documents to be Signed ({targetDocsToSign.length}):
+              </span>
+              <span className="text-[10px] text-emerald-400 font-medium">
+                Strictly ABOVE &quot;{selectedSignerName}&quot;
+              </span>
+            </div>
+
+            {targetDocsToSign.length === 0 ? (
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
+                ⚠️ No documents found waiting for &quot;{selectedSignerName}&quot;. Select specific documents from the table first or choose another signatory.
+              </div>
+            ) : (
+              <div className="max-h-36 overflow-y-auto space-y-1.5 p-2 bg-[#080B13] border border-[#161F36] rounded-xl pr-1">
+                {targetDocsToSign.map((doc, idx) => (
+                  <div
+                    key={doc.id || idx}
+                    className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-[#111728]/80 text-xs"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <FileText className="w-3.5 h-3.5 text-violet-400 shrink-0" />
+                      <span className="truncate text-slate-200 font-medium text-[11px]">
+                        {doc.fileObj?.name || doc.fileName}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 shrink-0 font-mono">
+                      {doc.fileSize}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Section 4: Signature Placement Guarantee */}
+          <div className="p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/20 text-xs space-y-1 text-slate-300">
+            <div className="flex items-center gap-1.5 text-emerald-400 font-bold text-[11px]">
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+              <span>Exact Signature Placement & Typography Guarantee</span>
+            </div>
+            <p className="text-[10px] text-slate-400 leading-normal">
+              Digital signature stamp will be placed <strong className="text-emerald-300">strictly directly ABOVE</strong> the printed name of <strong className="text-white">&quot;{selectedSignerName}&quot;</strong> with a clean 5–8px vertical gap using normal font weight.
+            </p>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex flex-col-reverse sm:flex-row gap-2.5 sm:gap-3 px-4 sm:px-6 py-3 sm:py-3.5 border-t border-[#1A2235] bg-[#080B13]">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isProcessing}
+            className="w-full sm:flex-1 py-2.5 rounded-xl border border-[#1C2844] text-slate-400 hover:text-white hover:bg-white/5 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirm(selectedSignerName, targetDocsToSign)}
+            disabled={isProcessing || !selectedSignerName || targetDocsToSign.length === 0}
+            className="w-full sm:flex-1 py-2.5 rounded-xl text-white font-bold text-xs flex items-center justify-center gap-2 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 shadow-lg shadow-violet-950/50 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isProcessing ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Bulk Signing as {selectedSignerName}…</span>
+              </>
+            ) : (
+              <>
+                <PenLine className="w-3.5 h-3.5" />
+                <span>
+                  Confirm Bulk Sign as {selectedSignerName.split(" ")[0]} ({targetDocsToSign.length} Docs)
+                </span>
               </>
             )}
           </button>
@@ -2779,6 +3115,7 @@ export function SigningWorkspace() {
   const [previewDoc, setPreviewDoc] = useState<WorkspaceDocument | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<SigningStatus | "all">("all");
+  const [isSuperAdminBulkSignModalOpen, setIsSuperAdminBulkSignModalOpen] = useState(false);
   const [isBulkSigning, setIsBulkSigning] = useState(false);
   const [isBulkCounterSigning, setIsBulkCounterSigning] = useState(false);
   const [bulkSignProgress, setBulkSignProgress] = useState<BulkSignProgressState | null>(null);
@@ -2793,7 +3130,7 @@ export function SigningWorkspace() {
   } | null>(null);
   // Single counter-sign: track which document's modal is open
   const [counterSignDocTarget, setCounterSignDocTarget] = useState<WorkspaceDocument | null>(null);
-  const [counterSignPositionChoice, setCounterSignPositionChoice] = useState<CounterSignPosition>("right");
+  const [counterSignPositionChoice, setCounterSignPositionChoice] = useState<CounterSignPosition>("above");
   const [isSingleCounterSigning, setIsSingleCounterSigning] = useState(false);
 
   // PNPKI Keystore Management State (Strictly exclusive to ace.malto@dict.gov.ph)
@@ -2860,13 +3197,32 @@ export function SigningWorkspace() {
     return Array.from(names).filter((n) => n && n.trim().length > 2);
   }, [documents]);
 
-  // 1. Sync helper that pulls the latest documents from backend Turso dtr_storage
+  // 1. Sync helper that pulls the latest documents from dedicated Turso signing_workspace_documents
   const syncFromRemoteStorage = useCallback(async (silent = true) => {
     if (isBatchUploadingRef.current || isSyncingRef.current) return;
     isSyncingRef.current = true;
     try {
       const deletedIds = getDeletedDocIds();
-      const records = await dtrStorageApi.getRecords({ module: "SIGNING_WORKSPACE" });
+      let records: any[] = [];
+      try {
+        const swDocs = await signingWorkspaceApi.getDocuments();
+        if (Array.isArray(swDocs) && swDocs.length > 0) {
+          records = swDocs;
+        }
+      } catch (err) {
+        console.warn("Failed fetching from signingWorkspaceApi:", err);
+      }
+
+      // Check legacy dtr_storage fallback only if signing_workspace_documents is completely empty
+      if (records.length === 0) {
+        try {
+          const legacyDocs = await dtrStorageApi.getRecords({ module: "SIGNING_WORKSPACE" });
+          if (Array.isArray(legacyDocs) && legacyDocs.length > 0) {
+            records = legacyDocs;
+          }
+        } catch {}
+      }
+
       if (Array.isArray(records)) {
         const remoteDocs = records
           .filter((r) => r && !deletedIds.has(r.id))
@@ -3012,7 +3368,41 @@ export function SigningWorkspace() {
     // Initial sync from backend
     syncFromRemoteStorage(false);
 
-    // Realtime SSE event listener for instant cross-user / cross-device updates
+    // Realtime SSE event listener for instant cross-user / cross-device updates from dedicated signing workspace
+    const unsubscribeWorkspaceRealtime = subscribeToSigningWorkspaceRealtime((event) => {
+      if (event.type === "DELETE" && event.id) {
+        setDocuments((prev) => {
+          const filtered = prev.filter((d) => d.id !== event.id);
+          try {
+            localStorage.setItem("dict_r5_signing_workspace_docs_v1", serializeDocsForLocalStorage(filtered));
+          } catch {}
+          return filtered;
+        });
+        setPreviewDoc((curr) => (curr?.id === event.id ? null : curr));
+      } else if (event.type === "BULK_DELETE") {
+        if (Array.isArray(event.ids) && event.ids.length > 0) {
+          const idSet = new Set(event.ids);
+          setDocuments((prev) => {
+            const filtered = prev.filter((d) => !idSet.has(d.id));
+            try {
+              localStorage.setItem("dict_r5_signing_workspace_docs_v1", serializeDocsForLocalStorage(filtered));
+            } catch {}
+            return filtered;
+          });
+          setPreviewDoc((curr) => (curr && idSet.has(curr.id) ? null : curr));
+        } else {
+          setDocuments([]);
+          setPreviewDoc(null);
+          try {
+            localStorage.setItem("dict_r5_signing_workspace_docs_v1", JSON.stringify([]));
+          } catch {}
+        }
+      } else if (event.type === "BATCH" || event.type === "INSERT" || event.type === "UPDATE") {
+        debouncedSyncFromRemoteStorage(300);
+      }
+    });
+
+    // Legacy realtime SSE listener for cross-device updates
     const unsubscribeRealtime = subscribeToDtrRealtime((event) => {
       if (event.type === "INSERT" || event.type === "UPDATE") {
         const record = event.record;
@@ -3111,6 +3501,7 @@ export function SigningWorkspace() {
     window.addEventListener("storage", handleFocusOrVisible);
 
     return () => {
+      unsubscribeWorkspaceRealtime();
       unsubscribeRealtime();
       clearInterval(pollInterval);
       if (syncDebounceTimerRef.current) {
@@ -3143,13 +3534,22 @@ export function SigningWorkspace() {
     let pdfUrl = doc.pdfDataUrl;
     if (!pdfUrl && !doc.fileObj) {
       try {
-        const full = await dtrStorageApi.getRecord(doc.id);
-        if (full?.pdfDataUrl) {
-          pdfUrl = full.pdfDataUrl;
-          doc.pdfDataUrl = full.pdfDataUrl;
+        const fullDoc = await signingWorkspaceApi.getDocument(doc.id);
+        if (fullDoc && (fullDoc.pdfDataUrl || fullDoc.pdf_data)) {
+          pdfUrl = fullDoc.pdfDataUrl || fullDoc.pdf_data;
+          doc.pdfDataUrl = pdfUrl;
         }
-      } catch (e) {
-        console.warn("Failed to load PDF for download:", e);
+      } catch {}
+      if (!pdfUrl) {
+        try {
+          const full = await dtrStorageApi.getRecord(doc.id);
+          if (full?.pdfDataUrl) {
+            pdfUrl = full.pdfDataUrl;
+            doc.pdfDataUrl = full.pdfDataUrl;
+          }
+        } catch (e) {
+          console.warn("Failed to load PDF for download:", e);
+        }
       }
     }
 
@@ -3223,13 +3623,22 @@ export function SigningWorkspace() {
     let pdfUrl = doc.pdfDataUrl;
     if (!pdfUrl && !doc.fileObj) {
       try {
-        const full = await dtrStorageApi.getRecord(doc.id);
-        if (full?.pdfDataUrl) {
-          pdfUrl = full.pdfDataUrl;
-          doc.pdfDataUrl = full.pdfDataUrl;
+        const fullDoc = await signingWorkspaceApi.getDocument(doc.id);
+        if (fullDoc && (fullDoc.pdfDataUrl || fullDoc.pdf_data)) {
+          pdfUrl = fullDoc.pdfDataUrl || fullDoc.pdf_data;
+          doc.pdfDataUrl = pdfUrl;
         }
-      } catch (e) {
-        console.warn("Failed to load PDF for batch download:", e);
+      } catch {}
+      if (!pdfUrl) {
+        try {
+          const full = await dtrStorageApi.getRecord(doc.id);
+          if (full?.pdfDataUrl) {
+            pdfUrl = full.pdfDataUrl;
+            doc.pdfDataUrl = full.pdfDataUrl;
+          }
+        } catch (e) {
+          console.warn("Failed to load PDF for batch download:", e);
+        }
       }
     }
 
@@ -3340,11 +3749,14 @@ export function SigningWorkspace() {
   };
 
   // ─── Signer Profile Context Resolver (Pre-cached for 100+ documents) ────────
-  const resolveUserSignerContext = async (forceRefresh = false): Promise<UserSignerContext> => {
+  const resolveUserSignerContext = async (
+    forceRefresh = false,
+    targetSignerName?: string
+  ): Promise<UserSignerContext> => {
     const liveUser = getCurrentUser() || currentUser;
     const currentUserName = (liveUser?.name || "").trim();
 
-    if (!forceRefresh && cachedSignerContextRef.current) {
+    if (!forceRefresh && !targetSignerName && cachedSignerContextRef.current) {
       return cachedSignerContextRef.current;
     }
 
@@ -3356,46 +3768,49 @@ export function SigningWorkspace() {
       } catch {}
     }
 
-    // 1. Locate the logged-in user's own profile (to get their real signature image and name!)
+    // Signer name: strictly targetSignerName if specified (e.g. Super Admin bulk signing as another user)
+    const effectiveSignerName = (
+      targetSignerName ||
+      currentUserName ||
+      liveUser?.name ||
+      "Authorized Signer"
+    ).trim();
+
+    // 1. Locate the signatory's profile (to get their real signature image and credentials!)
     let userSigProfile: DtrGeneratorSignatureRecord | null = null;
     let fallbackKeystoreProfile: DtrGeneratorSignatureRecord | null = null;
 
     try {
       const all = await dtrGeneratorApi.getRecords();
       if (Array.isArray(all) && all.length > 0) {
-        // Find logged-in user's profile: match by user_Id, exact name, or partial match (e.g. Ace Malto / Malto Ace Mata)
         userSigProfile =
           all.find(
             (p) =>
-              (liveUser?.id && (String(p.user_Id) === String(liveUser.id) || p.id === `dtr-sig-${liveUser.id}`)) ||
-              matchNames(p.Name, currentUserName) ||
-              (currentUserName.toLowerCase().includes("malto") && p.Name.toLowerCase().includes("malto")) ||
-              (currentUserName.toLowerCase().includes("ace") && p.Name.toLowerCase().includes("ace"))
+              (!targetSignerName && liveUser?.id && (String(p.user_Id) === String(liveUser.id) || p.id === `dtr-sig-${liveUser.id}`)) ||
+              matchNames(p.Name, effectiveSignerName) ||
+              normalizeName(p.Name) === normalizeName(effectiveSignerName) ||
+              (p.Name && effectiveSignerName && p.Name.toLowerCase().includes(effectiveSignerName.toLowerCase()))
           ) || null;
 
-        // Find available fallback P12 keystore profile (e.g. supervisor) for cryptographic seal if user has no P12 yet
         fallbackKeystoreProfile = all.find((p) => p.hasP12 || p.p12) || null;
       }
     } catch (err) {
       console.warn("Could not load digital signature profile:", err);
     }
 
-    // Signer name is ALWAYS the logged-in user's name (never overwritten by keystore holder name!)
-    const effectiveSignerName = (
-      currentUserName ||
-      liveUser?.name ||
-      userSigProfile?.Name ||
-      "Authorized Signer"
-    ).trim();
-
-    // Signature image is ALWAYS the logged-in user's signature stroke
-    let signatureImage = userSigProfile?.image_digiSigned || activeKeystore?.signatureImage || null;
+    // Signature image: check chosen user's profile first
+    let signatureImage = userSigProfile?.image_digiSigned || null;
     const isReneJane =
       matchNames(effectiveSignerName, "Rene Jane Rosendo Buena") ||
-      matchNames(currentUserName, "Rene Jane Rosendo Buena");
+      matchNames(effectiveSignerName, "Rene Jane R. Buena") ||
+      effectiveSignerName.toLowerCase().includes("buena");
 
     if (!signatureImage && isReneJane) {
       signatureImage = RENE_JANE_SIGNATURE_BASE64;
+    }
+
+    if (!signatureImage && matchNames(effectiveSignerName, currentUserName)) {
+      signatureImage = activeKeystore?.signatureImage || null;
     }
 
     let signatureImageBytes: Uint8Array | null = null;
@@ -3411,14 +3826,14 @@ export function SigningWorkspace() {
     }
 
     // Determine P12 cryptographic keystore:
-    // 1. User's own P12 if uploaded in database
-    // 2. Active keystore if user selected/unlocked one in the PNPKI modal
-    // Note: Strictly bound to user's identity — NEVER silently fall back to another employee's P12 (e.g. Cantorna)!
+    // 1. Signatory's own P12 if uploaded in database
+    // 2. Active keystore if SuperAdmin unlocked one in the PNPKI modal
+    // 3. Fallback keystore profile
     const chosenP12Profile = (userSigProfile?.hasP12 || userSigProfile?.p12)
       ? userSigProfile
       : (activeKeystore?.p12Base64 || activeKeystore?.profileId)
       ? activeKeystore
-      : null;
+      : fallbackKeystoreProfile;
 
     const hasP12Available = Boolean(
       activeKeystore?.p12Base64 ||
@@ -3433,7 +3848,7 @@ export function SigningWorkspace() {
           user_Id: userSigProfile?.p12 ? userSigProfile.user_Id : (chosenP12Profile?.user_Id || activeKeystore?.userId),
           p12Base64: activeKeystore?.p12Base64 || userSigProfile?.p12 || chosenP12Profile?.p12 || undefined,
           p12Password: activeKeystore?.p12Password,
-          signerName: effectiveSignerName, // Strictly logged-in user (e.g. Ace Malto)
+          signerName: effectiveSignerName, // strictly the chosen user name
           signerRole: "supervisor" as const,
         }
       : null;
@@ -3448,7 +3863,9 @@ export function SigningWorkspace() {
       p12Options,
     };
 
-    cachedSignerContextRef.current = ctx;
+    if (!targetSignerName) {
+      cachedSignerContextRef.current = ctx;
+    }
     return ctx;
   };
 
@@ -3461,18 +3878,20 @@ export function SigningWorkspace() {
       counterSignTargetPersonnel?: string;
       signerContext?: UserSignerContext;
       skipDbSave?: boolean;
+      asSignerName?: string;
     }
   ): Promise<WorkspaceDocument & { storagePayload?: any }> => {
     try {
       const liveUser = getCurrentUser() || currentUser;
       const currentUserName = (liveUser?.name || "").trim();
-      const isReq = isUserAuthorizedToSignDoc(doc, liveUser || currentUser);
+      const asSigner = options?.asSignerName?.trim();
+      const isReq = asSigner ? true : isUserAuthorizedToSignDoc(doc, liveUser || currentUser);
       const isCounter = options?.isCounterSign !== undefined ? options.isCounterSign : !isReq;
-      const counterPos = options?.counterSignPosition || "auto";
+      const counterPos = options?.counterSignPosition || "above";
 
       // Pre-cached signature profile for zero redundant queries across 100+ documents
-      const signerCtx = options?.signerContext || (await resolveUserSignerContext(false));
-      const effectiveSignerName = signerCtx.effectiveSignerName;
+      const signerCtx = options?.signerContext || (await resolveUserSignerContext(false, asSigner));
+      const effectiveSignerName = asSigner || signerCtx.effectiveSignerName;
       const signatureImage = signerCtx.signatureImage;
       const p12Options = signerCtx.p12Options;
 
@@ -3486,15 +3905,16 @@ export function SigningWorkspace() {
       }
 
       // Accurately resolve which signature line in the document to target
+      const signerToMatch = asSigner || effectiveSignerName;
       const matchedRequiredSigner = doc.requiredSigners.find((req) =>
-        matchNames(req, effectiveSignerName) || matchNames(req, currentUserName)
+        matchNames(req, signerToMatch) || matchNames(req, currentUserName)
       );
       let targetPersonnelName = isCounter
         ? (options?.counterSignTargetPersonnel || doc.targetPersonnel || currentUserName).trim()
-        : (matchedRequiredSigner || doc.targetPersonnel || currentUserName).trim();
+        : (asSigner || matchedRequiredSigner || doc.targetPersonnel || currentUserName).trim();
 
       // If user is Regional Director / ARD, or signing on behalf of RD/ARD, target the RD/ARD signatory line
-      if (!isCounter && (!matchedRequiredSigner || !matchNames(matchedRequiredSigner, effectiveSignerName))) {
+      if (!isCounter && !asSigner && (!matchedRequiredSigner || !matchNames(matchedRequiredSigner, effectiveSignerName))) {
         if (isUserRegionalDirectorOrAssistant(liveUser || currentUser)) {
           const rdSigner = doc.signers.find(
             (s) =>
@@ -3518,13 +3938,22 @@ export function SigningWorkspace() {
       let currentPdfDataUrl = doc.pdfDataUrl;
       if (!doc.fileObj && (!currentPdfDataUrl || !currentPdfDataUrl.startsWith("data:application/pdf"))) {
         try {
-          const fullRec = await dtrStorageApi.getRecord(doc.id);
-          if (fullRec?.pdfDataUrl) {
-            currentPdfDataUrl = fullRec.pdfDataUrl;
-            doc.pdfDataUrl = fullRec.pdfDataUrl;
+          const swDoc = await signingWorkspaceApi.getDocument(doc.id);
+          if (swDoc && (swDoc.pdfDataUrl || swDoc.pdf_data)) {
+            currentPdfDataUrl = swDoc.pdfDataUrl || swDoc.pdf_data;
+            doc.pdfDataUrl = currentPdfDataUrl;
           }
-        } catch (e) {
-          console.warn("Could not fetch remote PDF data for signing:", e);
+        } catch {}
+        if (!currentPdfDataUrl) {
+          try {
+            const fullRec = await dtrStorageApi.getRecord(doc.id);
+            if (fullRec?.pdfDataUrl) {
+              currentPdfDataUrl = fullRec.pdfDataUrl;
+              doc.pdfDataUrl = fullRec.pdfDataUrl;
+            }
+          } catch (e) {
+            console.warn("Could not fetch remote PDF data for signing:", e);
+          }
         }
       }
 
@@ -3606,15 +4035,20 @@ export function SigningWorkspace() {
         }
       }
 
+      const updatedRequired = [...doc.requiredSigners];
+      if (!isCounter && !updatedRequired.some((r) => matchNames(r, effectiveSignerName))) {
+        updatedRequired.push(effectiveSignerName);
+      }
+
       // Check overall document completion
-      const signedCount = doc.requiredSigners.filter((req) =>
+      const signedCount = updatedRequired.filter((req) =>
         updatedSigners.some(
           (s) => s.status === "signed" && (matchNames(s.name, req) || normalizeName(s.name) === normalizeName(req))
         )
       ).length;
 
       const newStatus: SigningStatus =
-        signedCount >= doc.requiredSigners.length ? "signed" : "partially_signed";
+        signedCount >= updatedRequired.length ? "signed" : "partially_signed";
 
       const placementDesc = isCounter
         ? `Counter-signed placed ${signatureCoords?.appliedPosition || counterPos} personnel "${targetPersonnelName}"`
@@ -3627,6 +4061,7 @@ export function SigningWorkspace() {
         fileName: originalFileName,
         fileObj: signedFileObj || doc.fileObj,
         status: newStatus,
+        requiredSigners: updatedRequired,
         signers: updatedSigners,
         counterSigners: updatedCounterSigners,
         pdfDataUrl: signedPdfDataUrl,
@@ -3671,9 +4106,28 @@ export function SigningWorkspace() {
       updatedDoc.storagePayload = signStoragePayload;
 
       if (!options?.skipDbSave) {
+        signingWorkspaceApi
+          .saveDocument({
+            id: updatedDoc.id,
+            fileName: originalFileName,
+            fileSize: updatedDoc.fileSize,
+            uploadedBy: updatedDoc.uploadedBy,
+            status: newStatus,
+            targetPersonnel: updatedDoc.targetPersonnel,
+            requiredSigners: updatedDoc.requiredSigners,
+            signers: updatedDoc.signers,
+            scannedInfo: updatedDoc.scannedInfo,
+            pdfDataUrl: signedPdfDataUrl,
+            province: liveUser?.province || "Regional Office",
+            sectionDivision: "Regional Office V",
+            notes: updatedDoc.notes,
+            hasP12: Boolean(p12Options),
+          })
+          .catch((err) => console.warn("Failed to sync signed record to signing_workspace_documents:", err));
+
         dtrStorageApi
           .saveRecord(signStoragePayload)
-          .catch((err) => console.warn("Failed to sync signed record to dtr_storage:", err));
+          .catch(() => {});
 
         // Broadcast to same-browser tabs immediately
         broadcastLocalDtrEvent({
@@ -3708,18 +4162,18 @@ export function SigningWorkspace() {
     showNotif(`✓ Signed successfully ABOVE personnel name (preserved in Acrobat).`);
   };
 
-  const handleCounterSignSingle = async (id: string, position: CounterSignPosition = "auto") => {
+  const handleCounterSignSingle = async (id: string, position: CounterSignPosition = "above") => {
     const targetDoc = documents.find((d) => d.id === id);
     if (!targetDoc) return;
 
-    showNotif(`Applying 15px P12 counter-signature BESIDE personnel name (${position})…`);
+    showNotif(`Applying DigiSigned P12 counter-signature strictly ABOVE personnel name…`);
     const updated = await signDocumentItem(targetDoc, { isCounterSign: true, counterSignPosition: position });
 
     setDocuments((prev) => prev.map((d) => (d.id === id ? updated : d)));
     if (previewDoc && previewDoc.id === id) {
       setPreviewDoc(updated);
     }
-    showNotif(`✓ Counter-signed successfully BESIDE personnel name in 15px square box.`);
+    showNotif(`✓ Counter-signed successfully strictly ABOVE personnel name with clean 5-8px gap.`);
   };
 
   // ─── Single Counter-Sign with Personnel Picker ───────────────────────────────
@@ -3736,6 +4190,23 @@ export function SigningWorkspace() {
         scannedInfo: doc.scannedInfo,
         notes: doc.notes,
       };
+      signingWorkspaceApi
+        .saveDocument({
+          id: doc.id,
+          fileName: originalFileName,
+          fileSize: doc.fileSize,
+          status: doc.status,
+          targetPersonnel: doc.targetPersonnel,
+          requiredSigners: doc.requiredSigners,
+          signers: doc.signers,
+          counterSigners: doc.counterSigners,
+          scannedInfo: doc.scannedInfo,
+          pdfDataUrl: doc.pdfDataUrl,
+          notes: doc.notes,
+          province: doc.province,
+        })
+        .catch((err) => console.warn("Failed syncing signatory update to signing_workspace_documents:", err));
+
       await dtrStorageApi.saveRecord({
         id: doc.id,
         employeeName: doc.targetPersonnel,
@@ -3745,7 +4216,7 @@ export function SigningWorkspace() {
         status: doc.status,
         submittedDate: doc.uploadedAt,
         remarks: JSON.stringify(remarksPayload),
-      } as any);
+      } as any).catch(() => {});
 
       broadcastLocalDtrEvent({
         type: "UPDATE",
@@ -3763,8 +4234,8 @@ export function SigningWorkspace() {
     }
   };
 
-  const handleOpenSingleCounterSign = async (doc: WorkspaceDocument, initialPos: CounterSignPosition = "right") => {
-    setCounterSignPositionChoice(initialPos === "auto" ? "right" : initialPos);
+  const handleOpenSingleCounterSign = async (doc: WorkspaceDocument, initialPos: CounterSignPosition = "above") => {
+    setCounterSignPositionChoice(initialPos === "auto" ? "above" : initialPos);
 
     // 1. Immediately re-check document against the latest User List
     const freshUsers = getStoredUsers().map((u) => ({ name: u.name, role: u.role, email: u.email }));
@@ -3788,10 +4259,22 @@ export function SigningWorkspace() {
       } else if (activeDoc.pdfDataUrl) {
         pdfBytes = base64ToUint8Array(activeDoc.pdfDataUrl);
       } else {
-        const full = await dtrStorageApi.getRecord(activeDoc.id);
-        if (full?.pdfDataUrl) {
-          activeDoc.pdfDataUrl = full.pdfDataUrl;
-          pdfBytes = base64ToUint8Array(full.pdfDataUrl);
+        let pdfData: string | undefined;
+        try {
+          const swDoc = await signingWorkspaceApi.getDocument(activeDoc.id);
+          if (swDoc && (swDoc.pdfDataUrl || swDoc.pdf_data)) {
+            pdfData = swDoc.pdfDataUrl || swDoc.pdf_data;
+          }
+        } catch {}
+        if (!pdfData) {
+          try {
+            const full = await dtrStorageApi.getRecord(activeDoc.id);
+            if (full?.pdfDataUrl) pdfData = full.pdfDataUrl;
+          } catch {}
+        }
+        if (pdfData) {
+          activeDoc.pdfDataUrl = pdfData;
+          pdfBytes = base64ToUint8Array(pdfData);
         }
       }
 
@@ -3943,6 +4426,7 @@ export function SigningWorkspace() {
       return;
     }
 
+    const isAll = confirmDeleteModal.type === "all";
     const count = targetIds.length;
     setIsDeletingBatch(true);
     setConfirmDeleteModal((prev) => ({ ...prev, isOpen: false }));
@@ -3972,14 +4456,17 @@ export function SigningWorkspace() {
     // 4. Broadcast DELETE event to other same-browser tabs immediately
     targetIds.forEach((id) => broadcastLocalDtrEvent({ type: "DELETE", id }));
 
-    // 5. Concurrently delete from backend Turso dtr_storage table using asyncPool (concurrency 8)
+    // 5. Delete from backend Turso signing_workspace_documents and legacy storage
     try {
+      if (isAll) {
+        await signingWorkspaceApi.deleteDocuments([], true);
+      } else {
+        await signingWorkspaceApi.deleteDocuments(targetIds);
+      }
       await asyncPool<string, void>(8, targetIds, async (id: string) => {
         try {
           await dtrStorageApi.deleteRecord(id);
-        } catch (err) {
-          console.warn(`Failed to delete record ${id} from dtr_storage:`, err);
-        }
+        } catch {}
       });
     } finally {
       setIsDeletingBatch(false);
@@ -4144,25 +4631,40 @@ export function SigningWorkspace() {
         })
       );
 
-      // Step B: Send micro-batch via dtrStorageApi.saveBatch with automatic retry
+      // Step B: Send micro-batch via signingWorkspaceApi.saveBatch with automatic retry
+      const chunkDocs = chunkPayloads.map((c) => ({
+        id: c.doc.id,
+        fileName: c.doc.fileName,
+        fileSize: c.doc.fileSize,
+        uploadedBy: c.doc.uploadedBy,
+        status: c.doc.status,
+        targetPersonnel: c.doc.targetPersonnel,
+        requiredSigners: c.doc.requiredSigners,
+        signers: c.doc.signers,
+        scannedInfo: c.doc.scannedInfo,
+        pdfDataUrl: c.dataUrl,
+        province: c.doc.province,
+        notes: c.doc.notes,
+      }));
+
       let batchSuccess = false;
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          const batchResult = await dtrStorageApi.saveBatch(
-            chunkPayloads.map((c) => c.payload),
-            { isLastChunk }
-          );
-          if (batchResult && batchResult.success !== false) {
+          const swBatchResult = await signingWorkspaceApi.saveBatch(chunkDocs);
+          if (swBatchResult && swBatchResult.success !== false) {
             batchSuccess = true;
             break;
           }
         } catch (e: any) {
-          console.warn(`saveBatch attempt ${attempt} failed:`, e);
+          console.warn(`signingWorkspaceApi.saveBatch attempt ${attempt} failed:`, e);
         }
         if (attempt < 2) {
           await new Promise((r) => setTimeout(r, 200));
         }
       }
+
+      // Also replicate to legacy dtrStorageApi in the background if needed
+      dtrStorageApi.saveBatch(chunkPayloads.map((c) => c.payload), { isLastChunk }).catch(() => {});
 
       if (batchSuccess) {
         const succeededIds = new Set(chunkPayloads.map((c) => c.doc.id));
@@ -4177,7 +4679,20 @@ export function SigningWorkspace() {
           let singleErr = "";
           for (let attempt = 1; attempt <= 2; attempt++) {
             try {
-              const res = await dtrStorageApi.saveRecord(c.payload);
+              const res = await signingWorkspaceApi.saveDocument({
+                id: c.doc.id,
+                fileName: c.doc.fileName,
+                fileSize: c.doc.fileSize,
+                uploadedBy: c.doc.uploadedBy,
+                status: c.doc.status,
+                targetPersonnel: c.doc.targetPersonnel,
+                requiredSigners: c.doc.requiredSigners,
+                signers: c.doc.signers,
+                scannedInfo: c.doc.scannedInfo,
+                pdfDataUrl: c.dataUrl,
+                province: c.doc.province,
+                notes: c.doc.notes,
+              });
               if (res && res.success !== false) {
                 singleSuccess = true;
                 break;
@@ -4318,12 +4833,24 @@ export function SigningWorkspace() {
       );
 
       let batchSuccess = false;
+      const chunkDocs = chunkPayloads.map((c) => ({
+        id: c.doc.id,
+        fileName: c.doc.fileName,
+        fileSize: c.doc.fileSize,
+        uploadedBy: c.doc.uploadedBy,
+        status: c.doc.status,
+        targetPersonnel: c.doc.targetPersonnel,
+        requiredSigners: c.doc.requiredSigners,
+        signers: c.doc.signers,
+        scannedInfo: c.doc.scannedInfo,
+        pdfDataUrl: (c.payload as any).pdfDataUrl,
+        province: c.doc.province,
+        notes: c.doc.notes,
+      }));
+
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          const res = await dtrStorageApi.saveBatch(
-            chunkPayloads.map((c) => c.payload),
-            { isLastChunk }
-          );
+          const res = await signingWorkspaceApi.saveBatch(chunkDocs);
           if (res && res.success !== false) {
             batchSuccess = true;
             break;
@@ -4331,6 +4858,7 @@ export function SigningWorkspace() {
         } catch {}
         if (attempt < 2) await new Promise((r) => setTimeout(r, 200));
       }
+      dtrStorageApi.saveBatch(chunkPayloads.map((c) => c.payload), { isLastChunk }).catch(() => {});
 
       if (batchSuccess) {
         const succeededIds = new Set(chunkPayloads.map((c) => c.doc.id));
@@ -4400,12 +4928,14 @@ export function SigningWorkspace() {
     counterSignPosition,
     counterSignTargetPersonnel,
     progressType,
+    asSignerName,
   }: {
     documentsToProcess: WorkspaceDocument[];
     isCounterSign: boolean;
     counterSignPosition?: CounterSignPosition;
     counterSignTargetPersonnel?: string;
     progressType: "sign" | "counter-sign";
+    asSignerName?: string;
   }) => {
     const total = documentsToProcess.length;
     if (total === 0) return;
@@ -4429,12 +4959,14 @@ export function SigningWorkspace() {
 
     showNotif(
       isCounterSign
-        ? `Turbo bulk counter-signing ${total} document(s) ${counterSignPosition === "bottom" ? "below" : "beside"} "${counterSignTargetPersonnel}"…`
+        ? `Turbo bulk counter-signing ${total} document(s) strictly ABOVE "${counterSignTargetPersonnel}"…`
+        : asSignerName
+        ? `Turbo bulk signing ${total} document(s) strictly ABOVE "${asSignerName}"…`
         : `Turbo bulk signing ${total} document(s) ABOVE personnel name…`
     );
 
     // 1. Pre-fetch and pre-decode user signature credentials ONCE for the entire batch
-    const signerCtx = await resolveUserSignerContext(false);
+    const signerCtx = await resolveUserSignerContext(true, asSignerName);
 
     // 2. Pre-fetch any remote PDFs that lack local binary data concurrently
     const missingPdfDocs = documentsToProcess.filter(
@@ -4443,12 +4975,20 @@ export function SigningWorkspace() {
     if (missingPdfDocs.length > 0) {
       await asyncPool(8, missingPdfDocs, async (d) => {
         try {
-          const fullRec = await dtrStorageApi.getRecord(d.id);
-          if (fullRec?.pdfDataUrl) {
-            d.pdfDataUrl = fullRec.pdfDataUrl;
+          const swDoc = await signingWorkspaceApi.getDocument(d.id);
+          if (swDoc && (swDoc.pdfDataUrl || swDoc.pdf_data)) {
+            d.pdfDataUrl = swDoc.pdfDataUrl || swDoc.pdf_data;
           }
-        } catch (e) {
-          console.warn(`Could not pre-fetch remote PDF for doc ${d.id}:`, e);
+        } catch {}
+        if (!d.pdfDataUrl) {
+          try {
+            const fullRec = await dtrStorageApi.getRecord(d.id);
+            if (fullRec?.pdfDataUrl) {
+              d.pdfDataUrl = fullRec.pdfDataUrl;
+            }
+          } catch (e) {
+            console.warn(`Could not pre-fetch remote PDF for doc ${d.id}:`, e);
+          }
         }
       });
     }
@@ -4466,18 +5006,40 @@ export function SigningWorkspace() {
       while (pendingPayloads.length >= MICRO_BATCH_SIZE || (force && pendingPayloads.length > 0)) {
         const chunk = pendingPayloads.splice(0, MICRO_BATCH_SIZE);
         const isChunkLast = isLast && pendingPayloads.length === 0;
-        const p = dtrStorageApi
-          .saveBatch(chunk, { isLastChunk: isChunkLast })
-          .then((res) => {
-            if (!res || res.success === false) {
-              // Fallback to concurrent single saves for this chunk
-              return Promise.all(chunk.map((rec) => dtrStorageApi.saveRecord(rec).catch(() => {})));
-            }
-          })
-          .catch((err) => {
-            console.warn("Micro-batch save failed, falling back to individual saves:", err);
-            return Promise.all(chunk.map((rec) => dtrStorageApi.saveRecord(rec).catch(() => {})));
-          });
+
+        const chunkForSigningWorkspace = chunk.map((rec) => {
+          let rem: any = {};
+          try {
+            if (rec.remarks) rem = JSON.parse(rec.remarks);
+          } catch {}
+          return {
+            id: rec.id,
+            fileName: rec.pdfFileName || rec.fileName,
+            fileSize: rec.pdfFileSize || rec.fileSize,
+            status: rec.status,
+            targetPersonnel: rem.targetPersonnel || rec.employeeName,
+            requiredSigners: rem.requiredSigners,
+            signers: rem.signers,
+            scannedInfo: rem.scannedInfo,
+            pdfDataUrl: rec.pdfDataUrl,
+            province: rec.province,
+            notes: rem.notes,
+          };
+        });
+
+        const p = signingWorkspaceApi
+          .saveBatch(chunkForSigningWorkspace)
+          .catch(() => {})
+          .then(() =>
+            dtrStorageApi
+              .saveBatch(chunk, { isLastChunk: isChunkLast })
+              .then((res) => {
+                if (!res || res.success === false) {
+                  return Promise.all(chunk.map((rec) => dtrStorageApi.saveRecord(rec).catch(() => {})));
+                }
+              })
+              .catch(() => Promise.all(chunk.map((rec) => dtrStorageApi.saveRecord(rec).catch(() => {}))))
+          );
         saveBatchPromises.push(p);
       }
     };
@@ -4491,6 +5053,7 @@ export function SigningWorkspace() {
           counterSignPosition,
           counterSignTargetPersonnel,
           signerContext: signerCtx,
+          asSignerName,
           skipDbSave: true,
         });
 
@@ -4557,7 +5120,9 @@ export function SigningWorkspace() {
       setTimeout(() => setBulkSignProgress(null), 3000);
       if (failedCount === 0) {
         showNotif(
-          `✓ Bulk signing complete — ${completedCount} document(s) digitally signed ABOVE personnel name in ${durationSec}s.`
+          asSignerName
+            ? `✓ Bulk signing complete — signed strictly ABOVE "${asSignerName}" on ${completedCount} document(s) in ${durationSec}s.`
+            : `✓ Bulk signing complete — ${completedCount} document(s) digitally signed ABOVE personnel name in ${durationSec}s.`
         );
       } else {
         showNotif(
@@ -4571,9 +5136,7 @@ export function SigningWorkspace() {
       setTimeout(() => setBulkCounterSignProgress(null), 3000);
       if (failedCount === 0) {
         showNotif(
-          `✓ Bulk counter-signing complete — counter-signature placed ${
-            counterSignPosition === "bottom" ? "below" : "beside"
-          } "${counterSignTargetPersonnel}" on ${completedCount} document(s) in ${durationSec}s.`
+          `✓ Bulk counter-signing complete — counter-signature placed strictly ABOVE "${counterSignTargetPersonnel}" on ${completedCount} document(s) in ${durationSec}s.`
         );
       } else {
         showNotif(
@@ -4591,6 +5154,12 @@ export function SigningWorkspace() {
       return;
     }
 
+    // For Super Admin (ace.malto@dict.gov.ph), ask which user name to sign as:
+    if (isCurrentUserSuperAdmin || isAceUser || userEmail === "ace.malto@dict.gov.ph") {
+      setIsSuperAdminBulkSignModalOpen(true);
+      return;
+    }
+
     const toSign =
       selectedUserRequiredDocs.length > 0 ? selectedUserRequiredDocs : userRequiredDocs;
 
@@ -4603,6 +5172,25 @@ export function SigningWorkspace() {
       documentsToProcess: toSign,
       isCounterSign: false,
       progressType: "sign",
+    });
+  };
+
+  const handleExecuteSuperAdminBulkSign = async (
+    signerName: string,
+    targetDocs: WorkspaceDocument[]
+  ) => {
+    setIsSuperAdminBulkSignModalOpen(false);
+
+    if (targetDocs.length === 0) {
+      showNotif(`⚠️ No pending documents found requiring signature for "${signerName}".`);
+      return;
+    }
+
+    await executeBulkSigningOperation({
+      documentsToProcess: targetDocs,
+      isCounterSign: false,
+      progressType: "sign",
+      asSignerName: signerName,
     });
   };
 
@@ -4627,7 +5215,7 @@ export function SigningWorkspace() {
 
   const handleExecuteBulkCounterSign = async (
     targetPersonnel: string,
-    position: CounterSignPosition = "right"
+    position: CounterSignPosition = "above"
   ) => {
     const toCounter =
       selectedUserCounterDocs.length > 0 ? selectedUserCounterDocs : userCounterDocs;
@@ -4672,11 +5260,12 @@ export function SigningWorkspace() {
     // Broadcast DELETE event to other same-browser tabs immediately
     broadcastLocalDtrEvent({ type: "DELETE", id });
 
-    // 4. Permanently delete from backend Turso dtr_storage table
+    // 4. Permanently delete from backend Turso signing_workspace_documents table
     try {
-      await dtrStorageApi.deleteRecord(id);
+      await signingWorkspaceApi.deleteDocument(id);
+      await dtrStorageApi.deleteRecord(id).catch(() => {});
     } catch (err) {
-      console.warn("Failed to delete record from dtr_storage:", err);
+      console.warn("Failed to delete record from signing workspace:", err);
     }
 
     showNotif("Document permanently removed from workspace.");
@@ -4770,9 +5359,20 @@ export function SigningWorkspace() {
                 <button
                   type="button"
                   onClick={handleBulkSign}
-                  disabled={isBulkSigning || (selectedUserRequiredDocs.length === 0 && userRequiredDocs.length === 0)}
+                  disabled={
+                    isBulkSigning ||
+                    (isCurrentUserSuperAdmin
+                      ? (selectedDocs.length > 0
+                          ? selectedDocs.filter((d) => computeEffectiveDocStatus(d) !== "signed").length === 0
+                          : documents.filter((d) => computeEffectiveDocStatus(d) !== "signed").length === 0)
+                      : (selectedUserRequiredDocs.length === 0 && userRequiredDocs.length === 0))
+                  }
                   className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-bold text-xs shadow-lg shadow-violet-950/50 transition-all cursor-pointer active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Bulk signs documents where you are listed as a required signer. Places digital signature ABOVE personnel name."
+                  title={
+                    isCurrentUserSuperAdmin
+                      ? "Super Admin Bulk Sign: Select which registered DICT personnel name to sign as. Strictly filtered to active User List."
+                      : "Bulk signs documents where you are listed as a required signer. Places digital signature ABOVE personnel name."
+                  }
                 >
                   {isBulkSigning ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -4782,6 +5382,10 @@ export function SigningWorkspace() {
                   <span>
                     {isBulkSigning
                       ? `Signing (${bulkSignProgress?.completed ?? 0}/${bulkSignProgress?.total ?? (selectedUserRequiredDocs.length || userRequiredDocs.length)})`
+                      : isCurrentUserSuperAdmin
+                      ? selectedDocs.length > 0
+                        ? `Bulk Sign (${selectedDocs.filter((d) => computeEffectiveDocStatus(d) !== "signed").length})`
+                        : `Bulk Sign (${documents.filter((d) => computeEffectiveDocStatus(d) !== "signed").length})`
                       : selectedUserRequiredDocs.length > 0
                       ? `Bulk Sign (${selectedUserRequiredDocs.length})`
                       : `Bulk Sign (${userRequiredDocs.length})`}
@@ -5853,6 +6457,17 @@ export function SigningWorkspace() {
         isOpen={showUploadModal}
         onClose={() => setShowUploadModal(false)}
         onUpload={handleUploadScanned}
+      />
+
+      {/* ── Super Admin Bulk Sign Personnel Picker Modal ────────────────── */}
+      <SuperAdminBulkSignModal
+        isOpen={isSuperAdminBulkSignModalOpen}
+        onClose={() => setIsSuperAdminBulkSignModalOpen(false)}
+        onConfirm={handleExecuteSuperAdminBulkSign}
+        isProcessing={isBulkSigning}
+        documents={documents}
+        selectedDocs={selectedDocs}
+        currentUser={currentUser}
       />
 
       {/* ── Bulk Counter Sign Selection Modal ────────────────────────────── */}

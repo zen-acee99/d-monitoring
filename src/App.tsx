@@ -1,5 +1,7 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Snowfall } from "falling-snow/react";
+import { isSnowEnabled, SNOW_EVENT } from "./services/snowStore";
 import { Shell } from "./components/layout/Shell";
 import { Dashboard } from "./pages/Dashboard";
 import { Monitoring } from "./pages/Monitoring";
@@ -17,8 +19,34 @@ import { SystemSettings } from "./pages/settings/SystemSettings";
 import { ModuleGuard } from "./components/auth/ModuleGuard";
 
 function App() {
+  const [snowActive, setSnowActive] = useState<boolean>(() => isSnowEnabled());
+
+  useEffect(() => {
+    const handleToggle = (e: Event) => {
+      const customEv = e as CustomEvent<boolean>;
+      setSnowActive(customEv.detail ?? isSnowEnabled());
+    };
+    window.addEventListener(SNOW_EVENT, handleToggle);
+    return () => window.removeEventListener(SNOW_EVENT, handleToggle);
+  }, []);
+
   return (
     <BrowserRouter>
+      {snowActive && (
+        <Snowfall
+          fullScreen
+          respectReducedMotion={false}
+          count={180}
+          speed={1.0}
+          wind={0.25}
+          size={[6, 26]}
+          opacity={[0.65, 1.0]}
+          colors={["#ffffff", "#e0f2fe", "#93c5fd", "#60a5fa", "#ffffff"]}
+          flake="mixed"
+          depth={1}
+          zIndex={99999}
+        />
+      )}
       <Routes>
         <Route path="/login" element={<Login />} />
         

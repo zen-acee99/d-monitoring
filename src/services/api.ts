@@ -1294,6 +1294,160 @@ export const dtrStorageApi = {
   },
 };
 
+// Signing Workspace Dedicated Table & API (connected to Turso signing_workspace_documents table)
+export const signingWorkspaceApi = {
+  // 1. Get documents list with optional query filters (lean by default, omitting huge pdfDataUrl)
+  async getDocuments(filters?: {
+    status?: string;
+    target_personnel?: string;
+    search?: string;
+    include_pdf?: boolean;
+  }): Promise<any[]> {
+    try {
+      const params = new URLSearchParams();
+      if (filters?.status && filters.status !== "All" && filters.status !== "all") params.set("status", filters.status);
+      if (filters?.target_personnel) params.set("target_personnel", filters.target_personnel);
+      if (filters?.search) params.set("search", filters.search);
+      if (filters?.include_pdf) params.set("include_pdf", "true");
+      params.set("_t", Date.now().toString());
+
+      const res = await apiFetch(`${API_BASE}/signing-workspace?${params.toString()}`, {
+        cache: "no-store",
+        headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+      });
+      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+      const data = await res.json();
+      return data.documents || [];
+    } catch (err) {
+      console.warn("Failed to fetch signing workspace documents:", err);
+      return [];
+    }
+  },
+
+  // 2. Get single document with full binary PDF payload
+  async getDocument(id: string): Promise<any | null> {
+    try {
+      const res = await apiFetch(`${API_BASE}/signing-workspace/${encodeURIComponent(id)}?_t=${Date.now()}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.document || null;
+    } catch {
+      return null;
+    }
+  },
+
+  // 3. Create or upsert single document
+  async saveDocument(doc: Record<string, any>): Promise<{ success: boolean; document?: any; error?: string }> {
+    try {
+      const res = await apiFetch(`${API_BASE}/signing-workspace`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(doc),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP error ${res.status}`);
+      return data;
+    } catch (err: any) {
+      console.error("Failed to save signing workspace document:", err);
+      return { success: false, error: err.message || "Failed to save document" };
+    }
+  },
+
+  // 4. Batch save documents in micro-chunks
+  async saveBatch(documents: Record<string, any>[]): Promise<{
+    success: boolean;
+    count?: number;
+    saved?: any[];
+    error?: string;
+  }> {
+    try {
+      const res = await apiFetch(`${API_BASE}/signing-workspace/batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documents }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP error ${res.status}`);
+      return data;
+    } catch (err: any) {
+      console.warn("Signing workspace batch save failed:", err);
+      return { success: false, error: err.message || "Batch API error" };
+    }
+  },
+
+  // 5. Update document fields (status, signers, notes, pdfDataUrl)
+  async updateDocument(id: string, updates: Record<string, any>): Promise<{ success: boolean; id?: string; error?: string }> {
+    try {
+      const res = await apiFetch(`${API_BASE}/signing-workspace/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP error ${res.status}`);
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || "Failed to update document" };
+    }
+  },
+
+  // 6. Delete single document
+  async deleteDocument(id: string): Promise<boolean> {
+    try {
+      const res = await apiFetch(`${API_BASE}/signing-workspace/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      return Boolean(data.success);
+    } catch {
+      return false;
+    }
+  },
+
+  // 7. Bulk delete documents or delete all
+  async deleteDocuments(ids?: string[], all?: boolean): Promise<{ success: boolean; count?: number; error?: string }> {
+    try {
+      const res = await apiFetch(`${API_BASE}/signing-workspace/bulk-delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, all }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP error ${res.status}`);
+      return data;
+    } catch (err: any) {
+      return { success: false, error: err.message || "Failed to bulk delete documents" };
+    }
+  },
+};
+
+// Realtime SSE event listener for Signing Workspace
+export function subscribeToSigningWorkspaceRealtime(callback: (event: any) => void): () => void {
+  if (typeof window === "undefined" || !("EventSource" in window)) {
+    return () => {};
+  }
+  let es: EventSource | null = null;
+  try {
+    es = new EventSource(`${API_BASE}/signing-workspace/events`);
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        callback(data);
+      } catch {}
+    };
+    es.onerror = () => {
+      // Browser EventSource automatically reconnects
+    };
+  } catch {}
+  return () => {
+    if (es) {
+      es.close();
+      es = null;
+    }
+  };
+}
+
 // DTR User Setup & Presets API (connected to Turso dtr_user_setup table)
 export interface DtrUserSetup {
   id: string;

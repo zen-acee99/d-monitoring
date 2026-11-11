@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import forge from "node-forge";
 import zlib from "zlib";
-import { PDFDocument, PDFName, PDFNumber, PDFString, PDFHexString, PDFArray, PDFDict, PDFInvalidObject } from "pdf-lib";
+import { PDFDocument, PDFName, PDFNumber, PDFString, PDFHexString, PDFArray, PDFDict, PDFInvalidObject, rgb, StandardFonts } from "pdf-lib";
 import { SignPdf } from "@signpdf/signpdf";
 import { P12Signer } from "@signpdf/signer-p12";
 import { DEFAULT_BYTE_RANGE_PLACEHOLDER, ANNOTATION_FLAGS, SIG_FLAGS } from "@signpdf/utils";
@@ -314,6 +314,59 @@ function parsePdfObjects(pdfBuf: Buffer): Map<number, string> {
 }
 
 /**
+ * Normalizes signature bounding box coordinates from either:
+ * - [x, y, width, height] (legacy format or jsPDF style)
+ * - [llx, lly, urx, ury] (ISO 32000 compliant format)
+ * and guarantees minimum bounds (>= 115pt width, >= 18pt height) so visual stamp
+ * fits with a clean 5-8px gap directly above the user's name without invading columns.
+ */
+export function normalizeSignatureBoundingBox(coords: [number, number, number, number]): {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  bboxW: number;
+  bboxH: number;
+} {
+  const [c0, c1, c2, c3] = coords;
+  // Determine if coords is [x, y, width, height] vs [x1, y1, x2, y2].
+  // In [x, y, width, height], c2 is width (typically 80-350) and c3 is height (typically 14-50).
+  // If c3 > c1 happened simply because y was small (e.g. y = 15, h = 18), (c3 - c1) is < 10 or tiny.
+  // In [x1, y1, x2, y2], (c3 - c1) is the height (e.g. 18-50) and (c2 - c0) is the width (e.g. 80-350).
+  const isWidthHeight =
+    c3 > 0 && c3 <= 60 && c2 > 0 && c2 <= 400 &&
+    (c3 - c1 < 10 || c3 - c1 > 60 || c2 - c0 < 50);
+
+  let minX: number, minY: number, maxX: number, maxY: number;
+  if (isWidthHeight) {
+    minX = Math.round(c0);
+    minY = Math.round(c1);
+    maxX = Math.round(c0 + c2);
+    maxY = Math.round(c1 + c3);
+  } else {
+    minX = Math.round(Math.min(c0, c2));
+    minY = Math.round(Math.min(c1, c3));
+    maxX = Math.round(Math.max(c0, c2));
+    maxY = Math.round(Math.max(c1, c3));
+  }
+
+  let bboxW = Math.max(20, maxX - minX);
+  let bboxH = Math.max(14, maxY - minY);
+
+  // Guarantee minimum bounds so visual stamp fits with clean 5-8px gap
+  if (bboxW < 115) {
+    bboxW = 115;
+    maxX = minX + bboxW;
+  }
+  if (bboxH < 18) {
+    bboxH = 18;
+    maxY = minY + bboxH;
+  }
+
+  return { minX, minY, maxX, maxY, bboxW, bboxH };
+}
+
+/**
  * Appends a digital signature incrementally to an already-signed PDF buffer,
  * preserving all previous signatures and their cryptographic byte ranges intact (ISO 32000 compliant).
  * Renders the visual appearance (signature image + crisp black typography) directly into the
@@ -540,6 +593,8 @@ export async function appendSignatureIncremental(
   const cleanSignerTag = signerName.replace(/[^a-zA-Z0-9]/g, "_");
   const isCounter = Boolean(visualOptions?.isCounterSign);
 
+
+
   // 4. Widget Annotations & Appearance Streams
   const newWidgetRefs: string[] = [];
   sigRects.forEach((rectCoords, idx) => {
@@ -547,45 +602,7 @@ export async function appendSignatureIncremental(
     const apNum = nextFreeObj++;
     newWidgetRefs.push(`${wNum} 0 R`);
 
-    const c0 = rectCoords[0];
-    const c1 = rectCoords[1];
-    const c2 = rectCoords[2];
-    const c3 = rectCoords[3];
-
-    let minX: number;
-    let minY: number;
-    let maxX: number;
-    let maxY: number;
-
-    // Detect whether rectCoords is [x1, y1, x2, y2] or [x, y, width, height]
-    if (c2 > c0 && c3 > c1) {
-      // Format is [x1, y1, x2, y2]
-      minX = Math.round(c0);
-      minY = Math.round(c1);
-      maxX = Math.round(c2);
-      maxY = Math.round(c3);
-    } else {
-      // Format is [x, y, width, height]
-      minX = Math.round(Math.min(c0, c0 + c2));
-      minY = Math.round(Math.min(c1, c1 + c3));
-      maxX = Math.round(Math.max(c0, c0 + c2));
-      maxY = Math.round(Math.max(c1, c1 + c3));
-    }
-
-    let bboxW = Math.max(20, maxX - minX);
-    let bboxH = Math.max(14, maxY - minY);
-
-    if (!isCounter) {
-      // Ensure the visual bounding box is wide enough for the stamp without invading adjacent columns
-      if (bboxW < 115) {
-        bboxW = 115;
-        maxX = minX + bboxW;
-      }
-      if (bboxH < 18) {
-        bboxH = 18;
-        maxY = minY + bboxH;
-      }
-    }
+    const { minX, minY, maxX, maxY, bboxW, bboxH } = normalizeSignatureBoundingBox(rectCoords);
 
     const sigIndex = existingSigCount + 1 + idx;
     const defaultFieldName = isCounter
@@ -597,26 +614,35 @@ export async function appendSignatureIncremental(
 
     let streamContent = "q\n";
 
-    if (isCounter) {
-      // ── Compact Horizontal Counter-Signature (beside personnel name) ──
-      if (imgObjNum) {
-        streamContent += `q\n14 0 0 12 1 1 cm\n/SigImg Do\nQ\n`;
-      } else {
-        // Crisp vector checkmark on left
-        streamContent += `q\n1.1 w\n0 0 0 RG\n2 6.5 m\n6 2.5 l\n13 11.5 l\nS\nQ\n`;
-      }
-      const rawName = (signerName || "Signer").trim();
-      const nameParts = rawName.split(/\s+/).filter(Boolean);
-      const compactName =
-        rawName.length <= 10
-          ? rawName
-          : nameParts.length > 1
-          ? `${nameParts[0][0]}. ${nameParts[nameParts.length - 1]}`
-          : rawName.slice(0, 10);
-      const escapedCompact = compactName.replace(/[()\\]/g, "\\$&");
+    const isReneJane =
+      signerName.toLowerCase().includes("buena") ||
+      signerName.toLowerCase().includes("rene jane");
+    const escapedSigner = signerName.replace(/[()\\]/g, "\\$&");
 
-      // Black text, regular Helvetica
-      streamContent += `q\nBT\n/Helv 3.3 Tf\n0 0 0 rg\n16 8 Td\n(DigiSigned) Tj\n0 -4.5 Td\n/Helv 3.0 Tf\n(by ${escapedCompact}) Tj\nET\nQ\nQ\n`;
+    if (isCounter) {
+      // ── DigiSigned Stamp ABOVE Personnel Name (18pt height, 5-8px gap) ──
+      if (imgObjNum) {
+        const drawH = Math.max(10, bboxH - 4);
+        streamContent += `q\n30 0 0 ${drawH} 2 2 cm\n/SigImg Do\nQ\n`;
+      } else {
+        // Crisp vector checkmark on left if no image
+        streamContent += `q\n1.2 w\n0 0 0 RG\n4 9 m\n8 5 l\n15 14 l\nS\nQ\n`;
+      }
+      const titleText = "DigiSigned";
+      const signerFullText = `by ${escapedSigner}`;
+      const textX = imgObjNum ? 34 : 18;
+
+      const availW = Math.max(50, bboxW - textX - 6);
+      let signerFontSize = signerFullText.length > 24 ? 5.2 : 5.8;
+      const charWidthFactor = 0.58;
+      let estimatedTextWidth = signerFullText.length * (signerFontSize * charWidthFactor);
+      while (signerFontSize > 3.2 && estimatedTextWidth > availW) {
+        signerFontSize -= 0.1;
+        estimatedTextWidth = signerFullText.length * (signerFontSize * charWidthFactor);
+      }
+      signerFontSize = Math.round(signerFontSize * 10) / 10;
+
+      streamContent += `q\nBT\n/Helv 5.5 Tf\n0 0 0 rg\n${textX} 10.5 Td\n(${titleText}) Tj\n0 -6.5 Td\n/Helv ${signerFontSize} Tf\n(${signerFullText}) Tj\nET\nQ\nQ\n`;
     } else {
       // ── Standard Signature Stamp ABOVE Personnel Name (18pt height, 5-8px gap) ──
       if (imgObjNum) {
@@ -624,8 +650,8 @@ export async function appendSignatureIncremental(
         streamContent += `q\n30 0 0 ${drawH} 2 2 cm\n/SigImg Do\nQ\n`;
       }
       const textX = imgObjNum ? 34 : 4;
-      const escapedSigner = signerName.replace(/[()\\]/g, "\\$&");
-      const signerFullText = `by ${escapedSigner}`;
+      const titleText = isReneJane ? "Digitally signed by" : "Digitally signed";
+      const signerFullText = isReneJane ? "Buena Rene Jane Rosendo" : `by ${escapedSigner}`;
 
       // Dynamic font size calculation to guarantee long names (e.g. Annabel C. Odoño-Calimpong) are NEVER cut off
       const availW = Math.max(50, bboxW - textX - 6);
@@ -639,8 +665,8 @@ export async function appendSignatureIncremental(
       signerFontSize = Math.round(signerFontSize * 10) / 10;
 
       // Per user explicit instruction: Black text, normal font (not bold), no date/time
-      // Compact 18pt height layout: Line 1 at 10.5, Line 2 at 4.0
-      streamContent += `q\nBT\n/Helv 5.5 Tf\n0 0 0 rg\n${textX} 10.5 Td\n(Digitally signed) Tj\n0 -6.5 Td\n/Helv ${signerFontSize} Tf\n(${signerFullText}) Tj\nET\nQ\nQ\n`;
+      // Compact 18pt height layout: Line 1 at 9.5, Line 2 at 3.0 (snug above signatory name)
+      streamContent += `q\nBT\n/Helv 5.5 Tf\n0 0 0 rg\n${textX} 9.5 Td\n(${titleText}) Tj\n0 -6.5 Td\n/Helv ${signerFontSize} Tf\n(${signerFullText}) Tj\nET\nQ\nQ\n`;
     }
 
     const streamLen = Buffer.from(streamContent, "binary").length;
@@ -698,23 +724,39 @@ export async function appendSignatureIncremental(
   // 7. Updated Catalog Object ONLY if AcroForm was newly created or was inline
   if (!existingAcroFormObjNum) {
     let cleanedCatalogBody = catalogBody.trim();
-    if (cleanedCatalogBody.startsWith("<<")) {
-      cleanedCatalogBody = cleanedCatalogBody.slice(2);
-    }
-    if (cleanedCatalogBody.endsWith(">>")) {
-      cleanedCatalogBody = cleanedCatalogBody.slice(0, -2);
-    }
-    cleanedCatalogBody = cleanedCatalogBody.replace(/\/AcroForm\s+\d+\s+0\s+R/g, "").trim();
+    cleanedCatalogBody = cleanedCatalogBody.replace(/^\d+\s+\d+\s+obj\s*/, "");
 
-    // Cleanly remove inline /AcroForm << ... >> using balanced dictionary extraction
-    // (regex cannot match nested dictionaries without cutting off at inner dictionaries like /DR or /Font)
+    // Cleanly extract inner dictionary content if enclosed in << ... >>
+    const firstDictOpen = cleanedCatalogBody.indexOf("<<");
+    const lastDictClose = cleanedCatalogBody.lastIndexOf(">>");
+    if (firstDictOpen !== -1 && lastDictClose !== -1 && lastDictClose > firstDictOpen) {
+      cleanedCatalogBody = cleanedCatalogBody.slice(firstDictOpen + 2, lastDictClose).trim();
+    }
+
+    // Clean dangling >> if any
+    cleanedCatalogBody = cleanedCatalogBody.replace(/>{2,}/g, "").trim();
+
+    // Remove any existing /AcroForm reference or inline dictionary
+    cleanedCatalogBody = cleanedCatalogBody.replace(/\/AcroForm\s+\d+\s+0\s+R/g, "").trim();
     const afIdx = cleanedCatalogBody.indexOf("/AcroForm");
     if (afIdx !== -1) {
       const balanced = extractBalancedDict(cleanedCatalogBody, afIdx);
       if (balanced) {
-        const dictStart = cleanedCatalogBody.indexOf(balanced, afIdx);
-        cleanedCatalogBody = (cleanedCatalogBody.slice(0, afIdx) + cleanedCatalogBody.slice(dictStart + balanced.length)).trim();
+        cleanedCatalogBody = (cleanedCatalogBody.slice(0, afIdx) + cleanedCatalogBody.slice(afIdx + balanced.length)).trim();
       }
+    }
+
+    // Guarantee /Pages is ALWAYS preserved in the Document Catalog (ISO 32000-1 requirement)
+    if (!cleanedCatalogBody.includes("/Pages")) {
+      const pagesMatch = pdfStr.match(/\/Pages\s+(\d+\s+0\s+R)/);
+      if (pagesMatch) {
+        cleanedCatalogBody = `${pagesMatch[0]}\n${cleanedCatalogBody}`;
+      }
+    }
+
+    // Guarantee /Type /Catalog is present
+    if (!cleanedCatalogBody.includes("/Type /Catalog") && !cleanedCatalogBody.includes("/Type/Catalog")) {
+      cleanedCatalogBody = `/Type /Catalog\n${cleanedCatalogBody}`;
     }
 
     appendObj(
@@ -881,11 +923,9 @@ export async function signPdfBuffer(
         : (options?.pageIndex === -1 ? pages.length - 1 : 0);
     const page = pages[targetPageIndex] || pages[0];
 
-    const widgetRects = rawRects.map(([c0, c1, c2, c3]) => {
-      if (c2 > c0 && c3 > c1) {
-        return [c0, c1, c2, c3];
-      }
-      return [c0, c1, c0 + c2, c1 + c3];
+    const widgetRects = rawRects.map((r) => {
+      const box = normalizeSignatureBoundingBox(r);
+      return [box.minX, box.minY, box.maxX, box.maxY] as [number, number, number, number];
     });
     const signatureLength = 32768;
 
@@ -949,7 +989,14 @@ export async function signPdfBuffer(
   }
 
   const sigUid = Math.random().toString(36).substring(2, 7);
-  widgetRects.forEach((rectCoords, index) => {
+  const isCounter = Boolean(options?.isCounterSign);
+  let helveticaFont: any = null;
+  try {
+    helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  } catch {}
+
+  for (let index = 0; index < widgetRects.length; index++) {
+    const rectCoords = widgetRects[index];
     const minX = Math.min(rectCoords[0], rectCoords[2]);
     const minY = Math.min(rectCoords[1], rectCoords[3]);
     const maxX = Math.max(rectCoords[0], rectCoords[2]);
@@ -957,15 +1004,108 @@ export async function signPdfBuffer(
     const rw = maxX - minX;
     const rh = maxY - minY;
 
+    // Draw visual appearance directly onto the page
+    let hasImg = false;
+    if (options?.signatureImage) {
+      try {
+        const imgData = options.signatureImage.replace(/^data:image\/\w+;base64,/, "");
+        const imgBuf = Buffer.from(imgData, "base64");
+        const isPng = options.signatureImage.includes("png") || imgBuf[0] === 0x89;
+        const embedded = isPng ? await pdfDoc.embedPng(imgBuf) : await pdfDoc.embedJpg(imgBuf);
+        page.drawImage(embedded, {
+          x: minX + 2,
+          y: minY + 1.5,
+          width: 30,
+          height: Math.max(10, rh - 3),
+        });
+        hasImg = true;
+      } catch (e) {
+        console.warn("[pnpki] Could not embed signature image in first-signature mode:", e);
+      }
+    } else if (isCounter) {
+      try {
+        page.drawLine({
+          start: { x: minX + 4, y: minY + 9 },
+          end: { x: minX + 8, y: minY + 5 },
+          thickness: 1.2,
+          color: rgb(0, 0, 0),
+        });
+        page.drawLine({
+          start: { x: minX + 8, y: minY + 5 },
+          end: { x: minX + 15, y: minY + 14 },
+          thickness: 1.2,
+          color: rgb(0, 0, 0),
+        });
+        hasImg = true;
+      } catch {}
+    }
+
+    if (helveticaFont) {
+      try {
+        const textX = hasImg ? (options?.signatureImage ? minX + 34 : minX + 18) : minX + 4;
+        const isReneJane =
+          signerName.toLowerCase().includes("buena") ||
+          signerName.toLowerCase().includes("rene jane");
+        const titleText = isCounter ? "DigiSigned" : (isReneJane ? "Digitally signed by" : "Digitally signed");
+        const signerFullText = isCounter ? `by ${signerName}` : (isReneJane ? "Buena Rene Jane Rosendo" : `by ${signerName}`);
+        const availW = Math.max(50, rw - (textX - minX) - 4);
+        let signerFontSize = signerFullText.length > 24 ? 5.2 : 5.8;
+        while (signerFontSize > 3.2 && helveticaFont.widthOfTextAtSize(signerFullText, signerFontSize) > availW) {
+          signerFontSize -= 0.1;
+        }
+        page.drawText(titleText, {
+          x: textX,
+          y: minY + 9.5,
+          size: 5.5,
+          font: helveticaFont,
+          color: rgb(0, 0, 0),
+        });
+        page.drawText(signerFullText, {
+          x: textX,
+          y: minY + 3.0,
+          size: signerFontSize,
+          font: helveticaFont,
+          color: rgb(0, 0, 0),
+        });
+      } catch (e) {
+        console.warn("[pnpki] Could not draw digital signature text in first-signature mode:", e);
+      }
+    }
+
     const rect = PDFArray.withContext(pdfDoc.context);
     rect.push(PDFNumber.of(minX));
     rect.push(PDFNumber.of(minY));
     rect.push(PDFNumber.of(maxX));
     rect.push(PDFNumber.of(maxY));
 
-    const apStream = pdfDoc.context.formXObject([], {
+    let fontRef: any = null;
+    const fontDict = pdfDoc.context.obj({
+      Type: "Font",
+      Subtype: "Type1",
+      BaseFont: "Helvetica",
+    });
+    fontRef = pdfDoc.context.register(fontDict);
+
+    const escapedSigner = signerName.replace(/[()\\]/g, "\\$&");
+    const isReneJane =
+      signerName.toLowerCase().includes("buena") ||
+      signerName.toLowerCase().includes("rene jane");
+    const apTitleText = isCounter ? "DigiSigned" : (isReneJane ? "Digitally signed by" : "Digitally signed");
+    const apSignerFullText = isCounter ? `by ${escapedSigner}` : (isReneJane ? "Buena Rene Jane Rosendo" : `by ${escapedSigner}`);
+    const apTextX = (isCounter && !options?.signatureImage) ? 18 : (options?.signatureImage ? 34 : 4);
+    const apSignerFontSize = apSignerFullText.length > 24 ? 5.0 : 5.6;
+
+    let apStreamOps = "q\n";
+    if (isCounter && !options?.signatureImage) {
+      apStreamOps += "1.2 w\n0 0 0 RG\n4 9 m\n8 5 l\n15 14 l\nS\n";
+    }
+    apStreamOps += `BT\n/F1 5.5 Tf\n0 0 0 rg\n${apTextX} 10.5 Td\n(${apTitleText}) Tj\nET\nBT\n/F1 ${apSignerFontSize.toFixed(1)} Tf\n0 0 0 rg\n${apTextX} 4.0 Td\n(${apSignerFullText}) Tj\nET\nQ\n`;
+
+    const apStream = pdfDoc.context.stream(apStreamOps, {
+      Type: "XObject",
+      Subtype: "Form",
       BBox: [0, 0, rw, rh],
-      Resources: {},
+      Resources: { Font: { F1: fontRef } },
     });
 
     const roleName = reason.toLowerCase().includes("verification") ? "Supervisor" : "Personnel";
@@ -988,7 +1128,7 @@ export async function signPdfBuffer(
     const widgetRef = pdfDoc.context.register(widgetDict);
     widgetRefs.push(widgetRef);
     annotations.push(widgetRef);
-  });
+  }
 
   page.node.set(PDFName.of("Annots"), annotations);
 

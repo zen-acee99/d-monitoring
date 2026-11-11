@@ -654,6 +654,35 @@ export async function initDatabase() {
     console.warn("Could not seed dtr_work_schedule_settings:", err);
   }
 
+  // 3d. Create dedicated signing_workspace_documents table
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS signing_workspace_documents (
+      id TEXT PRIMARY KEY,
+      file_name TEXT NOT NULL,
+      file_size TEXT,
+      uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      uploaded_by TEXT,
+      status TEXT DEFAULT 'pending',
+      target_personnel TEXT,
+      required_signers TEXT,
+      signers_matrix TEXT,
+      scanned_info TEXT,
+      pdf_data TEXT,
+      province TEXT DEFAULT 'Regional Office',
+      section_division TEXT DEFAULT 'Regional Office V',
+      notes TEXT,
+      has_p12 INTEGER DEFAULT 0,
+      signature_image TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  try {
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_sw_docs_status ON signing_workspace_documents(status);`);
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_sw_docs_uploaded_at ON signing_workspace_documents(uploaded_at);`);
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_sw_docs_target ON signing_workspace_documents(target_personnel);`);
+  } catch {}
+
   // 4. Create module table (Module management, specific module codes, and active/deactive status)
   await db.execute(`
     CREATE TABLE IF NOT EXISTS module (
