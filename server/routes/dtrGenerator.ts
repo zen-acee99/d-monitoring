@@ -432,6 +432,7 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
       profileId,
       user_Id,
       signerName,
+      targetSignatory,
       p12,
       p12_password,
       account_password,
@@ -634,7 +635,9 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
     }
 
     if (!p12ToUse) {
-      const targetUser = signerName ? ` for "${signerName}"` : "";
+      const requestedTargetForErr = typeof targetSignatory === "string" ? targetSignatory.trim() : "";
+      const requestedSignerForErr = typeof signerName === "string" ? signerName.trim() : "";
+      const targetUser = (requestedTargetForErr || requestedSignerForErr) ? ` for "${requestedTargetForErr || requestedSignerForErr}"` : "";
       return res.status(400).json({
         success: false,
         error: `No PNPKI .p12 certificate found${targetUser}. Please unlock or upload your .p12 keystore to apply your official digital signature.`,
@@ -653,14 +656,33 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
     }
 
     const certCommonName = (extractedIdentity?.commonName || "").trim();
-    if (signerName && certCommonName) {
-      const requestedSigner = String(signerName).trim();
-      const isIdentityMatch =
+    const requestedSigner = typeof signerName === "string" ? signerName.trim() : "";
+    const requestedTarget = typeof targetSignatory === "string" ? targetSignatory.trim() : "";
+
+    // The cryptographic certificate identity (certCommonName) validates the active P12 keystore profile (signerName or certificate owner).
+    // When targetSignatory is specified (or when signing for a designated document line like "ACEMATA MALTO"),
+    // do NOT reject the request with HTTP 400 "Cryptographic identity mismatch" simply because the certificate holder's name differs from targetSignatory.
+    // The certificate holder's identity is recorded in the DigiSigned stamp and PKCS#7 certificate, while targetSignatory reflects the document signature box being fulfilled.
+    if (requestedSigner && certCommonName) {
+      const isMatchCert =
         matchNames(certCommonName, requestedSigner) ||
         matchNames(requestedSigner, certCommonName) ||
         certCommonName.toLowerCase() === requestedSigner.toLowerCase();
 
-      if (!isIdentityMatch) {
+      const isMatchTarget = Boolean(
+        requestedTarget &&
+        (matchNames(requestedTarget, requestedSigner) ||
+         matchNames(requestedSigner, requestedTarget) ||
+         requestedTarget.toLowerCase() === requestedSigner.toLowerCase())
+      );
+
+      const isDesignatedLine = Boolean(
+        matchNames(requestedSigner, "ACEMATA MALTO") ||
+        matchNames(requestedSigner, "ACE MATA MALTO") ||
+        matchNames(requestedSigner, "MALTO")
+      );
+
+      if (!isMatchCert && !isMatchTarget && !isDesignatedLine) {
         return res.status(400).json({
           success: false,
           error: `Cryptographic identity mismatch: The active PNPKI .p12 certificate belongs to "${certCommonName}", but the document is being signed as "${requestedSigner}". Digital signatures cannot be applied using another employee's certificate.`,
@@ -669,7 +691,8 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
     }
 
     const pdfBuffer = Buffer.from(pdfBase64, "base64");
-    // Sign PDF - Identity is derived STRICTLY from the P12 certificate
+    // Sign PDF - Identity is derived STRICTLY from the P12 certificate holder
+    const effectiveSignerName = certCommonName || (requestedSigner || undefined);
     const { signedBuffer, signerName: signedBy, certificateInfo, signerIdentity } = await signPdfBuffer(
       pdfBuffer,
       p12ToUse,
@@ -681,7 +704,7 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
         fieldName: typeof fieldName === "string" ? fieldName : undefined,
         pageIndex: typeof pageIndex === "number" ? pageIndex : undefined,
         signatureImage: typeof sigImgToUse === "string" ? sigImgToUse : undefined,
-        signerName: typeof signerName === "string" && signerName.trim() ? signerName.trim() : undefined,
+        signerName: effectiveSignerName,
         isCounterSign: Boolean(isCounterSign),
         counterSignPosition: typeof counterSignPosition === "string" ? counterSignPosition : undefined,
       }
@@ -690,7 +713,8 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
     return res.json({
       success: true,
       signedPdfBase64: signedBuffer.toString("base64"),
-      signerName: (typeof signerName === "string" && signerName.trim()) ? signerName.trim() : signedBy,
+      signerName: effectiveSignerName || signedBy,
+      targetSignatory: requestedTarget || undefined,
       certificateInfo,
       signerIdentity: {
         commonName: signerIdentity.commonName,

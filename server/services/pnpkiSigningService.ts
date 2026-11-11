@@ -455,11 +455,38 @@ export async function appendSignatureIncremental(
   }
   const catalogBody = objMap.get(rootObjNum) || "";
 
-  // 4. Find Page Object number (collect all /Type /Page to support multi-page targetPageIndex)
+  // 4. Find Page Object number by traversing the document page tree from Catalog /Pages
   const pageObjNums: number[] = [];
-  for (const [objNum, body] of objMap.entries()) {
-    if (/\/Type\s*\/Page\b/.test(body)) {
-      pageObjNums.push(objNum);
+  const pagesRefMatch = catalogBody.match(/\/Pages\s+(\d+)\s+0\s+R/);
+  if (pagesRefMatch) {
+    const pagesRootNum = parseInt(pagesRefMatch[1]);
+    const visited = new Set<number>();
+    const collectPages = (nodeObjNum: number) => {
+      if (visited.has(nodeObjNum)) return;
+      visited.add(nodeObjNum);
+      const nodeBody = objMap.get(nodeObjNum) || "";
+      if (/\/Type\s*\/Page\b/.test(nodeBody) && !/\/Type\s*\/Pages\b/.test(nodeBody)) {
+        pageObjNums.push(nodeObjNum);
+        return;
+      }
+      const kidsMatch = nodeBody.match(/\/Kids\s*\[([^\]]*)\]/);
+      if (kidsMatch) {
+        const kidRefs = kidsMatch[1].match(/\d+\s+0\s+R/g) || [];
+        for (const kr of kidRefs) {
+          const kidNum = parseInt(kr);
+          collectPages(kidNum);
+        }
+      }
+    };
+    collectPages(pagesRootNum);
+  }
+
+  // Fallback if page tree traversal did not locate pages
+  if (pageObjNums.length === 0) {
+    for (const [objNum, body] of objMap.entries()) {
+      if (/\/Type\s*\/Page\b/.test(body) && !/\/Type\s*\/Pages\b/.test(body)) {
+        pageObjNums.push(objNum);
+      }
     }
   }
   let pageObjNum = pageObjNums.length > 0 ? pageObjNums[0] : 13;
@@ -634,21 +661,31 @@ export async function appendSignatureIncremental(
 
 
 
-  // 4. Widget Annotations & Appearance Streams
+  // 4. Widget Annotations & Appearance Streams (deduplicated to prevent duplicate /Widget dicts)
   const newWidgetRefs: string[] = [];
-  sigRects.forEach((rectCoords, idx) => {
+  const seenRectKeys = new Set<string>();
+  const uniqueRects: { minX: number; minY: number; maxX: number; maxY: number; bboxW: number; bboxH: number }[] = [];
+  const rawList = (sigRects && sigRects.length > 0) ? sigRects : [[98, 218, 122, 26] as [number, number, number, number]];
+  for (const r of rawList) {
+    const box = normalizeSignatureBoundingBox(r);
+    const key = `${box.minX},${box.minY},${box.maxX},${box.maxY}`;
+    if (!seenRectKeys.has(key)) {
+      seenRectKeys.add(key);
+      uniqueRects.push(box);
+    }
+  }
+
+  uniqueRects.forEach(({ minX, minY, maxX, maxY, bboxW, bboxH }, idx) => {
     const wNum = nextFreeObj++;
     const apNum = nextFreeObj++;
     newWidgetRefs.push(`${wNum} 0 R`);
-
-    const { minX, minY, maxX, maxY, bboxW, bboxH } = normalizeSignatureBoundingBox(rectCoords);
 
     const sigIndex = existingSigCount + 1 + idx;
     const defaultFieldName = isCounter
       ? `CounterSignature_${sigIndex}_${cleanSignerTag}`
       : `Signature_${sigIndex}_${cleanSignerTag}`;
     const fieldName = customFieldName
-      ? (sigRects.length > 1 ? `${customFieldName}_${idx + 1}` : customFieldName)
+      ? (uniqueRects.length > 1 ? `${customFieldName}_${idx + 1}` : customFieldName)
       : defaultFieldName;
 
     let streamContent = "q\n";
@@ -956,10 +993,16 @@ export async function signPdfBuffer(
         : (options?.pageIndex === -1 ? pages.length - 1 : 0);
     const page = pages[targetPageIndex] || pages[0];
 
-    const widgetRects = rawRects.map((r) => {
+    const seenRectKeys = new Set<string>();
+    const widgetRects: [number, number, number, number][] = [];
+    for (const r of rawRects) {
       const box = normalizeSignatureBoundingBox(r);
-      return [box.minX, box.minY, box.maxX, box.maxY] as [number, number, number, number];
-    });
+      const key = `${box.minX},${box.minY},${box.maxX},${box.maxY}`;
+      if (!seenRectKeys.has(key)) {
+        seenRectKeys.add(key);
+        widgetRects.push([box.minX, box.minY, box.maxX, box.maxY]);
+      }
+    }
     const signatureLength = 32768;
 
   // ByteRange placeholder

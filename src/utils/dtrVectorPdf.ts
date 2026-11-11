@@ -2025,7 +2025,6 @@ export function findApprovalSectionCoordinates(
         (nameParts.length > 0 && nameParts.every((part) => upper.includes(part))) ||
         (upper.includes("BUENA") && (upper.includes("RENE") || upper.includes("JANE"))) ||
         upper.includes("RENE JANE R. BUENA") ||
-        upper.includes("NORLY A. TABO") ||
         upper.includes("MARIA ELENA SANTOS");
 
       if (isNameMatch) {
@@ -2033,7 +2032,14 @@ export function findApprovalSectionCoordinates(
         const boxW = Math.max(195, Math.min(230, Math.round(44 + nameLen * 5.2)));
         const boxH = 32;
         const boxX = Math.max(15, Math.min(width - boxW - 15, Math.round(item.x - 6)));
-        const boxY = Math.round(item.y + 10);
+        let boxY = Math.round(item.y + 10);
+        const isSectionA =
+          item.y > 350 &&
+          (textItems.some((it) => it.text.toUpperCase().includes("DIRECT SUPERVISION")) ||
+            textItems.some((it) => it.text.toUpperCase().includes("APPROVED FOR PAYMENT")));
+        if (isSectionA && boxY + boxH > 430) {
+          boxY = 430 - boxH;
+        }
 
         return {
           pageIndex: pIdx,
@@ -2086,7 +2092,14 @@ export function findApprovalSectionCoordinates(
         const boxW = Math.max(195, Math.min(230, Math.round(44 + nameLen * 5.2)));
         const boxH = 32;
         const boxX = Math.max(15, Math.min(width - boxW - 15, Math.round(item.x - 6)));
-        const boxY = Math.round(item.y + 26);
+        let boxY = Math.round(item.y + 10);
+        const isSectionA =
+          item.y > 350 &&
+          (textItems.some((it) => it.text.toUpperCase().includes("DIRECT SUPERVISION")) ||
+            textItems.some((it) => it.text.toUpperCase().includes("APPROVED FOR PAYMENT")));
+        if (isSectionA && boxY + boxH > 430) {
+          boxY = 430 - boxH;
+        }
 
         return {
           pageIndex: pIdx,
@@ -2668,6 +2681,19 @@ export async function scanPdfForSigners(
     const fontCMaps = loadPageFontCMaps(pdfDoc, page);
     const items = extractTextItemsFromContentStream(sBytes, fontCMaps);
 
+    const pageHasSectionD = items.some((it) => {
+      const up = it.text.toUpperCase();
+      return up.includes("APPROVED FOR PAYMENT") || up.includes("D. APPROVED FOR PAYMENT") || up.includes("D.APPROVED FOR PAYMENT");
+    });
+    const pageHasSectionA = items.some((it) => {
+      const up = it.text.toUpperCase();
+      return up.includes("DIRECT SUPERVISION") || up.includes("EXPENSES / CASH ADVANCE");
+    });
+    const pageHasSectionC = items.some((it) => {
+      const up = it.text.toUpperCase();
+      return up.includes("C.CERTIFIED") || up.includes("C. CERTIFIED");
+    });
+
     // Filter candidate items to the strict signature footer and ignore document decorations / table headers
     const sigAreaItems = items.filter((item) => {
       if (item.y > maxSigY || item.y < 20) return false;
@@ -2800,10 +2826,32 @@ export async function scanPdfForSigners(
           const isAlreadySigned = Boolean(userSig && userSig.isSigned === true);
           const cleanName = u.name.toUpperCase().replace(/^(ENGR\.?|ATTY\.?|DIR\.?|DR\.?)\s+/i, "").trim();
 
+          let roleHeader = "";
+          let determinedTitle = u.role || "Authorized Signatory";
+
+          if (
+            pageHasSectionD &&
+            (item.x >= 315 || matchNames(cleanName, "ACEMATA MALTO") || matchNames(cleanName, "ACE MATA MALTO")) &&
+            item.y <= 280 &&
+            item.y >= 90
+          ) {
+            roleHeader = "Approved for Payment";
+            if (!u.role || u.role === "Authorized Signatory") {
+              determinedTitle = "Regional Director";
+            }
+          } else if (pageHasSectionC && item.x < 315 && item.y <= 280 && item.y >= 90) {
+            roleHeader = "Certified Correct";
+            if (!u.role || u.role === "Authorized Signatory") {
+              determinedTitle = "Accountant";
+            }
+          } else if (pageHasSectionA && item.y >= 350 && item.y <= 460) {
+            roleHeader = "Supervisor";
+          }
+
           detectedSigners.push({
             name: cleanName,
-            roleHeader: "",
-            title: u.role || "Authorized Signatory",
+            roleHeader,
+            title: determinedTitle,
             x: item.x,
             y: item.y,
             pageIndex: pIdx,
@@ -2819,8 +2867,66 @@ export async function scanPdfForSigners(
     // Continue scanning across all pages so multi-page signers (e.g. Page 2 and Page 3) are all discovered
   }
 
-  // Sort by Y position descending (top-to-bottom order in signature section)
-  detectedSigners.sort((a, b) => b.y - a.y);
+  // Priority scoring function for selecting primaryPersonnel on Disbursement Vouchers and multi-signatory forms.
+  // Section D ("Approved for Payment", Regional Director, Approval line) or Payee/Employee must be prioritized over intermediate supervisors.
+  const getSignerPriority = (s: ScannedPdfSigner): number => {
+    const role = (s.roleHeader || "").toUpperCase();
+    const title = (s.title || "").toUpperCase();
+    const name = (s.name || "").toUpperCase();
+
+    // Priority 1: Section D / Approved for Payment / Regional Director / Head of Agency
+    if (
+      role.includes("APPROVED FOR PAYMENT") ||
+      title.includes("REGIONAL DIRECTOR") ||
+      title.includes("OIC-REGIONAL DIRECTOR") ||
+      title.includes("DIRECTOR") ||
+      title.includes("ARD") ||
+      role.includes("APPROVAL") ||
+      name.includes("MALTO") ||
+      name.includes("ACEMATA")
+    ) {
+      return 1000;
+    }
+
+    // Priority 2: Payee / Employee / Claimant
+    if (
+      role.includes("PAYEE") ||
+      title.includes("PAYEE") ||
+      role.includes("EMPLOYEE") ||
+      title.includes("EMPLOYEE") ||
+      role.includes("PREPARED BY") ||
+      title.includes("PREPARED BY")
+    ) {
+      return 800;
+    }
+
+    // Priority 3: Section C / Certified Correct / Accounting
+    if (role.includes("CERTIFIED") || title.includes("ACCOUNTANT")) {
+      return 500;
+    }
+
+    // Priority 4: Section A / Supervisor
+    if (role.includes("SUPERVISOR") || title.includes("SUPERVISOR")) {
+      return 300;
+    }
+
+    return 100;
+  };
+
+  // On multi-signatory forms, prioritize Section D ("Approved for Payment", Regional Director, Approval line)
+  // or Payee/Employee as primaryPersonnel instead of sorting purely by Y descending
+  if (detectedSigners.length > 1) {
+    detectedSigners.sort((a, b) => {
+      const prioA = getSignerPriority(a);
+      const prioB = getSignerPriority(b);
+      if (prioA !== prioB) {
+        return prioB - prioA;
+      }
+      return b.y - a.y;
+    });
+  } else {
+    detectedSigners.sort((a, b) => b.y - a.y);
+  }
 
   // Required signers chain includes all detected official signatories in the document
   const requiredSigners = detectedSigners.map((s) => s.name);
@@ -3613,6 +3719,19 @@ export function findPersonnelSignatureCoordinates(
         }
         distinctMatches.sort((a, b) => a.x - b.x); // sort left-to-right
 
+        const sectionDHeader = textItems.find((it) => {
+          const up = it.text.toUpperCase();
+          return (
+            up.includes("APPROVED FOR PAYMENT") ||
+            up.includes("D. APPROVED FOR PAYMENT") ||
+            up.includes("D.APPROVED FOR PAYMENT")
+          );
+        });
+        const sectionAHeader = textItems.find((it) => {
+          const up = it.text.toUpperCase();
+          return up.includes("DIRECT SUPERVISION") || up.includes("EXPENSES / CASH ADVANCE");
+        });
+
         const pageVLines = extractVerticalLinesFromContentStream(sBytes);
 
         const allBoxes = distinctMatches.map((item) => {
@@ -3635,6 +3754,44 @@ export function findPersonnelSignatureCoordinates(
               }
             }
             nameTextWidth = Math.max(measurePdfTextWidth(item.text.trim(), 10.5), rightmostX - item.x);
+          }
+
+          // ── Section D Isolation (Disbursement Vouchers & Multi-Signatory Forms) ──
+          const isTargetSectionD =
+            Boolean(sectionDHeader) &&
+            (item.x >= 315 ||
+              matchNames(item.text, "ACEMATA MALTO") ||
+              matchNames(item.text, "ACE MATA MALTO") ||
+              matchNames(personnelName, "ACEMATA MALTO") ||
+              matchNames(personnelName, "ACE MATA MALTO") ||
+              (normTarget && (normTarget.includes("MALTO") || normTarget.includes("ACEMATA"))));
+
+          if (isTargetSectionD) {
+            let boxW = Math.max(125, Math.min(150, Math.round(48 + nameLen * 4.0)));
+            const boxH = 28;
+
+            // Anchor strictly inside Section D:
+            // Left border: vertical divider at x ≈ 390 pt (strictly boxX >= 394 pt)
+            // Right border: table border at x ≈ 585 pt (boxX + boxW <= 585 pt)
+            let boxX: number;
+            if (item.x >= 390) {
+              const nameCenterX = item.x + nameTextWidth / 2;
+              boxX = Math.round(nameCenterX - boxW / 2);
+            } else {
+              boxX = Math.round(487.5 - boxW / 2);
+            }
+
+            if (boxX < 394) boxX = 394;
+            if (boxX + boxW > 585) boxX = Math.max(394, 585 - boxW);
+            if (boxX + boxW > 585) boxW = 585 - boxX;
+
+            // Vertical position: boxY ≈ 187 pt (between name baseline 174 and amount/header text 245)
+            const stackOffset = csIndex > 0 ? csIndex * (boxH + 6) : 0;
+            let boxY = Math.round((item.y > 100 && item.y < 200 ? item.y + 13 : 187) + stackOffset);
+            if (boxY < 180) boxY = 187;
+            if (boxY + boxH > 236) boxY = Math.max(180, 236 - boxH);
+
+            return { boxX, boxY, boxW, boxH, text: item.text };
           }
 
           // ── Strict Column Boundary Detection ──
@@ -3730,7 +3887,21 @@ export function findPersonnelSignatureCoordinates(
           // boxY = Math.round(item.y + 13 + stackOffset) guarantees that the bottom edge of the box
           // sits at least 5px (5pt) ABOVE the top of the printed capital letters!
           const stackOffset = csIndex > 0 ? csIndex * (boxH + 6) : 0;
-          const boxY = Math.min(height - boxH - 2, Math.max(10, Math.round(item.y + 13 + stackOffset)));
+          let boxY = Math.min(height - boxH - 2, Math.max(10, Math.round(item.y + 13 + stackOffset)));
+
+          const isTargetSectionA =
+            item.y >= 350 &&
+            item.y <= 460 &&
+            (Boolean(sectionAHeader) || Boolean(sectionDHeader));
+
+          if (isTargetSectionA) {
+            // In Section A, clamp any supervisor signature box to boxY + boxH <= 430 pt
+            // Ensure NO signature widget or stamp ever touches or overlaps y = 437.4 pt
+            if (boxY + boxH > 430) {
+              boxY = 430 - boxH;
+            }
+          }
+
           return { boxX, boxY, boxW, boxH, text: item.text };
         });
 
@@ -3765,6 +3936,55 @@ export function findPersonnelSignatureCoordinates(
   const lastPageCMaps = lastPageBytes.length > 0 ? loadPageFontCMaps(pdfDoc, lastPage) : new Map();
   const lastPageItems = lastPageBytes.length > 0 ? extractTextItemsFromContentStream(lastPageBytes, lastPageCMaps) : [];
   const lastPageVLines = extractVerticalLinesFromContentStream(lastPageBytes);
+
+  // Check if Section D ("D. Approved for Payment :") exists on the last page
+  const fallbackSecDHeader = lastPageItems.find((it) => {
+    const up = it.text.toUpperCase();
+    return (
+      up.includes("APPROVED FOR PAYMENT") ||
+      up.includes("D. APPROVED FOR PAYMENT") ||
+      up.includes("D.APPROVED FOR PAYMENT")
+    );
+  });
+
+  const isApprovalOrSectionDTarget =
+    Boolean(fallbackSecDHeader) &&
+    (!personnelName ||
+      matchNames(personnelName, "ACEMATA MALTO") ||
+      matchNames(personnelName, "ACE MATA MALTO") ||
+      (normTarget && (normTarget.includes("MALTO") || normTarget.includes("ACEMATA"))) ||
+      (normTarget && (normTarget.includes("DIRECTOR") || normTarget.includes("APPROVAL") || normTarget.includes("PAYMENT"))) ||
+      !lastPageItems.some((it) => matchNames(it.text, personnelName)));
+
+  if (isApprovalOrSectionDTarget) {
+    const rawTargetName = (personnelName || "ACEMATA MALTO").trim();
+    const nameLen = rawTargetName.length;
+    let boxW = Math.max(125, Math.min(145, Math.round(48 + nameLen * 4.0)));
+    const boxH = 28;
+
+    // Anchor strictly inside Section D: boxX >= 394 pt, boxX + boxW <= 585 pt
+    // Center of cell: (390 + 585) / 2 = 487.5 pt
+    let boxX = Math.round(487.5 - boxW / 2);
+    if (boxX < 394) boxX = 394;
+    if (boxX + boxW > 585) boxX = Math.max(394, 585 - boxW);
+    if (boxX + boxW > 585) boxW = 585 - boxX;
+
+    const stackOffset = csIndex > 0 ? csIndex * (boxH + 6) : 0;
+    let boxY = Math.round(187 + stackOffset);
+    if (boxY < 180) boxY = 187;
+    if (boxY + boxH > 236) boxY = Math.max(180, 236 - boxH);
+
+    return {
+      pageIndex: lastPageIdx,
+      boxX,
+      boxY,
+      boxW,
+      boxH,
+      sigRects: [[boxX, boxY, boxX + boxW, boxY + boxH]],
+      detectedReason: `Section D Approved for Payment signature box strictly above target signatory on page ${lastPageIdx + 1} at (${boxX}, ${boxY})`,
+      appliedPosition: "above",
+    };
+  }
 
   // Check if there is an approval section or signatory block on the last page
   let candidateSignerItem: any = null;
@@ -3855,6 +4075,11 @@ export function findPersonnelSignatureCoordinates(
       boxX = Math.max(Math.round(effectiveLeftBound + 2), Math.round(effectiveRightBound - 2 - boxW));
     }
     boxY = Math.min(height - boxH - 2, Math.max(10, Math.round(candidateSignerItem.y + 13 + stackOffset)));
+    if (candidateSignerItem.y >= 350 && candidateSignerItem.y <= 460) {
+      if (boxY + boxH > 430) {
+        boxY = 430 - boxH;
+      }
+    }
   } else if (lastPageVLines.length > 0) {
     // If vertical lines exist near the center, ensure the signature never straddles a vertical column line
     const centerLines = lastPageVLines.filter((vl) => vl.minY <= boxY + 30 && vl.maxY >= boxY - 30 && vl.x >= 150 && vl.x <= width - 150);
@@ -3900,6 +4125,8 @@ export async function signUploadedPersonnelPdfBytes(
     counterSignPosition?: CounterSignPosition;
     signerRoleLabel?: string;
     signerName?: string;
+    targetSignatoryName?: string;
+    targetPersonnelName?: string;
     preloadedImageBytes?: Uint8Array | null;
     preloadedImageType?: "png" | "jpg" | null;
   }
@@ -3916,10 +4143,48 @@ export async function signUploadedPersonnelPdfBytes(
     /\/Type\s*\/Sig\b/.test(pdfStr);
 
   const pdfDoc = await safeLoadPdfDocument(incomingBytes);
-  const targetName = (personnelName || p12Options?.signerName || "PERSONNEL").trim();
+
+  // 1. Decouple target signatory on the document from keystore signer identity:
+  // targetSignatory designates the physical signatory line on the document (e.g. "ACEMATA MALTO").
+  let targetSignatory = (
+    options?.targetSignatoryName ||
+    options?.targetPersonnelName ||
+    personnelName ||
+    "PERSONNEL"
+  ).trim();
+
+  // If targetSignatory matches keystore signerName and is NOT present in document text,
+  // but Section D ("Approved for Payment") is present on the document, resolve targetSignatory to Section D line:
+  const docPages = pdfDoc.getPages();
+  const lastPage = docPages[docPages.length - 1];
+  const sBytes = extractPageContentStreamBytes(pdfDoc, lastPage);
+  const cmaps = loadPageFontCMaps(pdfDoc, lastPage);
+  const items = extractTextItemsFromContentStream(sBytes, cmaps);
+
+  const hasSectionD = items.some((it) => {
+    const up = it.text.toUpperCase();
+    return up.includes("APPROVED FOR PAYMENT") || up.includes("D. APPROVED FOR PAYMENT") || up.includes("D.APPROVED FOR PAYMENT");
+  });
+
+  const targetInDoc = items.some((it) => matchNames(it.text, targetSignatory));
+  if (!targetInDoc && hasSectionD) {
+    const secDItem = items.find((it) => it.x >= 315 && it.y <= 200 && it.y >= 140 && !isTableFormLabel(it.text) && it.text.trim().length > 3);
+    if (secDItem) {
+      const cleanDName = secDItem.text.replace(/^(Printed Name|Signature|Position|Date)\s*/i, "").trim();
+      if (cleanDName.length > 2) {
+        targetSignatory = cleanDName;
+      } else {
+        targetSignatory = "ACEMATA MALTO";
+      }
+    } else {
+      targetSignatory = "ACEMATA MALTO";
+    }
+  }
+
   const isCounter = Boolean(options?.isCounterSign);
 
-  const loc = findPersonnelSignatureCoordinates(pdfDoc, targetName, {
+  // 2. Resolve coordinates using the designated target signatory line:
+  const loc = findPersonnelSignatureCoordinates(pdfDoc, targetSignatory, {
     isCounterSign: isCounter,
     counterSignIndex: options?.counterSignIndex,
     counterSignPosition: options?.counterSignPosition,
@@ -3931,14 +4196,15 @@ export async function signUploadedPersonnelPdfBytes(
   const boxY = loc.boxY;
 
   console.log(
-    `[Personnel Signing] ${loc.detectedReason} => Placing DigiSigned signature strictly directly ABOVE "${targetName}" at [x=${boxX}, y=${boxY}, w=${boxW}, h=${boxH}] on page ${loc.pageIndex + 1}`
+    `[Personnel Signing] ${loc.detectedReason} => Placing DigiSigned signature strictly directly ABOVE "${targetSignatory}" at [x=${boxX}, y=${boxY}, w=${boxW}, h=${boxH}] on page ${loc.pageIndex + 1}`
   );
 
+  // 3. Resolve signerName for cryptographic signature and appearance stamp from the active keystore profile:
   let resolvedSignerName = fixMojibake(
     options?.signerName ||
     p12Options?.signerName ||
-    (isCounter ? options?.signerName : targetName) ||
-    targetName
+    (isCounter ? options?.signerName : targetSignatory) ||
+    targetSignatory
   ).trim();
   let finalUint8 = incomingBytes;
 

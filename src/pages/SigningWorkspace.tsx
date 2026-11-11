@@ -740,12 +740,16 @@ function hasUserAlreadySigned(doc: WorkspaceDocument, userName?: string): boolea
   const inSigners = doc.signers.some(
     (s) =>
       (s.status === "signed" || s.status === "counter-signed") &&
-      (matchNames(s.name, userName) || normalizeName(s.name) === normalizeName(userName))
+      (matchNames(s.name, userName) ||
+        normalizeName(s.name) === normalizeName(userName) ||
+        (s.p12CommonName && matchNames(s.p12CommonName, userName)))
   );
   const inCounter = (doc.counterSigners || []).some(
     (c) =>
       (c.status === "counter-signed" || c.status === "signed") &&
-      (matchNames(c.name, userName) || normalizeName(c.name) === normalizeName(userName))
+      (matchNames(c.name, userName) ||
+        normalizeName(c.name) === normalizeName(userName) ||
+        (c.p12CommonName && matchNames(c.p12CommonName, userName)))
   );
   return inSigners || inCounter;
 }
@@ -840,7 +844,7 @@ function DocumentPreviewModal({
 }: {
   doc: WorkspaceDocument | null;
   onClose: () => void;
-  onSign?: (id: string) => void;
+  onSign?: (id: string, targetSignatoryName?: string) => void;
   onCounterSign?: (id: string, position: CounterSignPosition) => void;
   onDownload?: (doc: WorkspaceDocument) => void;
   onShowValidationStatus?: (signerName: string, date?: string) => void;
@@ -1173,7 +1177,14 @@ function DocumentPreviewModal({
               <div className="text-black dark:text-white font-normal">by {signer.p12CommonName || signer.name}</div>
             </div>
           ) : (
-            <div className="text-[10px] text-slate-400 italic">[Signature Area Above Name]</div>
+            <div
+              onClick={() => onSign?.(doc.id, signer.name)}
+              className="text-[10px] text-slate-400 hover:text-violet-400 italic cursor-pointer hover:underline flex items-center gap-1 transition-colors"
+              title={`Click to sign directly above ${signer.name}`}
+            >
+              <PenLine className="w-3 h-3 text-violet-400" />
+              <span>[Click to Sign for {signer.name}]</span>
+            </div>
           )}
 
           {/* DigiSigned Counter-signatures placed directly ABOVE name */}
@@ -1387,7 +1398,25 @@ function DocumentPreviewModal({
               onSign && (
                 <button
                   type="button"
-                  onClick={() => onSign(doc.id)}
+                  onClick={() => {
+                    const pendingApproval = requiredList.find((req) => {
+                      const sObj = signersList.find((s) => matchNames(s.name, req));
+                      if (sObj?.status === "signed") return false;
+                      const upper = req.toUpperCase();
+                      return (
+                        upper.includes("MALTO") ||
+                        upper.includes("ACEMATA") ||
+                        upper.includes("DIRECTOR") ||
+                        upper.includes("APPROV") ||
+                        upper.includes("SECTION D")
+                      );
+                    });
+                    const pendingReq = pendingApproval || requiredList.find((req) => {
+                      const s = signersList.find((sg) => matchNames(sg.name, req));
+                      return s?.status !== "signed";
+                    });
+                    onSign(doc.id, pendingReq);
+                  }}
                   className="flex items-center gap-1.5 px-3 sm:px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white text-xs font-bold transition-all shadow-md active:scale-95 cursor-pointer"
                   title={`Sign directly above name using active PNPKI keystore (${effectiveSignerName})`}
                 >
@@ -1508,7 +1537,7 @@ function DocumentPreviewModal({
                               </span>
                             )}
                           </div>
-                          {isSigned && (
+                          {isSigned ? (
                             <button
                               type="button"
                               onClick={() => onShowValidationStatus?.(sObj.p12CommonName || sObj.name, sObj.signedAt)}
@@ -1518,7 +1547,17 @@ function DocumentPreviewModal({
                               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
                               <span>Validate PNPKI Certificate</span>
                             </button>
-                          )}
+                          ) : onSign ? (
+                            <button
+                              type="button"
+                              onClick={() => onSign(doc.id, sObj.name)}
+                              className="mt-2.5 w-full py-1.5 px-3 rounded-lg bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-md active:scale-95 cursor-pointer"
+                              title={`Sign directly above ${sObj.name}`}
+                            >
+                              <PenLine className="w-3.5 h-3.5" />
+                              <span>Sign for {sObj.name}</span>
+                            </button>
+                          ) : null}
                         </div>
                       );
                     })}
@@ -4341,6 +4380,7 @@ export function SigningWorkspace() {
       signerContext?: UserSignerContext;
       skipDbSave?: boolean;
       asSignerName?: string;
+      targetSignatoryName?: string;
     }
   ): Promise<WorkspaceDocument & { storagePayload?: any }> => {
     try {
@@ -4388,24 +4428,65 @@ export function SigningWorkspace() {
       // the signature must be anchored directly above the document's target personnel name (ACE MATA MALTO)!
       const signerInDocSigners = doc.requiredSigners.find((req) => matchNames(req, signerToMatch));
 
-      let targetPersonnelName = isCounter
+      // Explicit targetSignatoryName on options takes precedence as targetPersonnelName
+      const explicitTargetSignatory = options?.targetSignatoryName?.trim();
+
+      let targetPersonnelName = explicitTargetSignatory
+        ? explicitTargetSignatory
+        : isCounter
         ? (options?.counterSignTargetPersonnel || doc.targetPersonnel || currentUserName).trim()
         : (signerInDocSigners || doc.targetPersonnel || matchedRequiredSigner || (isSignerSpecificPerson ? signerToMatch : "") || currentUserName).trim();
 
-      // If user is Regional Director / ARD, or signing on behalf of RD/ARD, target the RD/ARD signatory line
-      if (!isCounter && !asSigner && (!matchedRequiredSigner || !matchNames(matchedRequiredSigner, effectiveSignerName))) {
-        if (isUserRegionalDirectorOrAssistant(liveUser || currentUser)) {
-          const rdSigner = doc.signers.find(
-            (s) =>
-              s.status !== "signed" &&
-              ((s.role || "").toUpperCase().includes("REGIONAL DIRECTOR") ||
-                (s.role || "").toUpperCase().includes("DIRECTOR") ||
-                (s.role || "").toUpperCase().includes("ARD") ||
-                (s.role || "").toUpperCase().includes("NOTED BY") ||
-                (s.role || "").toUpperCase().includes("APPROVED BY"))
-          );
-          if (rdSigner && rdSigner.name) {
-            targetPersonnelName = rdSigner.name.trim();
+      // If user is Regional Director / ARD, or signing on behalf of RD/ARD, target the RD/ARD/Approval signatory line.
+      // The !asSigner restriction is removed so that Regional Director / Section D / approval matching is NEVER suppressed
+      // when signing via an active keystore profile (e.g., Annabel Cortez)!
+      // When the document has an unfulfilled Section D / Regional Director / Approval signatory (e.g. "ACEMATA MALTO"),
+      // ensure targetPersonnelName resolves to that approval line rather than falling back to doc.targetPersonnel ("NORLY A. TABO").
+      if (!isCounter && !explicitTargetSignatory && (!matchedRequiredSigner || !matchNames(matchedRequiredSigner, effectiveSignerName))) {
+        const rdSigner = doc.signers.find(
+          (s) =>
+            s.status !== "signed" &&
+            ((s.role || "").toUpperCase().includes("REGIONAL DIRECTOR") ||
+              (s.role || "").toUpperCase().includes("DIRECTOR") ||
+              (s.role || "").toUpperCase().includes("ARD") ||
+              (s.role || "").toUpperCase().includes("NOTED BY") ||
+              (s.role || "").toUpperCase().includes("APPROVED BY") ||
+              (s.role || "").toUpperCase().includes("APPROVED") ||
+              (s.role || "").toUpperCase().includes("APPROV") ||
+              (s.role || "").toUpperCase().includes("SECTION D") ||
+              s.name.toUpperCase().includes("MALTO") ||
+              s.name.toUpperCase().includes("ACEMATA"))
+        );
+        if (rdSigner && rdSigner.name) {
+          targetPersonnelName = rdSigner.name.trim();
+        } else {
+          // Check doc.requiredSigners for any unfulfilled Section D / Approval / Regional Director line
+          const pendingApprovalReq = doc.requiredSigners.find((req) => {
+            const sObj = doc.signers.find((s) => matchNames(s.name, req));
+            if (sObj?.status === "signed") return false;
+            const upper = req.toUpperCase();
+            return (
+              upper.includes("MALTO") ||
+              upper.includes("ACEMATA") ||
+              upper.includes("DIRECTOR") ||
+              upper.includes("APPROV") ||
+              upper.includes("SECTION D")
+            );
+          });
+          if (pendingApprovalReq) {
+            targetPersonnelName = pendingApprovalReq.trim();
+          } else if (
+            isUserRegionalDirectorOrAssistant(liveUser || currentUser) ||
+            isUserRegionalDirectorOrAssistant(effectiveUserForAuth) ||
+            isUserSuperAdmin(liveUser || currentUser)
+          ) {
+            const anyPendingReq = doc.requiredSigners.find((req) => {
+              const sObj = doc.signers.find((s) => matchNames(s.name, req));
+              return sObj?.status !== "signed";
+            });
+            if (anyPendingReq) {
+              targetPersonnelName = anyPendingReq.trim();
+            }
           }
         }
       }
@@ -4455,10 +4536,12 @@ export function SigningWorkspace() {
               signatureImage,
               p12Options,
               {
+                ...options,
                 isCounterSign: isCounter,
                 counterSignIndex: counterSignIdx,
                 counterSignPosition: counterPos,
                 signerName: effectiveSignerName,
+                targetSignatoryName: targetPersonnelName,
                 preloadedImageBytes: signerCtx.signatureImageBytes,
                 preloadedImageType: signerCtx.signatureImageType,
               }
@@ -4487,9 +4570,13 @@ export function SigningWorkspace() {
           position: appliedPos,
         });
       } else {
-        // Update matching required signer or append (placed ABOVE the name)
+        // Update matching target signatory or effective signer (placed ABOVE the name)
         const matchIdx = updatedSigners.findIndex(
-          (s) => matchNames(s.name, effectiveSignerName) || normalizeName(s.name) === normalizeName(effectiveSignerName)
+          (s) =>
+            matchNames(s.name, targetPersonnelName) ||
+            normalizeName(s.name) === normalizeName(targetPersonnelName) ||
+            matchNames(s.name, effectiveSignerName) ||
+            normalizeName(s.name) === normalizeName(effectiveSignerName)
         );
 
         if (matchIdx >= 0) {
@@ -4503,7 +4590,7 @@ export function SigningWorkspace() {
           };
         } else {
           updatedSigners.push({
-            name: effectiveSignerName,
+            name: targetPersonnelName || effectiveSignerName,
             role: "Signatory",
             status: "signed",
             signedAt: now,
@@ -4515,14 +4602,25 @@ export function SigningWorkspace() {
       }
 
       const updatedRequired = [...doc.requiredSigners];
-      if (!isCounter && !updatedRequired.some((r) => matchNames(r, effectiveSignerName))) {
-        updatedRequired.push(effectiveSignerName);
+      if (
+        !isCounter &&
+        !updatedRequired.some(
+          (r) =>
+            matchNames(r, targetPersonnelName) ||
+            matchNames(r, effectiveSignerName)
+        )
+      ) {
+        updatedRequired.push(targetPersonnelName || effectiveSignerName);
       }
 
       // Check overall document completion
       const signedCount = updatedRequired.filter((req) =>
         updatedSigners.some(
-          (s) => s.status === "signed" && (matchNames(s.name, req) || normalizeName(s.name) === normalizeName(req))
+          (s) =>
+            s.status === "signed" &&
+            (matchNames(s.name, req) ||
+              normalizeName(s.name) === normalizeName(req) ||
+              (s.p12CommonName && matchNames(s.p12CommonName, req)))
         )
       ).length;
 
@@ -4627,18 +4725,22 @@ export function SigningWorkspace() {
     }
   };
 
-  const handleSignSingle = async (id: string) => {
+  const handleSignSingle = async (id: string, targetSignatoryName?: string) => {
     const targetDoc = documents.find((d) => d.id === id);
     if (!targetDoc) return;
 
-    showNotif(`Applying P12 digital signature ABOVE personnel name…`);
-    const updated = await signDocumentItem(targetDoc, { isCounterSign: false });
+    const targetDesc = targetSignatoryName ? ` for "${targetSignatoryName}"` : "";
+    showNotif(`Applying P12 digital signature ABOVE personnel name${targetDesc}…`);
+    const updated = await signDocumentItem(targetDoc, {
+      isCounterSign: false,
+      targetSignatoryName,
+    });
 
     setDocuments((prev) => prev.map((d) => (d.id === id ? updated : d)));
     if (previewDoc && previewDoc.id === id) {
       setPreviewDoc(updated);
     }
-    showNotif(`✓ Signed successfully ABOVE personnel name (preserved in Acrobat).`);
+    showNotif(`✓ Signed successfully ABOVE personnel name${targetDesc} (preserved in Acrobat).`);
   };
 
   const handleCounterSignSingle = async (id: string, position: CounterSignPosition = "above") => {
@@ -6451,13 +6553,19 @@ export function SigningWorkspace() {
                             return (
                               <span
                                 key={`req-card-${sIdx}`}
-                                onClick={() => isSigned && handleOpenValidationModal(reqName, sObj?.signedAt)}
-                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] border font-medium ${
+                                onClick={() => {
+                                  if (isSigned) {
+                                    handleOpenValidationModal(reqName, sObj?.signedAt);
+                                  } else {
+                                    handleSignSingle(doc.id, reqName);
+                                  }
+                                }}
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] border font-medium cursor-pointer transition-all ${
                                   isSigned
-                                    ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30 cursor-pointer hover:bg-emerald-500/20"
-                                    : "bg-amber-500/10 text-amber-300 border-amber-500/30"
+                                    ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20"
+                                    : "bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20 hover:ring-1 hover:ring-amber-400/40"
                                 }`}
-                                title={`${reqName} (${isSigned ? "Signed - Click to view PNPKI status" : "Need to Sign"})`}
+                                title={`${reqName} (${isSigned ? "Signed - Click to view PNPKI status" : "Need to Sign - Click to sign this line"})`}
                               >
                                 {isSigned ? (
                                   <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
@@ -6509,7 +6617,25 @@ export function SigningWorkspace() {
                           ) : userIsReq ? (
                             <button
                               type="button"
-                              onClick={() => handleSignSingle(doc.id)}
+                              onClick={() => {
+                                const pendingApproval = doc.requiredSigners.find((req) => {
+                                  const sObj = doc.signers.find((s) => matchNames(s.name, req));
+                                  if (sObj?.status === "signed") return false;
+                                  const upper = req.toUpperCase();
+                                  return (
+                                    upper.includes("MALTO") ||
+                                    upper.includes("ACEMATA") ||
+                                    upper.includes("DIRECTOR") ||
+                                    upper.includes("APPROV") ||
+                                    upper.includes("SECTION D")
+                                  );
+                                });
+                                const pendingReq = pendingApproval || doc.requiredSigners.find((req) => {
+                                  const s = doc.signers.find((sg) => matchNames(sg.name, req));
+                                  return s?.status !== "signed";
+                                });
+                                handleSignSingle(doc.id, pendingReq);
+                              }}
                               className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-bold text-xs shadow-md transition-all cursor-pointer active:scale-95"
                             >
                               <PenLine className="w-3.5 h-3.5 shrink-0" />
@@ -6729,13 +6855,19 @@ export function SigningWorkspace() {
                                 return (
                                   <span
                                     key={sIdx}
-                                    onClick={() => isSigned && handleOpenValidationModal(reqName, sObj?.signedAt)}
-                                    className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] border font-medium ${
+                                    onClick={() => {
+                                      if (isSigned) {
+                                        handleOpenValidationModal(reqName, sObj?.signedAt);
+                                      } else {
+                                        handleSignSingle(doc.id, reqName);
+                                      }
+                                    }}
+                                    className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] border font-medium cursor-pointer transition-all ${
                                       isSigned
-                                        ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30 cursor-pointer hover:bg-emerald-500/20 hover:ring-1 hover:ring-emerald-400/40"
-                                        : "bg-amber-500/10 text-amber-300 border-amber-500/30"
+                                        ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20 hover:ring-1 hover:ring-emerald-400/40"
+                                        : "bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20 hover:ring-1 hover:ring-amber-400/40"
                                     }`}
-                                    title={`${reqName} (${isSigned ? "Signed above name - Click to view PNPKI status" : "Need to Sign"})`}
+                                    title={`${reqName} (${isSigned ? "Signed above name - Click to view PNPKI status" : "Need to Sign - Click to sign this line"})`}
                                   >
                                     {isSigned ? (
                                       <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
@@ -6797,7 +6929,25 @@ export function SigningWorkspace() {
                           ) : userIsReq ? (
                             <button
                               type="button"
-                              onClick={() => handleSignSingle(doc.id)}
+                              onClick={() => {
+                                const pendingApproval = doc.requiredSigners.find((req) => {
+                                  const sObj = doc.signers.find((s) => matchNames(s.name, req));
+                                  if (sObj?.status === "signed") return false;
+                                  const upper = req.toUpperCase();
+                                  return (
+                                    upper.includes("MALTO") ||
+                                    upper.includes("ACEMATA") ||
+                                    upper.includes("DIRECTOR") ||
+                                    upper.includes("APPROV") ||
+                                    upper.includes("SECTION D")
+                                  );
+                                });
+                                const pendingReq = pendingApproval || doc.requiredSigners.find((req) => {
+                                  const s = doc.signers.find((sg) => matchNames(sg.name, req));
+                                  return s?.status !== "signed";
+                                });
+                                handleSignSingle(doc.id, pendingReq);
+                              }}
                               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-bold text-xs shadow-md transition-all cursor-pointer active:scale-95"
                               title={`Places digital signature stamp ABOVE personnel name as ${effectiveSignerUser.name}.`}
                             >
