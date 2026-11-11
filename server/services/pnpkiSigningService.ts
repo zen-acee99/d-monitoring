@@ -1066,10 +1066,6 @@ export async function signPdfBuffer(
 
   const sigUid = Math.random().toString(36).substring(2, 7);
   const isCounter = Boolean(options?.isCounterSign);
-  let helveticaFont: any = null;
-  try {
-    helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  } catch {}
 
   for (let index = 0; index < widgetRects.length; index++) {
     const rectCoords = widgetRects[index];
@@ -1080,7 +1076,7 @@ export async function signPdfBuffer(
     const rw = maxX - minX;
     const rh = maxY - minY;
 
-    // Draw visual appearance directly onto the page
+    // Draw handwritten signature image once directly onto page canvas if provided
     let hasImg = false;
     if (options?.signatureImage) {
       try {
@@ -1097,89 +1093,6 @@ export async function signPdfBuffer(
         hasImg = true;
       } catch (e) {
         console.warn("[pnpki] Could not embed signature image in first-signature mode:", e);
-      }
-    } else if (isCounter) {
-      try {
-        page.drawLine({
-          start: { x: minX + 4, y: minY + 9 },
-          end: { x: minX + 8, y: minY + 5 },
-          thickness: 1.2,
-          color: rgb(0, 0, 0),
-        });
-        page.drawLine({
-          start: { x: minX + 8, y: minY + 5 },
-          end: { x: minX + 15, y: minY + 14 },
-          thickness: 1.2,
-          color: rgb(0, 0, 0),
-        });
-        hasImg = true;
-      } catch {}
-    }
-
-    if (helveticaFont) {
-      try {
-        const textX = hasImg ? (options?.signatureImage ? minX + 36 : minX + 20) : minX + 6;
-        const isReneJane =
-          signerName.toLowerCase().includes("buena") ||
-          signerName.toLowerCase().includes("rene jane");
-        const titleText = isCounter ? "DigiSigned" : (isReneJane ? "Digitally signed by" : "Digitally signed");
-        const nameLines = isReneJane
-          ? ["Buena Rene Jane Rosendo"]
-          : splitSignerNameToLines(signerName, 18);
-        const availW = Math.max(55, rw - (textX - minX) - 6);
-
-        if (nameLines.length >= 2) {
-          let fontSize = 6.2;
-          for (const nl of nameLines) {
-            while (fontSize > 4.5 && helveticaFont.widthOfTextAtSize(nl, fontSize) > availW) {
-              fontSize -= 0.1;
-            }
-          }
-          const titleSize = Math.max(6.2, Math.round((fontSize + 0.3) * 10) / 10);
-          page.drawText(titleText, {
-            x: textX,
-            y: minY + 19.0,
-            size: titleSize,
-            font: helveticaFont,
-            color: rgb(0, 0, 0),
-          });
-          page.drawText(nameLines[0], {
-            x: textX,
-            y: minY + 11.5,
-            size: fontSize,
-            font: helveticaFont,
-            color: rgb(0, 0, 0),
-          });
-          page.drawText(nameLines[1], {
-            x: textX,
-            y: minY + 4.0,
-            size: fontSize,
-            font: helveticaFont,
-            color: rgb(0, 0, 0),
-          });
-        } else {
-          let fontSize = 6.4;
-          while (fontSize > 4.5 && helveticaFont.widthOfTextAtSize(nameLines[0], fontSize) > availW) {
-            fontSize -= 0.1;
-          }
-          const titleSize = Math.max(6.5, Math.round((fontSize + 0.3) * 10) / 10);
-          page.drawText(titleText, {
-            x: textX,
-            y: minY + 16.0,
-            size: titleSize,
-            font: helveticaFont,
-            color: rgb(0, 0, 0),
-          });
-          page.drawText(nameLines[0], {
-            x: textX,
-            y: minY + 7.0,
-            size: fontSize,
-            font: helveticaFont,
-            color: rgb(0, 0, 0),
-          });
-        }
-      } catch (e) {
-        console.warn("[pnpki] Could not draw digital signature text in first-signature mode:", e);
       }
     }
 
@@ -1205,19 +1118,30 @@ export async function signPdfBuffer(
     const apNameLines = isReneJane
       ? ["Buena Rene Jane Rosendo"]
       : splitSignerNameToLines(escapedSigner, 18);
-    const apTextX = (isCounter && !options?.signatureImage) ? 20 : (options?.signatureImage ? 36 : 6);
+    const apTextX = (isCounter && !hasImg) ? 20 : (hasImg ? 36 : 6);
+    const availW = Math.max(55, rw - apTextX - 6);
+
+    let fontSize = apNameLines.length >= 2 ? 6.2 : 6.4;
+    const charWidthFactor = 0.55;
+    for (const nl of apNameLines) {
+      while (fontSize > 4.5 && nl.length * (fontSize * charWidthFactor) > availW) {
+        fontSize -= 0.1;
+      }
+    }
+    fontSize = Math.round(fontSize * 10) / 10;
+    const titleSize = Math.max(apNameLines.length >= 2 ? 6.2 : 6.5, Math.round((fontSize + 0.3) * 10) / 10);
 
     let apStreamOps = "q\n";
-    if (isCounter && !options?.signatureImage) {
+    if (isCounter && !hasImg) {
       apStreamOps += "1.4 w\n0 0 0 RG\n4 14 m\n8 9 l\n16 20 l\nS\n";
     }
     if (apNameLines.length >= 2) {
       const l1 = apNameLines[0].replace(/[()\\]/g, "\\$&");
       const l2 = apNameLines[1].replace(/[()\\]/g, "\\$&");
-      apStreamOps += `BT\n/F1 6.5 Tf\n0 0 0 rg\n${apTextX} 19.0 Td\n(${apTitleText}) Tj\n0 -7.5 Td\n/F1 6.0 Tf\n(${l1}) Tj\n0 -7.5 Td\n(${l2}) Tj\nET\nQ\n`;
+      apStreamOps += `BT\n/F1 ${titleSize} Tf\n0 0 0 rg\n${apTextX} 19.0 Td\n(${apTitleText}) Tj\n0 -7.5 Td\n/F1 ${fontSize} Tf\n(${l1}) Tj\n0 -7.5 Td\n(${l2}) Tj\nET\nQ\n`;
     } else {
       const l1 = apNameLines[0].replace(/[()\\]/g, "\\$&");
-      apStreamOps += `BT\n/F1 6.5 Tf\n0 0 0 rg\n${apTextX} 16.0 Td\n(${apTitleText}) Tj\n0 -9.0 Td\n/F1 6.2 Tf\n(${l1}) Tj\nET\nQ\n`;
+      apStreamOps += `BT\n/F1 ${titleSize} Tf\n0 0 0 rg\n${apTextX} 16.0 Td\n(${apTitleText}) Tj\n0 -9.0 Td\n/F1 ${fontSize} Tf\n(${l1}) Tj\nET\nQ\n`;
     }
 
     const apStream = pdfDoc.context.stream(apStreamOps, {
