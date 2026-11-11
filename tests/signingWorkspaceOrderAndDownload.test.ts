@@ -4,6 +4,7 @@ import {
   sortDocumentsLatestFirst,
   getDocTimestamp,
   parseDocTimestampSafe,
+  isDocUploadedWithin5Minutes,
   formatTargetPdfFilename,
   generateWorkspaceFallbackPdfBytes,
   WorkspaceDocument,
@@ -152,6 +153,89 @@ console.log("\n[Group 3] PDF Filename Formatting & Fallback Document Generation"
   assert.equal(formatTargetPdfFilename(makeDoc({ fileName: "signed.pdf" })), "signed.pdf");
   assert.equal(formatTargetPdfFilename(makeDoc({ fileName: "no_extension" })), "no_extension.pdf");
   console.log("  PASS: formatTargetPdfFilename guarantees .pdf extension across all input file types");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TEST GROUP 4: NEW UPLOAD 5-MINUTE GREEN LEFT BORDER HIGHLIGHT RULE
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Group 4] 5-Minute Green Left Border Highlight & Automatic Expiration");
+
+{
+  const now = 1794380000000; // Fixed reference point in time
+
+  // 1. Just uploaded (0 seconds ago)
+  const docJustUploaded = makeDoc({
+    id: "doc-just-now",
+    uploadedAt: new Date(now).toISOString(),
+  });
+  assert.equal(isDocUploadedWithin5Minutes(docJustUploaded, now), true, "Doc uploaded just now must have green border");
+  console.log("  PASS: Doc uploaded just now (< 5 mins) has green left border highlight");
+
+  // 2. Uploaded 2.5 minutes ago (150,000 ms)
+  const doc2HalfMin = makeDoc({
+    id: "doc-2m",
+    uploadedAt: new Date(now - 150000).toISOString(),
+  });
+  assert.equal(isDocUploadedWithin5Minutes(doc2HalfMin, now), true, "Doc uploaded 2.5 mins ago must have green border");
+  console.log("  PASS: Doc uploaded 2.5 mins ago has green left border highlight");
+
+  // 3. Uploaded 4 minutes 59 seconds ago (within 5 minutes boundary)
+  const doc4m59s = makeDoc({
+    id: "doc-4m59s",
+    uploadedAt: new Date(now - 299000).toISOString(),
+  });
+  assert.equal(isDocUploadedWithin5Minutes(doc4m59s, now), true, "Doc uploaded 4m 59s ago must have green border");
+  console.log("  PASS: Doc uploaded 4m 59s ago strictly preserves green left border");
+
+  // 4. Uploaded exactly 5 minutes ago (300,000 ms)
+  const doc5mExact = makeDoc({
+    id: "doc-5m",
+    uploadedAt: new Date(now - 300000).toISOString(),
+  });
+  assert.equal(isDocUploadedWithin5Minutes(doc5mExact, now), true, "Doc uploaded exactly 5m ago is within threshold");
+  console.log("  PASS: Doc uploaded at exactly 5 minutes keeps green border");
+
+  // 5. Uploaded 5 minutes 1 second ago (301,000 ms) -> GREEN BORDER MUST BE REMOVED!
+  const doc5m1s = makeDoc({
+    id: "doc-5m1s",
+    uploadedAt: new Date(now - 301000).toISOString(),
+  });
+  assert.equal(isDocUploadedWithin5Minutes(doc5m1s, now), false, "Doc uploaded 5m 1s ago must NOT have green border");
+  console.log("  PASS: Doc uploaded 5m 1s ago (> 5 mins) automatically removes green left border");
+
+  // 6. Uploaded 6 minutes ago (360,000 ms) -> GREEN BORDER REMOVED
+  const doc6m = makeDoc({
+    id: "doc-6m",
+    uploadedAt: new Date(now - 360000).toISOString(),
+  });
+  assert.equal(isDocUploadedWithin5Minutes(doc6m, now), false, "Doc uploaded 6 mins ago must NOT have green border");
+  console.log("  PASS: Doc uploaded 6 mins ago (5 min > 6 min) strictly removes green left border");
+
+  // 7. Uploaded yesterday
+  const docYesterday = makeDoc({
+    id: "doc-yesterday",
+    uploadedAt: new Date(now - 86400000).toISOString(),
+  });
+  assert.equal(isDocUploadedWithin5Minutes(docYesterday, now), false, "Doc uploaded yesterday has no green border");
+  console.log("  PASS: Old doc uploaded yesterday has no green border");
+
+  // 8. Actively uploading or pending sync doc
+  const docPendingSync = makeDoc({
+    id: "doc-syncing",
+    isPendingSync: true,
+  });
+  assert.equal(isDocUploadedWithin5Minutes(docPendingSync, now), true, "Pending sync doc has green border");
+  console.log("  PASS: Actively uploading / pending sync document is highlighted with green border");
+
+  // 9. Time advancement transition test (4m50s -> 5m10s)
+  const docTransition = makeDoc({
+    id: "doc-transition",
+    uploadedAt: new Date(now - 290000).toISOString(),
+  });
+  assert.equal(isDocUploadedWithin5Minutes(docTransition, now), true, "At t=0 (4m50s elapsed), border is present");
+  const advancedNow = now + 20000; // +20 seconds later (elapsed is now 5m10s)
+  assert.equal(isDocUploadedWithin5Minutes(docTransition, advancedNow), false, "At t=+20s (5m10s elapsed), border is removed!");
+  console.log("  PASS: Transition test: Green border automatically expires as time passes past 5 minutes");
 }
 
 async function testPdfFallback() {

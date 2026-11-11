@@ -226,6 +226,28 @@ export function sortDocumentsLatestFirst(docs: WorkspaceDocument[]): WorkspaceDo
   });
 }
 
+/**
+ * Determines whether a document was uploaded recently (within 5 minutes).
+ * Rule: Whenever there's a new upload, highlight it with a green left border.
+ * If elapsed time > 5 minutes (5 min > 6 min), the green left border is automatically removed.
+ */
+export function isDocUploadedWithin5Minutes(
+  doc: WorkspaceDocument,
+  now: number = Date.now()
+): boolean {
+  if (!doc) return false;
+  // Actively uploading or pending background sync items are treated as new uploads
+  if (doc.isPendingSync || doc.status === "uploading") return true;
+
+  const uploadTime = getDocTimestamp(doc);
+  if (!uploadTime || uploadTime <= 0) return false;
+
+  const diffMs = now - uploadTime;
+  // 5 minutes in milliseconds = 300,000 ms.
+  // Allow up to 30 seconds client clock skew if document was just created on the server.
+  return diffMs >= -30000 && diffMs <= 5 * 60 * 1000;
+}
+
 
 export async function generateWorkspaceFallbackPdfBytes(doc: WorkspaceDocument): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
@@ -3506,6 +3528,15 @@ export function SigningWorkspace() {
   const isSyncingRef = useRef(false);
   const syncDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Dynamic clock ticker to automatically refresh the 5-minute green left border highlight
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 10000);
+    return () => clearInterval(timer);
+  }, []);
+
   // Pagination for high document counts (100-200+ docs)
   const [pageSize, setPageSize] = useState<number>(50);
   const [currentPage, setCurrentPage] = useState<number>(1);
@@ -6233,6 +6264,7 @@ export function SigningWorkspace() {
                   const sc = statusConfig[effectiveStatus];
                   const userIsReq = isUserAuthorizedToSignDoc(doc, currentUser);
                   const userSigned = hasUserAlreadySigned(doc, currentUser?.name);
+                  const isRecentUpload = isDocUploadedWithin5Minutes(doc, currentTime);
                   const completedSignersCount = (doc.requiredSigners || []).filter((reqName) => {
                     const sObj = doc.signers?.find(
                       (s) => matchNames(s.name, reqName) || normalizeName(s.name) === normalizeName(reqName)
@@ -6246,7 +6278,11 @@ export function SigningWorkspace() {
                   return (
                     <div
                       key={`card-${doc.id}`}
-                      className={`p-4 space-y-3 transition-colors ${
+                      className={`p-4 space-y-3 transition-all duration-300 ${
+                        isRecentUpload
+                          ? "border-l-4 border-l-emerald-500 shadow-[inset_4px_0_0_0_#10b981] bg-emerald-500/[0.04]"
+                          : "border-l-4 border-l-transparent"
+                      } ${
                         doc.selected ? "bg-violet-500/5" : "hover:bg-[#0F1525]/60"
                       }`}
                     >
@@ -6259,13 +6295,27 @@ export function SigningWorkspace() {
                             onChange={() => toggleSelect(doc.id)}
                             className="mt-1 rounded border-slate-700 bg-slate-800 text-violet-600 focus:ring-0 cursor-pointer shrink-0"
                           />
-                          <div className="w-8 h-8 rounded-lg bg-[#111728] border border-[#1C2844] flex items-center justify-center shrink-0 mt-0.5">
-                            <FileKey className="w-4 h-4 text-violet-400" />
+                          <div className={`w-8 h-8 rounded-lg border flex items-center justify-center shrink-0 mt-0.5 ${
+                            isRecentUpload
+                              ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-400"
+                              : "bg-[#111728] border-[#1C2844] text-violet-400"
+                          }`}>
+                            <FileKey className="w-4 h-4" />
                           </div>
                           <div className="min-w-0 flex-1">
-                            <p className="font-bold text-white text-xs truncate" title={doc.fileObj?.name || doc.fileName}>
-                              {doc.fileObj?.name || doc.fileName}
-                            </p>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <p className="font-bold text-white text-xs truncate" title={doc.fileObj?.name || doc.fileName}>
+                                {doc.fileObj?.name || doc.fileName}
+                              </p>
+                              {isRecentUpload && (
+                                <span
+                                  className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 shrink-0"
+                                  title="Uploaded within the last 5 minutes"
+                                >
+                                  NEW
+                                </span>
+                              )}
+                            </div>
                             <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-slate-400 mt-0.5">
                               <span>Personnel: <strong className="text-slate-200">{doc.targetPersonnel || doc.requiredSigners?.[0] || currentUser?.name || "Personnel"}</strong></span>
                               <span>•</span>
@@ -6284,7 +6334,14 @@ export function SigningWorkspace() {
                       {/* Upload Details */}
                       <div className="text-[10px] text-slate-400 flex items-center justify-between px-1">
                         <span>Uploaded by: <strong className="text-slate-300">{doc.uploadedBy}</strong></span>
-                        <span className="font-mono text-slate-500">{formatTimestamp(doc.uploadedAt)}</span>
+                        <div className="flex items-center gap-1.5">
+                          {isRecentUpload && (
+                            <span className="text-emerald-400 font-semibold text-[9.5px]">
+                              Just uploaded •
+                            </span>
+                          )}
+                          <span className="font-mono text-slate-500">{formatTimestamp(doc.uploadedAt)}</span>
+                        </div>
                       </div>
 
                       {/* Signers Chain Matrix */}
@@ -6436,7 +6493,7 @@ export function SigningWorkspace() {
                 <table className="w-full text-xs text-left">
                   <thead>
                     <tr className="border-b border-[#1A2235] bg-[#080B13] text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-                      <th className="px-4 py-3 w-8">
+                      <th className="px-4 py-3 w-8 border-l-[4px] border-l-transparent">
                         <input
                           type="checkbox"
                           checked={
@@ -6469,6 +6526,7 @@ export function SigningWorkspace() {
                     const sc = statusConfig[effectiveStatus];
                     const userIsReq = isUserAuthorizedToSignDoc(doc, currentUser);
                     const userSigned = hasUserAlreadySigned(doc, currentUser?.name);
+                    const isRecentUpload = isDocUploadedWithin5Minutes(doc, currentTime);
 
                     const completedSignersCount = (doc.requiredSigners || []).filter((reqName) => {
                       const sObj = doc.signers?.find(
@@ -6484,12 +6542,22 @@ export function SigningWorkspace() {
                     return (
                       <tr
                         key={doc.id}
-                        className={`transition-colors hover:bg-[#0F1525] ${
+                        className={`transition-all duration-300 ${
+                          isRecentUpload
+                            ? "bg-emerald-500/[0.04] hover:bg-emerald-500/[0.08]"
+                            : "hover:bg-[#0F1525]"
+                        } ${
                           doc.selected ? "bg-violet-500/5" : ""
                         }`}
                       >
-                        {/* Checkbox */}
-                        <td className="px-4 py-3">
+                        {/* Checkbox with Left Green Border Indicator */}
+                        <td
+                          className={`px-4 py-3 relative transition-all duration-300 ${
+                            isRecentUpload
+                              ? "border-l-[4px] border-l-emerald-500 shadow-[inset_4px_0_0_0_#10b981]"
+                              : "border-l-[4px] border-l-transparent"
+                          }`}
+                        >
                           <input
                             type="checkbox"
                             checked={!!doc.selected}
@@ -6501,13 +6569,27 @@ export function SigningWorkspace() {
                         {/* File Name & Primary Personnel */}
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2.5">
-                            <div className="w-7 h-7 rounded-lg bg-[#111728] border border-[#1C2844] flex items-center justify-center shrink-0">
-                              <FileKey className="w-3.5 h-3.5 text-violet-400" />
+                            <div className={`w-7 h-7 rounded-lg border flex items-center justify-center shrink-0 ${
+                              isRecentUpload
+                                ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-400"
+                                : "bg-[#111728] border-[#1C2844] text-violet-400"
+                            }`}>
+                              <FileKey className="w-3.5 h-3.5" />
                             </div>
                             <div className="min-w-0">
-                              <p className="font-semibold text-white truncate max-w-xs" title={doc.fileObj?.name || doc.fileName}>
-                                {doc.fileObj?.name || doc.fileName}
-                              </p>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <p className="font-semibold text-white truncate max-w-xs" title={doc.fileObj?.name || doc.fileName}>
+                                  {doc.fileObj?.name || doc.fileName}
+                                </p>
+                                {isRecentUpload && (
+                                  <span
+                                    className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 shrink-0"
+                                    title="Uploaded within the last 5 minutes"
+                                  >
+                                    NEW
+                                  </span>
+                                )}
+                              </div>
                               <p className="text-[10px] text-slate-400 truncate max-w-xs mt-0.5">
                                 Personnel:{" "}
                                 <span className="text-slate-200 font-bold">{doc.targetPersonnel || doc.requiredSigners?.[0] || currentUser?.name || "Personnel"}</span>
@@ -6523,9 +6605,16 @@ export function SigningWorkspace() {
                         <td className="px-4 py-3 text-slate-300">
                           <div>
                             <span className="block truncate text-xs">{doc.uploadedBy}</span>
-                            <span className="text-[10px] text-slate-500 font-mono">
-                              {formatTimestamp(doc.uploadedAt)}
-                            </span>
+                            <div className="flex items-center gap-1.5 text-[10px]">
+                              <span className="text-slate-500 font-mono">
+                                {formatTimestamp(doc.uploadedAt)}
+                              </span>
+                              {isRecentUpload && (
+                                <span className="text-emerald-400 font-semibold text-[9.5px]">
+                                  (Just uploaded)
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </td>
 
