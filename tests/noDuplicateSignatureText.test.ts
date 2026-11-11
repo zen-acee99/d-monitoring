@@ -3,12 +3,25 @@ import assert from "node:assert";
 import fs from "node:fs";
 import path from "node:path";
 import { PDFDocument } from "pdf-lib";
-import { signPdfBuffer } from "../server/services/pnpkiSigningService";
+import { signPdfBuffer, fixMojibake } from "../server/services/pnpkiSigningService";
 
 async function run() {
   console.log("======================================================================");
-  console.log("   AUTOMATED VERIFICATION: NO DUPLICATE SIGNATURE TEXT IN PDF        ");
+  console.log("   AUTOMATED VERIFICATION: NO DUPLICATE SIGNATURE TEXT & CLEAN 'ñ'    ");
   console.log("======================================================================");
+
+  // Check fixMojibake for corrupted "Odoæo"
+  assert.strictEqual(
+    fixMojibake("Odoæo-Calimpong Annabel Cortez"),
+    "Odoño-Calimpong Annabel Cortez",
+    "fixMojibake must correct 'Odoæo' to 'Odoño'"
+  );
+  assert.strictEqual(
+    fixMojibake("ODOÆO-CALIMPONG"),
+    "ODOÑO-CALIMPONG",
+    "fixMojibake must correct 'ODOÆO' to 'ODOÑO'"
+  );
+  console.log("  PASS: fixMojibake correctly repairs 'Odoæo' to 'Odoño'");
 
   const p12Path = path.resolve("scratch/rene_jane.p12");
   if (!fs.existsSync(p12Path)) {
@@ -41,9 +54,6 @@ async function run() {
   );
 
   const signedDoc = await PDFDocument.load(signedBuffer);
-  const signedPage = signedDoc.getPages()[0];
-
-  // Inspect raw PDF objects / streams
   const signedStr = signedBuffer.toString("latin1");
 
   // Count occurrences of "Digitally signed" in the raw PDF
@@ -68,7 +78,18 @@ async function run() {
   );
   console.log("  PASS: Exact 1 occurrence of 'by Odo' in PDF binary (no duplicate page text)");
 
-  console.log("\nALL NO-DUPLICATE SIGNATURE CHECKS PASSED PERFECTLY!");
+  // Check 3: Font dictionary MUST explicitly declare /Encoding /WinAnsiEncoding so 'ñ' renders as 'ñ' and NOT 'æ'
+  assert(
+    signedStr.includes("/Encoding /WinAnsiEncoding"),
+    "Type1 font dictionary must explicitly declare /Encoding /WinAnsiEncoding"
+  );
+  console.log("  PASS: Font dictionary explicitly defines /Encoding /WinAnsiEncoding (prevents 'Odoæo' glitch)");
+
+  // Check 4: The string must NOT contain 'Odoæo'
+  assert(!signedStr.includes("Odoæo"), "PDF binary must not contain corrupted 'Odoæo'");
+  console.log("  PASS: PDF binary cleanly renders 'Odoño' with 0 occurrences of 'Odoæo'");
+
+  console.log("\nALL NO-DUPLICATE SIGNATURE & CLEAN 'ñ' CHECKS PASSED PERFECTLY!");
 }
 
 run().catch((err) => {

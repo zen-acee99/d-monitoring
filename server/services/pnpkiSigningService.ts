@@ -328,9 +328,14 @@ function parsePdfObjects(pdfBuf: Buffer): Map<number, string> {
 export function fixMojibake(str?: string | null): string {
   if (!str) return "";
   return str
+    .replace(/Odoæo/g, "Odoño")
+    .replace(/ODOÆO/g, "ODOÑO")
+    .replace(/OdoÃ±o/g, "Odoño")
+    .replace(/ODOÃ‘O/g, "ODOÑO")
+    .replace(/æ/g, "ñ")
+    .replace(/Æ/g, "Ñ")
     .replace(/Ã±/g, "ñ")
     .replace(/Ã‘/g, "Ñ")
-    .replace(/OdoÃ±o/g, "Odoño")
     .replace(/Ã©/g, "é")
     .replace(/Ã¨/g, "è")
     .replace(/Ã-/g, "í")
@@ -1107,6 +1112,7 @@ export async function signPdfBuffer(
       Type: "Font",
       Subtype: "Type1",
       BaseFont: "Helvetica",
+      Encoding: "WinAnsiEncoding",
     });
     fontRef = pdfDoc.context.register(fontDict);
 

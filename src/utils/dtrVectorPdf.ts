@@ -1875,10 +1875,15 @@ export function assembleTextItemsIntoLines(rawItems: PdfTextItem[]): PdfTextItem
 export function fixMojibake(str?: string | null): string {
   if (!str) return "";
   return str
+    .replace(/Odoæo/g, "Odoño")
+    .replace(/ODOÆO/g, "ODOÑO")
+    .replace(/OdoÃ±o/g, "Odoño")
+    .replace(/ODOÃ‘O/g, "ODOÑO")
+    .replace(/æ/g, "ñ")
+    .replace(/Æ/g, "Ñ")
+    .replace(/Odoño/g, "Odoño")
     .replace(/Ã±/g, "ñ")
     .replace(/Ã‘/g, "Ñ")
-    .replace(/OdoÃ±o/g, "Odoño")
-    .replace(/Odoño/g, "Odoño")
     .replace(/Ã©/g, "é")
     .replace(/Ã¨/g, "è")
     .replace(/Ã-/g, "í")
