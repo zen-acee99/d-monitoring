@@ -17,7 +17,10 @@
     "build": "node --max-old-space-size=4096 ./node_modules/vite/bin/vite.js build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc --noEmit"
+    "lint": "node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc --noEmit",
+    "dict-uat-mobile": "npm --prefix ../dict-uat-mobile run dev",
+    "dict-uat-mobile:web": "npm --prefix ../dict-uat-mobile run web",
+    "dict-uat-mobile:start": "npm --prefix ../dict-uat-mobile run start"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
