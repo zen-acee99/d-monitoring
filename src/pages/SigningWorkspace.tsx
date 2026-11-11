@@ -3038,6 +3038,21 @@ function SuperAdminBulkSignModal({
 
 // ─── PNPKI .p12 Keystore Management Modal ───────────────────────────────────
 
+function fixMojibake(str?: string | null): string {
+  if (!str) return "";
+  return str
+    .replace(/Ã±/g, "ñ")
+    .replace(/Ã‘/g, "Ñ")
+    .replace(/OdoÃ\u00B1o/g, "Odoño")
+    .replace(/OdoÃ±o/g, "Odoño")
+    .replace(/Ã¡/g, "á")
+    .replace(/Ã©/g, "é")
+    .replace(/Ã­/g, "í")
+    .replace(/Ã³/g, "ó")
+    .replace(/Ãº/g, "ú")
+    .replace(/Â/g, "");
+}
+
 interface P12KeystoreModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -3077,19 +3092,22 @@ function P12KeystoreModal({
           const withP12 = (records || []).filter((r) => r.hasP12 || r.p12_filename || r.p12);
           setAvailableProfiles(withP12);
           if (withP12.length > 0) {
-            const currentMatch = currentUser
-              ? withP12.find(
-                  (p) =>
-                    (currentUser.id && (String(p.user_Id) === String(currentUser.id) || p.id === `dtr-sig-${currentUser.id}`)) ||
-                    matchNames(p.Name, currentUser.name)
-                )
-              : null;
-            if (currentMatch) {
-              setSelectedProfileId(currentMatch.id);
-            } else {
-              // Direct user to upload their own P12 certificate if not yet in database
-              setTab("upload");
-            }
+            setSelectedProfileId((prev) => {
+              if (prev && withP12.some((p) => p.id === prev)) {
+                return prev;
+              }
+              if (activeKeystore?.profileId && withP12.some((p) => p.id === activeKeystore.profileId)) {
+                return activeKeystore.profileId;
+              }
+              const currentMatch = currentUser
+                ? withP12.find(
+                    (p) =>
+                      (currentUser.id && (String(p.user_Id) === String(currentUser.id) || p.id === `dtr-sig-${currentUser.id}`)) ||
+                      matchNames(p.Name, currentUser.name)
+                  )
+                : null;
+              return currentMatch ? currentMatch.id : withP12[0].id;
+            });
           } else {
             setTab("upload");
           }
@@ -3097,7 +3115,7 @@ function P12KeystoreModal({
         .catch((e) => console.warn("Could not fetch P12 profiles:", e))
         .finally(() => setIsLoadingProfiles(false));
     }
-  }, [isOpen, selectedProfileId]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -3145,10 +3163,13 @@ function P12KeystoreModal({
       profileId: target.id,
       userId: target.user_Id,
       signerName: target.Name,
+      p12Base64: target.p12,
+      p12Password: target.p12_password,
       isUnlocked: true,
       hasP12: true,
+      signatureImage: target.image_digiSigned,
     });
-    showNotification(`✓ PNPKI Keystore activated: "${target.Name}"`);
+    showNotification(`✓ PNPKI Keystore activated: "${fixMojibake(target.Name)}"`);
     onClose();
   };
 
@@ -3216,7 +3237,7 @@ function P12KeystoreModal({
           <div className="mx-4 sm:mx-6 mt-4 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/25 flex items-center gap-3 text-emerald-300">
             <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0" />
             <div className="text-xs">
-              <div className="font-bold">Active Keystore: {activeKeystore.signerName || "Authorized Signer"}</div>
+              <div className="font-bold">Active Keystore: {fixMojibake(activeKeystore.signerName) || "Authorized Signer"}</div>
               <div className="text-[10px] text-emerald-400/80">Ready for cryptographic digital signing & counter-signing.</div>
             </div>
           </div>
@@ -3269,11 +3290,24 @@ function P12KeystoreModal({
                 <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                   {availableProfiles.map((p) => {
                     const isSelected = selectedProfileId === p.id;
+                    const displayName = fixMojibake(p.Name);
                     return (
                       <div
                         key={p.id}
-                        onClick={() => setSelectedProfileId(p.id)}
-                        className={`p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between ${
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setSelectedProfileId(p.id);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setSelectedProfileId(p.id);
+                          }
+                        }}
+                        className={`p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between select-none ${
                           isSelected
                             ? "bg-violet-600/15 border-violet-500 text-white shadow-sm shadow-violet-950/40"
                             : "bg-[#111728] border-[#1C2844] text-slate-300 hover:border-slate-600"
@@ -3282,7 +3316,7 @@ function P12KeystoreModal({
                         <div className="flex items-center gap-2.5">
                           <FileKey className={`w-4 h-4 shrink-0 ${isSelected ? "text-violet-400" : "text-slate-400"}`} />
                           <div>
-                            <div className="text-xs font-bold">{p.Name}</div>
+                            <div className="text-xs font-bold">{displayName}</div>
                             <div className="text-[10px] text-slate-400 font-mono">
                               {p.p12_filename || "PNPKI Digital Certificate (.p12)"}
                             </div>
@@ -5822,7 +5856,7 @@ export function SigningWorkspace() {
                 <KeyRound className="w-3.5 h-3.5 shrink-0" />
                 <span>
                   {activeKeystoreProfile
-                    ? `PNPKI: ${activeKeystoreProfile.signerName?.split(" ")[0] || "Active"}`
+                    ? `PNPKI: ${fixMojibake(activeKeystoreProfile.signerName)?.split(" ")[0] || "Active"}`
                     : "PNPKI Keystore"}
                 </span>
               </button>
