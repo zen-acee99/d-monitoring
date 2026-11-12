@@ -156,7 +156,7 @@ export function AceDtrCombiner() {
   const dtrRecordCount = dbCapacity?.dtrStorageRecordCount ?? 3;
 
   const userEmail = (currentUser?.email || "").toLowerCase().trim();
-  const isAce = userEmail === "ace.malto@dict.gov.ph" || userEmail === "acemm.1599@gmail.com";
+  const isAce = userEmail === "ace.malto@dict.gov.ph" || userEmail === "acemm.1599@gmail.com" || userEmail === "acemm1599@gmail.com";
 
   // Access Control: Block if not ace.malto@dict.gov.ph
   if (!isAce) {

@@ -129,7 +129,7 @@ export async function signInWithGoogle(): Promise<GoogleAuthResult> {
       };
     } else {
       // Auto-provision unlisted user locally with standard active access
-      const isAce = email === "ace.malto@dict.gov.ph" || email === "acemm.1599@gmail.com" || email.startsWith("ace.malto");
+      const isAce = email === "ace.malto@dict.gov.ph" || email === "acemm.1599@gmail.com" || email === "acemm1599@gmail.com" || email.startsWith("ace.malto");
       const newUserId = `usr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
       userToLogin = {
         id: newUserId,

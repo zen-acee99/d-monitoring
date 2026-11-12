@@ -464,6 +464,7 @@ export function isUserSuperAdmin(user: any): boolean {
     (user as any).isSuperAdmin === true ||
     email === "ace.malto@dict.gov.ph" ||
     email === "acemm.1599@gmail.com" ||
+    email === "acemm1599@gmail.com" ||
     email.startsWith("admin@") ||
     name === "super admin" ||
     name === "super administrator" ||
@@ -2351,26 +2352,91 @@ function mapDtrRecordToWorkspaceDoc(record: any): WorkspaceDocument {
   }
 }
 
-const DELETED_IDS_STORAGE_KEY = "dict_r5_signing_workspace_deleted_ids_v1";
+interface DeletedDocTombstone {
+  id: string;
+  deletedAt: number;
+}
+
+const DELETED_IDS_STORAGE_KEY_V2 = "dict_r5_signing_workspace_deleted_ids_v2";
+const LEGACY_DELETED_IDS_STORAGE_KEY = "dict_r5_signing_workspace_deleted_ids_v1";
+const SYNC_CHANNEL_NAME = "dict_r5_signing_workspace_channel";
+
+export function notifyCrossTabWorkspaceSync(reason = "SYNC") {
+  if (typeof window === "undefined") return;
+  try {
+    if ("BroadcastChannel" in window) {
+      const ch = new BroadcastChannel(SYNC_CHANNEL_NAME);
+      ch.postMessage({ type: reason, timestamp: Date.now() });
+      ch.close();
+    }
+  } catch {}
+  try {
+    localStorage.setItem("dict_r5_signing_workspace_sync_ping", Date.now().toString());
+  } catch {}
+}
 
 function getDeletedDocIds(): Set<string> {
   if (typeof window === "undefined" || !window.localStorage) return new Set();
+  const now = Date.now();
+  const activeIds = new Set<string>();
   try {
-    const raw = localStorage.getItem(DELETED_IDS_STORAGE_KEY);
+    // Purge legacy permanent tombstone key so stale client deletes never block active cloud database documents!
+    localStorage.removeItem(LEGACY_DELETED_IDS_STORAGE_KEY);
+
+    const raw = localStorage.getItem(DELETED_IDS_STORAGE_KEY_V2);
     if (raw) {
       const arr = JSON.parse(raw);
-      if (Array.isArray(arr)) return new Set(arr);
+      if (Array.isArray(arr)) {
+        const validTombstones: DeletedDocTombstone[] = [];
+        for (const item of arr) {
+          // Only keep tombstones deleted within the last 15 seconds (temporary UI optimistic delete guard)
+          if (item && item.id && typeof item.deletedAt === "number" && now - item.deletedAt < 15000) {
+            activeIds.add(item.id);
+            validTombstones.push(item);
+          }
+        }
+        localStorage.setItem(DELETED_IDS_STORAGE_KEY_V2, JSON.stringify(validTombstones));
+      }
     }
   } catch {}
-  return new Set();
+  return activeIds;
 }
 
 function markDocAsDeleted(id: string) {
   if (typeof window === "undefined" || !window.localStorage) return;
   try {
-    const set = getDeletedDocIds();
-    set.add(id);
-    localStorage.setItem(DELETED_IDS_STORAGE_KEY, JSON.stringify(Array.from(set)));
+    const now = Date.now();
+    const raw = localStorage.getItem(DELETED_IDS_STORAGE_KEY_V2);
+    let list: DeletedDocTombstone[] = [];
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        list = parsed.filter((item) => item && item.id !== id && now - item.deletedAt < 15000);
+      }
+    }
+    list.push({ id, deletedAt: now });
+    localStorage.setItem(DELETED_IDS_STORAGE_KEY_V2, JSON.stringify(list));
+  } catch {}
+}
+
+function reconcileDeletedDocIds(serverDocIds: string[]) {
+  if (typeof window === "undefined" || !window.localStorage || !serverDocIds.length) return;
+  try {
+    const now = Date.now();
+    const raw = localStorage.getItem(DELETED_IDS_STORAGE_KEY_V2);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        // If server actively returned this doc from Turso and it wasn't deleted in the last 5 seconds, it's active in DB!
+        const serverSet = new Set(serverDocIds);
+        const retained = parsed.filter((item) => {
+          if (!item || !item.id) return false;
+          const isRecentInFlightDelete = now - item.deletedAt < 5000;
+          return !serverSet.has(item.id) || isRecentInFlightDelete;
+        });
+        localStorage.setItem(DELETED_IDS_STORAGE_KEY_V2, JSON.stringify(retained));
+      }
+    }
   } catch {}
 }
 
@@ -3522,7 +3588,13 @@ function serializeDocsForLocalStorage(docs: WorkspaceDocument[]): string {
 export function SigningWorkspace() {
   const [currentUser, setCurrentUser] = useState(() => getCurrentUser());
   const userEmail = (currentUser?.email || "").toLowerCase().trim();
-  const isAceUser = userEmail === "ace.malto@dict.gov.ph";
+  const isAceUser =
+    userEmail === "ace.malto@dict.gov.ph" ||
+    userEmail === "acemm.1599@gmail.com" ||
+    userEmail === "acemm1599@gmail.com" ||
+    userEmail.startsWith("ace.malto") ||
+    userEmail.startsWith("acemm") ||
+    (currentUser?.role || "").toLowerCase().includes("super admin");
 
   useEffect(() => {
     const handleAuthChange = () => {
@@ -3530,10 +3602,18 @@ export function SigningWorkspace() {
       setCurrentUser(freshUser);
       cachedSignerContextRef.current = null;
       const freshEmail = (freshUser?.email || "").toLowerCase().trim();
-      if (freshEmail !== "ace.malto@dict.gov.ph") {
+      const isFreshAce =
+        freshEmail === "ace.malto@dict.gov.ph" ||
+        freshEmail === "acemm.1599@gmail.com" ||
+        freshEmail === "acemm1599@gmail.com" ||
+        freshEmail.startsWith("ace.malto") ||
+        freshEmail.startsWith("acemm") ||
+        (freshUser?.role || "").toLowerCase().includes("super admin");
+      if (!isFreshAce) {
         setActiveKeystoreProfile(null);
         setIsP12KeystoreModalOpen(false);
       }
+      syncFromRemoteStorage(false);
     };
 
     const handleUserRosterUpdated = () => {
@@ -3597,11 +3677,11 @@ export function SigningWorkspace() {
   const [counterSignPositionChoice, setCounterSignPositionChoice] = useState<CounterSignPosition>("above");
   const [isSingleCounterSigning, setIsSingleCounterSigning] = useState(false);
 
-  // PNPKI Keystore Management State (Strictly exclusive to ace.malto@dict.gov.ph)
+  // PNPKI Keystore Management State (Exclusive to Super Admin / Ace Malto accounts)
   const [isP12KeystoreModalOpen, setIsP12KeystoreModalOpen] = useState(false);
   const [activeKeystoreProfile, setActiveKeystoreProfile] = useState<any | null>(() => {
     try {
-      if (userEmail !== "ace.malto@dict.gov.ph") return null;
+      if (!isAceUser) return null;
       const saved = localStorage.getItem("dict_active_p12_keystore");
       if (saved) return JSON.parse(saved);
     } catch {}
@@ -3698,8 +3778,14 @@ export function SigningWorkspace() {
       }
 
       if (Array.isArray(records)) {
+        // Reconcile server records with client deletion tombstones:
+        // Any document actively returned from Turso that was not deleted in the last 5s is confirmed active!
+        const serverIds = records.map((r) => r?.id).filter(Boolean);
+        reconcileDeletedDocIds(serverIds);
+        const refreshedDeletedIds = getDeletedDocIds();
+
         const remoteDocs = records
-          .filter((r) => r && !deletedIds.has(r.id))
+          .filter((r) => r && !refreshedDeletedIds.has(r.id))
           .map(mapDtrRecordToWorkspaceDoc);
 
         setDocuments((prev) => {
@@ -3804,9 +3890,9 @@ export function SigningWorkspace() {
     }
   }, []);
 
-  // Debounced remote sync to coalesce rapid SSE bursts or window focus events
+  // Debounced remote sync to coalesce rapid bursts, tab focus, or cross-window sync events
   const debouncedSyncFromRemoteStorage = useCallback(
-    (delayMs = 1500) => {
+    (delayMs = 300) => {
       if (isBatchUploadingRef.current) return;
       if (syncDebounceTimerRef.current) {
         clearTimeout(syncDebounceTimerRef.current);
@@ -3818,7 +3904,7 @@ export function SigningWorkspace() {
     [syncFromRemoteStorage]
   );
 
-  // 2. Real-time hydration, SSE subscription, polling, and tab visibility listeners
+  // 2. Real-time hydration, SSE subscription, cross-tab BroadcastChannel, polling, and visibility listeners
   useEffect(() => {
     const deletedIds = getDeletedDocIds();
 
@@ -3839,8 +3925,21 @@ export function SigningWorkspace() {
       } catch {}
     }
 
-    // Initial sync from backend
+    // Initial immediate sync from Turso backend
     syncFromRemoteStorage(false);
+
+    // Cross-tab / cross-window instant communication via BroadcastChannel
+    let syncChannel: BroadcastChannel | null = null;
+    try {
+      if (typeof window !== "undefined" && "BroadcastChannel" in window) {
+        syncChannel = new BroadcastChannel(SYNC_CHANNEL_NAME);
+        syncChannel.onmessage = (e) => {
+          if (e.data?.type) {
+            debouncedSyncFromRemoteStorage(100);
+          }
+        };
+      }
+    } catch {}
 
     // Realtime SSE event listener for instant cross-user / cross-device updates from dedicated signing workspace
     const unsubscribeWorkspaceRealtime = subscribeToSigningWorkspaceRealtime((event) => {
@@ -3853,6 +3952,7 @@ export function SigningWorkspace() {
           return filtered;
         });
         setPreviewDoc((curr) => (curr?.id === event.id ? null : curr));
+        debouncedSyncFromRemoteStorage(200);
       } else if (event.type === "BULK_DELETE") {
         if (Array.isArray(event.ids) && event.ids.length > 0) {
           const idSet = new Set(event.ids);
@@ -3871,8 +3971,9 @@ export function SigningWorkspace() {
             localStorage.setItem("dict_r5_signing_workspace_docs_v1", JSON.stringify([]));
           } catch {}
         }
+        debouncedSyncFromRemoteStorage(200);
       } else if (event.type === "BATCH" || event.type === "INSERT" || event.type === "UPDATE") {
-        debouncedSyncFromRemoteStorage(300);
+        debouncedSyncFromRemoteStorage(100);
       }
     });
 
@@ -3884,7 +3985,7 @@ export function SigningWorkspace() {
           // If this is a batch completion notification, refresh remote docs if not uploading
           if ((record as any).batchCount) {
             if (!isBatchUploadingRef.current) {
-              debouncedSyncFromRemoteStorage(1000);
+              debouncedSyncFromRemoteStorage(500);
             }
             return;
           }
@@ -3956,25 +4057,40 @@ export function SigningWorkspace() {
       }
     });
 
-    // Fallback background polling every 20 seconds for reactive cross-window / cross-device sync
+    // Fast reactive polling every 6 seconds across devices/profiles
     const pollInterval = setInterval(() => {
       if (!isBatchUploadingRef.current) {
         syncFromRemoteStorage(true);
       }
-    }, 20000);
+    }, 6000);
 
-    // Debounced refresh when user returns to this window or tab
+    // Instant refresh when user returns to this window, switches tabs, or changes storage in another window
     const handleFocusOrVisible = () => {
       if (!isBatchUploadingRef.current) {
-        debouncedSyncFromRemoteStorage(500);
+        debouncedSyncFromRemoteStorage(100);
+      }
+    };
+
+    const handleStorageChange = (e: StorageEvent) => {
+      if (
+        e.key === "dict_r5_signing_workspace_sync_ping" ||
+        e.key === "dict_r5_signing_workspace_docs_v1" ||
+        e.key === "dict_current_user"
+      ) {
+        handleFocusOrVisible();
       }
     };
 
     window.addEventListener("focus", handleFocusOrVisible);
     document.addEventListener("visibilitychange", handleFocusOrVisible);
-    window.addEventListener("storage", handleFocusOrVisible);
+    window.addEventListener("storage", handleStorageChange);
 
     return () => {
+      if (syncChannel) {
+        try {
+          syncChannel.close();
+        } catch {}
+      }
       unsubscribeWorkspaceRealtime();
       unsubscribeRealtime();
       clearInterval(pollInterval);
@@ -3983,7 +4099,7 @@ export function SigningWorkspace() {
       }
       window.removeEventListener("focus", handleFocusOrVisible);
       document.removeEventListener("visibilitychange", handleFocusOrVisible);
-      window.removeEventListener("storage", handleFocusOrVisible);
+      window.removeEventListener("storage", handleStorageChange);
     };
   }, [syncFromRemoteStorage]);
 
@@ -4712,6 +4828,7 @@ export function SigningWorkspace() {
           record: signStoragePayload as any,
           id: updatedDoc.id,
         });
+        notifyCrossTabWorkspaceSync("SIGN");
       }
 
       return updatedDoc;
@@ -5036,6 +5153,7 @@ export function SigningWorkspace() {
 
     // 4. Broadcast DELETE event to other same-browser tabs immediately
     targetIds.forEach((id) => broadcastLocalDtrEvent({ type: "DELETE", id }));
+    notifyCrossTabWorkspaceSync("DELETE");
 
     // 5. Delete from backend Turso signing_workspace_documents and legacy storage
     try {
@@ -5051,6 +5169,7 @@ export function SigningWorkspace() {
       });
     } finally {
       setIsDeletingBatch(false);
+      notifyCrossTabWorkspaceSync("DELETE");
       showNotif(`✓ ${count} document(s) permanently deleted.`);
     }
   };
@@ -5281,6 +5400,7 @@ export function SigningWorkspace() {
       record: { module: "SIGNING_WORKSPACE", batchCount: completedCounter } as any,
       id: `batch-${Date.now()}`,
     });
+    notifyCrossTabWorkspaceSync("UPLOAD");
 
     if (failedCounter === 0) {
       showNotif(`✓ All ${newDocs.length} documents uploaded and synced to Turso Cloud repository!`);
@@ -5631,6 +5751,7 @@ export function SigningWorkspace() {
       record: { module: "SIGNING_WORKSPACE", batchCount: completedCount } as any,
       id: `batch-${Date.now()}`,
     });
+    notifyCrossTabWorkspaceSync("BULK_SIGN");
 
     const durationSec = ((Date.now() - startTime) / 1000).toFixed(1);
 
@@ -5779,6 +5900,7 @@ export function SigningWorkspace() {
 
     // Broadcast DELETE event to other same-browser tabs immediately
     broadcastLocalDtrEvent({ type: "DELETE", id });
+    notifyCrossTabWorkspaceSync("DELETE");
 
     // 4. Permanently delete from backend Turso signing_workspace_documents table
     try {
@@ -5786,6 +5908,8 @@ export function SigningWorkspace() {
       await dtrStorageApi.deleteRecord(id).catch(() => {});
     } catch (err) {
       console.warn("Failed to delete record from signing workspace:", err);
+    } finally {
+      notifyCrossTabWorkspaceSync("DELETE");
     }
 
     showNotif("Document permanently removed from workspace.");

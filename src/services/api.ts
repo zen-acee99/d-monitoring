@@ -119,6 +119,7 @@ export const SHARED_API_PREFIXES = [
   "/api/auth",
   "/api/administration",
   "/api/health",
+  "/api/signing-workspace",
 ];
 
 /**
@@ -132,6 +133,7 @@ const ROUND_ROBIN_SHARED_PATHS = [
   "/api/opentimeclock/verify",
   "/api/dtr-storage",
   "/api/dtr/storage",
+  "/api/signing-workspace",
 ];
 
 let roundRobinCounter = 0;
