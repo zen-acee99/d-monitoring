@@ -1116,6 +1116,19 @@ export async function signPdfBuffer(
     });
     fontRef = pdfDoc.context.register(fontDict);
 
+    // Register font in Page Resources so page content stream can render vector text
+    let resources = page.node.lookupMaybe(PDFName.of("Resources"), PDFDict);
+    if (!resources) {
+      resources = pdfDoc.context.obj({});
+      page.node.set(PDFName.of("Resources"), resources);
+    }
+    let fonts = resources.lookupMaybe(PDFName.of("Font"), PDFDict);
+    if (!fonts) {
+      fonts = pdfDoc.context.obj({});
+      resources.set(PDFName.of("Font"), fonts);
+    }
+    fonts.set(PDFName.of("F_PNPKI"), fontRef);
+
     const escapedSigner = signerName.replace(/[()\\]/g, "\\$&");
     const isReneJane =
       signerName.toLowerCase().includes("buena") ||
@@ -1137,24 +1150,43 @@ export async function signPdfBuffer(
     fontSize = Math.round(fontSize * 10) / 10;
     const titleSize = Math.max(apNameLines.length >= 2 ? 6.2 : 6.5, Math.round((fontSize + 0.3) * 10) / 10);
 
-    let apStreamOps = "q\n";
+    // Draw visual DigiSigned typography directly onto Page canvas so Chromium PDFium / browser iframe renders it 100% reliably
+    let pageTextOps = "q\n";
     if (isCounter && !hasImg) {
-      apStreamOps += "1.4 w\n0 0 0 RG\n4 14 m\n8 9 l\n16 20 l\nS\n";
+      pageTextOps += `1.4 w\n0 0 0 RG\n${minX + 4} ${minY + 14} m\n${minX + 8} ${minY + 9} l\n${minX + 16} ${minY + 20} l\nS\n`;
     }
+    const pageTextX = minX + apTextX;
     if (apNameLines.length >= 2) {
       const l1 = apNameLines[0].replace(/[()\\]/g, "\\$&");
       const l2 = apNameLines[1].replace(/[()\\]/g, "\\$&");
-      apStreamOps += `BT\n/F1 ${titleSize} Tf\n0 0 0 rg\n${apTextX} 19.0 Td\n(${apTitleText}) Tj\n0 -7.5 Td\n/F1 ${fontSize} Tf\n(${l1}) Tj\n0 -7.5 Td\n(${l2}) Tj\nET\nQ\n`;
+      pageTextOps += `BT\n/F_PNPKI ${titleSize} Tf\n0 0 0 rg\n${pageTextX} ${minY + 19.0} Td\n(${apTitleText}) Tj\n0 -7.5 Td\n/F_PNPKI ${fontSize} Tf\n(${l1}) Tj\n0 -7.5 Td\n(${l2}) Tj\nET\nQ\n`;
     } else {
       const l1 = apNameLines[0].replace(/[()\\]/g, "\\$&");
-      apStreamOps += `BT\n/F1 ${titleSize} Tf\n0 0 0 rg\n${apTextX} 16.0 Td\n(${apTitleText}) Tj\n0 -9.0 Td\n/F1 ${fontSize} Tf\n(${l1}) Tj\nET\nQ\n`;
+      pageTextOps += `BT\n/F_PNPKI ${titleSize} Tf\n0 0 0 rg\n${pageTextX} ${minY + 16.0} Td\n(${apTitleText}) Tj\n0 -9.0 Td\n/F_PNPKI ${fontSize} Tf\n(${l1}) Tj\nET\nQ\n`;
     }
 
-    const apStream = pdfDoc.context.stream(apStreamOps, {
+    const textStream = pdfDoc.context.stream(pageTextOps);
+    const textStreamRef = pdfDoc.context.register(textStream);
+
+    // Append text stream to Page Contents
+    let contents = page.node.lookupMaybe(PDFName.of("Contents"), PDFArray);
+    if (!contents) {
+      const rawContents = page.node.get(PDFName.of("Contents"));
+      if (rawContents) {
+        const arr = pdfDoc.context.obj([rawContents, textStreamRef]);
+        page.node.set(PDFName.of("Contents"), arr);
+      } else {
+        page.node.set(PDFName.of("Contents"), textStreamRef);
+      }
+    } else {
+      contents.push(textStreamRef);
+    }
+
+    // Appearance stream on signature widget is an empty Form XObject (q Q) so Adobe Acrobat does NOT render duplicate text
+    const apStream = pdfDoc.context.stream("q\nQ\n", {
       Type: "XObject",
       Subtype: "Form",
       BBox: [0, 0, rw, rh],
-      Resources: { Font: { F1: fontRef } },
     });
 
     const roleName = reason.toLowerCase().includes("verification") ? "Supervisor" : "Personnel";
