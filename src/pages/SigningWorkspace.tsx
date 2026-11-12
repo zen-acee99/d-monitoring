@@ -840,6 +840,7 @@ function DocumentPreviewModal({
   onCounterSign,
   onDownload,
   onShowValidationStatus,
+  onDocUpdated,
   currentUser,
   activeKeystore,
 }: {
@@ -849,6 +850,7 @@ function DocumentPreviewModal({
   onCounterSign?: (id: string, position: CounterSignPosition) => void;
   onDownload?: (doc: WorkspaceDocument) => void;
   onShowValidationStatus?: (signerName: string, date?: string) => void;
+  onDocUpdated?: (doc: WorkspaceDocument) => void;
   currentUser: any;
   activeKeystore?: any;
 }) {
@@ -900,6 +902,7 @@ function DocumentPreviewModal({
     const file = e.target.files?.[0];
     if (!file || !rawDoc) return;
     try {
+      setIsLoadingPdf(true);
       const dataUrl = await fileToDataUrl(file);
       const cleanFileName = rawDoc.fileName.replace(/\.docx?(\.pdf)?$/i, ".pdf");
       rawDoc.fileName = cleanFileName;
@@ -909,26 +912,31 @@ function DocumentPreviewModal({
       const objectUrl = URL.createObjectURL(file);
       setBlobUrl(objectUrl);
 
-      // Persist to database so it is permanently attached to this document
-      signingWorkspaceApi
-        .saveDocument({
-          id: rawDoc.id,
-          fileName: cleanFileName,
-          fileSize: formatFileSize(file.size),
-          uploadedAt: rawDoc.uploadedAt,
-          uploadedBy: rawDoc.uploadedBy,
-          status: rawDoc.status,
-          targetPersonnel: rawDoc.targetPersonnel,
-          requiredSigners: rawDoc.requiredSigners,
-          signers: rawDoc.signers,
-          scannedInfo: rawDoc.scannedInfo,
-          pdfDataUrl: dataUrl,
-          province: rawDoc.province,
-          notes: rawDoc.notes,
-        })
-        .catch(() => {});
+      // Persist to database so it is permanently attached to this document in Turso Cloud
+      await signingWorkspaceApi.saveDocument({
+        id: rawDoc.id,
+        fileName: cleanFileName,
+        fileSize: formatFileSize(file.size),
+        uploadedAt: rawDoc.uploadedAt,
+        uploadedBy: rawDoc.uploadedBy,
+        status: rawDoc.status,
+        targetPersonnel: rawDoc.targetPersonnel,
+        requiredSigners: rawDoc.requiredSigners,
+        signers: rawDoc.signers,
+        scannedInfo: rawDoc.scannedInfo,
+        pdfDataUrl: dataUrl,
+        province: rawDoc.province,
+        notes: rawDoc.notes,
+      });
+
+      if (onDocUpdated) {
+        onDocUpdated({ ...rawDoc });
+      }
+      notifyCrossTabWorkspaceSync("UPLOAD");
     } catch (err) {
       console.warn("Failed attaching PDF to document:", err);
+    } finally {
+      setIsLoadingPdf(false);
     }
   };
 
@@ -5370,7 +5378,7 @@ export function SigningWorkspace() {
 
       if (itemSuccess) {
         setDocuments((prev) =>
-          prev.map((d) => (d.id === item.doc.id ? { ...d, isPendingSync: false } : d))
+          prev.map((d) => (d.id === item.doc.id ? { ...d, pdfDataUrl: dataUrl, fileObj: item.file, isPendingSync: false } : d))
         );
         completedCounter++;
       } else {
@@ -5528,7 +5536,7 @@ export function SigningWorkspace() {
 
       if (itemSuccess) {
         setDocuments((prev) =>
-          prev.map((d) => (d.id === item.doc.id ? { ...d, isPendingSync: false } : d))
+          prev.map((d) => (d.id === item.doc.id ? { ...d, pdfDataUrl: dataUrl, fileObj: item.file, isPendingSync: false } : d))
         );
         reCompleted++;
       } else {
@@ -7205,6 +7213,10 @@ export function SigningWorkspace() {
           }}
           onDownload={handleDownload}
           onShowValidationStatus={handleOpenValidationModal}
+          onDocUpdated={(updated) => {
+            setDocuments((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+            setPreviewDoc(updated);
+          }}
           currentUser={currentUser}
           activeKeystore={activeKeystoreProfile}
         />

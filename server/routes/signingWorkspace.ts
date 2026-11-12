@@ -157,10 +157,58 @@ signingWorkspaceRouter.get("/:id", async (req: Request, res: Response) => {
     });
 
     if (result.rows.length === 0) {
+      // Check legacy dtr_storage if not in signing_workspace_documents
+      try {
+        const dtrRes = await db.execute({
+          sql: `SELECT * FROM dtr_storage WHERE id = ? LIMIT 1`,
+          args: [id],
+        });
+        if (dtrRes.rows.length > 0) {
+          const dtrRow = dtrRes.rows[0];
+          const restoredDoc = {
+            id: String(dtrRow.id),
+            fileName: String(dtrRow.pdf_filename || "Document.pdf"),
+            fileSize: String(dtrRow.pdf_filesize || ""),
+            uploadedAt: dtrRow.submitted_date || dtrRow.created_at,
+            uploadedBy: dtrRow.employee_name || "System",
+            status: dtrRow.status || "pending",
+            targetPersonnel: dtrRow.employee_name || "PERSONNEL",
+            requiredSigners: [dtrRow.employee_name || "PERSONNEL"],
+            signers: [],
+            scannedInfo: null,
+            pdfDataUrl: dtrRow.pdf_data || undefined,
+            province: dtrRow.province || "Regional Office",
+            sectionDivision: dtrRow.section_division || "Regional Office V",
+            notes: dtrRow.remarks || "",
+            hasP12: Boolean(dtrRow.has_p12),
+          };
+          return res.json({ success: true, document: restoredDoc });
+        }
+      } catch {}
       return res.status(404).json({ success: false, error: "Document not found" });
     }
 
     const document = formatSigningDocRow(result.rows[0], true);
+
+    // If PDF binary is missing in signing_workspace_documents, attempt fallback to dtr_storage and self-heal
+    if (!document.pdfDataUrl) {
+      try {
+        const dtrFallback = await db.execute({
+          sql: `SELECT pdf_data FROM dtr_storage WHERE id = ? AND pdf_data IS NOT NULL AND length(pdf_data) > 0 LIMIT 1`,
+          args: [id],
+        });
+        if (dtrFallback.rows.length > 0 && dtrFallback.rows[0].pdf_data) {
+          const recoveredPdf = String(dtrFallback.rows[0].pdf_data);
+          document.pdfDataUrl = recoveredPdf;
+          // Self-heal: backfill signing_workspace_documents so future lookups are instant
+          db.execute({
+            sql: `UPDATE signing_workspace_documents SET pdf_data = ? WHERE id = ?`,
+            args: [recoveredPdf, id],
+          }).catch(() => {});
+        }
+      } catch {}
+    }
+
     return res.json({ success: true, document });
   } catch (error: any) {
     console.error("Error fetching document:", error);
@@ -205,7 +253,10 @@ signingWorkspaceRouter.post("/", async (req: Request, res: Response) => {
         required_signers = excluded.required_signers,
         signers_matrix = excluded.signers_matrix,
         scanned_info = COALESCE(excluded.scanned_info, signing_workspace_documents.scanned_info),
-        pdf_data = COALESCE(excluded.pdf_data, signing_workspace_documents.pdf_data),
+        pdf_data = CASE 
+          WHEN excluded.pdf_data IS NOT NULL AND length(excluded.pdf_data) > 0 THEN excluded.pdf_data 
+          ELSE signing_workspace_documents.pdf_data 
+        END,
         province = excluded.province,
         section_division = excluded.section_division,
         notes = excluded.notes,
@@ -296,7 +347,10 @@ signingWorkspaceRouter.post("/batch", async (req: Request, res: Response) => {
           required_signers = excluded.required_signers,
           signers_matrix = excluded.signers_matrix,
           scanned_info = COALESCE(excluded.scanned_info, signing_workspace_documents.scanned_info),
-          pdf_data = COALESCE(excluded.pdf_data, signing_workspace_documents.pdf_data),
+          pdf_data = CASE 
+          WHEN excluded.pdf_data IS NOT NULL AND length(excluded.pdf_data) > 0 THEN excluded.pdf_data 
+          ELSE signing_workspace_documents.pdf_data 
+        END,
           province = excluded.province,
           section_division = excluded.section_division,
           notes = excluded.notes,
@@ -360,8 +414,11 @@ signingWorkspaceRouter.put("/:id", async (req: Request, res: Response) => {
       args.push(JSON.stringify(body.signers || body.signers_matrix));
     }
     if (body.pdfDataUrl !== undefined || body.pdf_data !== undefined) {
-      updates.push("pdf_data = ?");
-      args.push(String(body.pdfDataUrl || body.pdf_data));
+      const pData = String(body.pdfDataUrl || body.pdf_data || "").trim();
+      if (pData.length > 0) {
+        updates.push("pdf_data = ?");
+        args.push(pData);
+      }
     }
     if (body.notes !== undefined) {
       updates.push("notes = ?");

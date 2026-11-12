@@ -133,7 +133,6 @@ const ROUND_ROBIN_SHARED_PATHS = [
   "/api/opentimeclock/verify",
   "/api/dtr-storage",
   "/api/dtr/storage",
-  "/api/signing-workspace",
 ];
 
 let roundRobinCounter = 0;
@@ -311,14 +310,17 @@ export function resolveApiCandidateOrigins(apiPath: string): string[] {
   return pool;
 }
 
-function shouldFailoverResponse(res: Response): boolean {
+function shouldFailoverResponse(res: Response, apiPath?: string): boolean {
   const status = res.status;
   // Failover on 5xx server/timeout errors, 429 rate-limit, or 408 request timeout
   if (status >= 500 || status === 429 || status === 408) {
     return true;
   }
-  // Also failover on 404 when a serverless route is missing (non-JSON 404 or Vercel routing error)
+  // Also failover on 404 when a serverless route is missing or for shared workspace routes
   if (status === 404) {
+    if (apiPath && apiPath.includes("/signing-workspace")) {
+      return true;
+    }
     const contentType = (res.headers?.get?.("content-type") || "").toLowerCase();
     const vercelError = res.headers?.get?.("x-vercel-error");
     if (vercelError || !contentType.includes("application/json")) {
@@ -348,7 +350,7 @@ export async function apiFetch(input: string, init?: RequestInit): Promise<Respo
 
     try {
       const res = await fetch(targetUrl, init);
-      if (!shouldFailoverResponse(res) || i === candidateOrigins.length - 1) {
+      if (!shouldFailoverResponse(res, input) || i === candidateOrigins.length - 1) {
         return res;
       }
       lastResponse = res;
