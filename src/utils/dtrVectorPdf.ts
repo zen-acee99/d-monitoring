@@ -1,5 +1,5 @@
 import { jsPDF } from "jspdf";
-import { PDFDocument, PDFName, PDFArray, PDFNumber, PDFDict, decodePDFRawStream, PDFRawStream, rgb, StandardFonts } from "pdf-lib";
+import { PDFDocument, PDFPage, PDFName, PDFArray, PDFNumber, PDFDict, decodePDFRawStream, PDFRawStream, rgb, StandardFonts } from "pdf-lib";
 import { DtrConfig, DtrRow, formatPnpkiDate, formatTo12Hour } from "./dtrUtils";
 import { dtrGeneratorApi } from "@/services/api";
 import { DEFAULT_USERS } from "@/data/userStore";
@@ -1990,6 +1990,212 @@ export function extractVerticalLinesFromContentStream(
   }
 
   return lines;
+}
+
+export interface PdfHorizontalLine {
+  y: number;
+  minX: number;
+  maxX: number;
+  width: number;
+}
+
+/**
+ * Extracts horizontal line segments from a PDF content stream (lines drawn with 'm'/'l' or thin 're' rectangles).
+ * Used to detect signature underlines on forms, certificates, and signatory blocks.
+ */
+export function extractHorizontalLinesFromContentStream(
+  sBytes: Uint8Array
+): PdfHorizontalLine[] {
+  if (!sBytes || sBytes.length === 0) return [];
+  const lines: PdfHorizontalLine[] = [];
+
+  const str = new TextDecoder("latin1").decode(sBytes);
+  const tokenRegex = /(-?\d*\.?\d+(?:[eE][-+]?\d+)?|[a-zA-Z*]+)/g;
+  let match: RegExpExecArray | null;
+
+  let stack: number[] = [];
+  let currentX = 0;
+  let currentY = 0;
+
+  let ctmA = 1, ctmB = 0, ctmC = 0, ctmD = 1, ctmE = 0, ctmF = 0;
+  const ctmStack: Array<[number, number, number, number, number, number]> = [];
+
+  function transformX(x: number, y: number) {
+    return x * ctmA + y * ctmC + ctmE;
+  }
+  function transformY(x: number, y: number) {
+    return x * ctmB + y * ctmD + ctmF;
+  }
+
+  while ((match = tokenRegex.exec(str)) !== null) {
+    const token = match[1];
+    const num = parseFloat(token);
+
+    if (!isNaN(num) && /^-?\d*\.?\d+/.test(token)) {
+      stack.push(num);
+      if (stack.length > 8) stack.shift();
+      continue;
+    }
+
+    if (token === "q") {
+      ctmStack.push([ctmA, ctmB, ctmC, ctmD, ctmE, ctmF]);
+    } else if (token === "Q") {
+      const prev = ctmStack.pop();
+      if (prev) {
+        [ctmA, ctmB, ctmC, ctmD, ctmE, ctmF] = prev;
+      }
+    } else if (token === "cm" && stack.length >= 6) {
+      const [a, b, c, d, e, f] = stack.slice(-6);
+      const nA = a * ctmA + b * ctmC;
+      const nB = a * ctmB + b * ctmD;
+      const nC = c * ctmA + d * ctmC;
+      const nD = c * ctmB + d * ctmD;
+      const nE = e * ctmA + f * ctmC + ctmE;
+      const nF = e * ctmB + f * ctmD + ctmF;
+      ctmA = nA; ctmB = nB; ctmC = nC; ctmD = nD; ctmE = nE; ctmF = nF;
+      stack = [];
+    } else if (token === "m" && stack.length >= 2) {
+      const [x, y] = stack.slice(-2);
+      currentX = transformX(x, y);
+      currentY = transformY(x, y);
+      stack = [];
+    } else if (token === "l" && stack.length >= 2) {
+      const [x, y] = stack.slice(-2);
+      const nx = transformX(x, y);
+      const ny = transformY(x, y);
+      if (Math.abs(currentY - ny) <= 2.5 && Math.abs(currentX - nx) >= 40.0) {
+        const minX = Math.round(Math.min(currentX, nx) * 10) / 10;
+        const maxX = Math.round(Math.max(currentX, nx) * 10) / 10;
+        lines.push({
+          y: Math.round(((currentY + ny) / 2) * 10) / 10,
+          minX,
+          maxX,
+          width: maxX - minX,
+        });
+      }
+      currentX = nx;
+      currentY = ny;
+      stack = [];
+    } else if (token === "re" && stack.length >= 4) {
+      const [x, y, w, h] = stack.slice(-4);
+      const rx = transformX(x, y);
+      const ry = transformY(x, y);
+      const rw = Math.abs(w * ctmA);
+      const rh = Math.abs(h * ctmD);
+      if (rh <= 3.5 && rw >= 40.0) {
+        const minX = Math.round(Math.min(rx, rx + w * ctmA) * 10) / 10;
+        const maxX = Math.round(Math.max(rx, rx + w * ctmA) * 10) / 10;
+        lines.push({
+          y: Math.round((ry + (h * ctmD) / 2) * 10) / 10,
+          minX,
+          maxX,
+          width: maxX - minX,
+        });
+      }
+      stack = [];
+    } else {
+      stack = [];
+    }
+  }
+
+  return lines;
+}
+
+/**
+ * Scans page Image XObjects (e.g. Canva exports, graphic certificates, scanned PDFs)
+ * to detect horizontal signature underlines in the lower signature region of the page.
+ */
+export function detectRasterSignatureLine(
+  pdfDoc: PDFDocument,
+  page: PDFPage
+): { y: number; minX: number; maxX: number; width: number; centerX: number } | null {
+  try {
+    const resources = page.node.Resources();
+    if (!resources) return null;
+    const xObject = resources.lookupMaybe(PDFName.of("XObject"), PDFDict);
+    if (!xObject) return null;
+
+    const { width: pageWidth, height: pageHeight } = page.getSize();
+    const keys = xObject.keys();
+
+    for (const key of keys) {
+      const ref = xObject.get(key);
+      const stream = pdfDoc.context.lookup(ref);
+      if (!(stream instanceof PDFRawStream)) continue;
+
+      const dict = stream.dict;
+      const subtype = dict.lookup(PDFName.of("Subtype"))?.toString();
+      if (subtype !== "/Image") continue;
+
+      const imgW = Number(dict.lookup(PDFName.of("Width"))?.toString() || 0);
+      const imgH = Number(dict.lookup(PDFName.of("Height"))?.toString() || 0);
+      if (imgW < 400 || imgH < 400) continue;
+
+      const filter = dict.lookup(PDFName.of("Filter"))?.toString();
+      if (filter !== "/FlateDecode") continue;
+
+      let raw: Uint8Array | null = null;
+      try {
+        const decodedStream = decodePDFRawStream(stream);
+        raw = (decodedStream as any).decode();
+      } catch {}
+
+      if (!raw || raw.length < imgW * imgH) continue;
+
+      const bytesPerPixel = Math.floor(raw.length / (imgW * imgH));
+      if (bytesPerPixel < 1 || bytesPerPixel > 4) continue;
+
+      // Scan rows in lower 35% of page (65% to 94% of imgH)
+      const startRow = Math.floor(imgH * 0.65);
+      const endRow = Math.floor(imgH * 0.94);
+
+      let bestLine: { y: number; minX: number; maxX: number; width: number; centerX: number } | null = null;
+      let maxRunLen = 0;
+
+      for (let r = startRow; r < endRow; r++) {
+        const rowOffset = r * imgW * bytesPerPixel;
+        let currentRun = 0;
+        let runStart = 0;
+
+        for (let c = 50; c < imgW - 50; c++) {
+          const idx = rowOffset + c * bytesPerPixel;
+          let brightness = 255;
+          if (bytesPerPixel === 1) {
+            brightness = raw[idx];
+          } else if (bytesPerPixel === 3) {
+            brightness = 0.299 * raw[idx] + 0.587 * raw[idx + 1] + 0.114 * raw[idx + 2];
+          } else if (bytesPerPixel === 4) {
+            brightness = 255 - raw[idx + 3];
+          }
+
+          if (brightness < 70) {
+            if (currentRun === 0) runStart = c;
+            currentRun++;
+            if (currentRun > maxRunLen) {
+              maxRunLen = currentRun;
+              const pdfY = (imgH - r) * (pageHeight / imgH);
+              const minX = runStart * (pageWidth / imgW);
+              const maxX = (runStart + currentRun) * (pageWidth / imgW);
+              bestLine = {
+                y: Math.round(pdfY * 10) / 10,
+                minX: Math.round(minX * 10) / 10,
+                maxX: Math.round(maxX * 10) / 10,
+                width: Math.round((maxX - minX) * 10) / 10,
+                centerX: Math.round(((minX + maxX) / 2) * 10) / 10,
+              };
+            }
+          } else {
+            currentRun = 0;
+          }
+        }
+      }
+
+      if (bestLine && bestLine.width >= 80 && bestLine.y >= 70 && bestLine.y <= 150) {
+        return bestLine;
+      }
+    }
+  } catch {}
+  return null;
 }
 
 /**
@@ -4051,6 +4257,37 @@ export function findPersonnelSignatureCoordinates(
     }
   }
 
+  // 3. Fallback coordinate calculation when no explicit name was found in content stream:
+  // Inspect existing signatures already present on the page (supports counter-signing and multi-signers)
+  const existingOnLastPage: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
+  try {
+    const annotsArr = lastPage.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
+    if (annotsArr) {
+      for (let i = 0; i < annotsArr.size(); i++) {
+        const annotDict = pdfDoc.context.lookup(annotsArr.get(i), PDFDict);
+        if (annotDict) {
+          const subtype = annotDict.lookupMaybe(PDFName.of("Subtype"), PDFName)?.asString();
+          const ft = annotDict.lookupMaybe(PDFName.of("FT"), PDFName)?.asString();
+          if (subtype === "/Widget" && (ft === "/Sig" || annotDict.has(PDFName.of("V")))) {
+            const rectArr = annotDict.lookupMaybe(PDFName.of("Rect"), PDFArray);
+            if (rectArr && rectArr.size() === 4) {
+              const rx1 = (rectArr.get(0) as PDFNumber).asNumber();
+              const ry1 = (rectArr.get(1) as PDFNumber).asNumber();
+              const rx2 = (rectArr.get(2) as PDFNumber).asNumber();
+              const ry2 = (rectArr.get(3) as PDFNumber).asNumber();
+              existingOnLastPage.push({
+                x1: Math.min(rx1, rx2),
+                y1: Math.min(ry1, ry2),
+                x2: Math.max(rx1, rx2),
+                y2: Math.max(ry1, ry2),
+              });
+            }
+          }
+        }
+      }
+    }
+  } catch {}
+
   const rawTargetName = (personnelName || candidateSignerItem?.text || "").trim();
   const nameLen = rawTargetName.length;
   let boxW = Math.max(120, Math.min(160, Math.round(48 + nameLen * 4.0)));
@@ -4058,7 +4295,17 @@ export function findPersonnelSignatureCoordinates(
 
   let boxX = Math.round(width * 0.50 - boxW / 2);
   const stackOffset = csIndex > 0 ? csIndex * (boxH + 6) : 0;
-  let boxY = Math.min(height - boxH - 4, Math.max(10, Math.round(height * 0.18 + 10 + stackOffset)));
+  const isPortrait = height >= width;
+
+  // Detect signature underlines from raster image or vector content streams
+  const rasterLine = detectRasterSignatureLine(pdfDoc, lastPage);
+  const vectorHLines = extractHorizontalLinesFromContentStream(lastPageBytes);
+  const bottomHLines = vectorHLines.filter((hl) => hl.y >= 70 && hl.y <= 150 && hl.width >= 60);
+  const detectedLine =
+    rasterLine ||
+    (bottomHLines.length > 0 ? bottomHLines.sort((a, b) => b.width - a.width)[0] : null);
+
+  let boxY: number;
 
   if (candidateSignerItem) {
     const nameTextW = (candidateSignerItem as any).width || measurePdfTextWidth(candidateSignerItem.text, 10.5);
@@ -4085,19 +4332,98 @@ export function findPersonnelSignatureCoordinates(
         boxY = 430 - boxH;
       }
     }
-  } else if (lastPageVLines.length > 0) {
-    // If vertical lines exist near the center, ensure the signature never straddles a vertical column line
-    const centerLines = lastPageVLines.filter((vl) => vl.minY <= boxY + 30 && vl.maxY >= boxY - 30 && vl.x >= 150 && vl.x <= width - 150);
-    for (const cl of centerLines) {
-      if (boxX <= cl.x && boxX + boxW >= cl.x) {
-        // Straddling! Move safely to the right of the vertical line
-        boxX = Math.round(cl.x + 6);
+  } else if (detectedLine) {
+    // Exact signature underline detected on forms, awards, or certificates (raster or vector)
+    const lineCenter = (detectedLine as any).centerX || Math.round((detectedLine.minX + detectedLine.maxX) / 2);
+    const lineY = detectedLine.y;
+    // Placed strictly directly ABOVE the signature line (4pt gap above line, bottom edge at lineY + 4)
+    boxY = Math.round(lineY + 4);
+    if (boxY + boxH > 155) {
+      boxY = 155 - boxH;
+    }
+
+    // Horizontal placement on the signature line:
+    if (isCounter || csIndex > 0) {
+      const prevSig = existingOnLastPage.find(
+        (es) => Math.abs(es.y1 - boxY) < 30
+      );
+      if (prevSig) {
+        // Position relative to the existing signature to prevent any overlap
+        if (prevSig.x1 - boxW - 8 >= (detectedLine ? Math.min(15, detectedLine.minX) : 15)) {
+          boxX = Math.round(prevSig.x1 - boxW - 8);
+        } else if (prevSig.x2 + boxW + 8 <= (detectedLine ? Math.max(width - 15, (detectedLine as any).maxX) : width - 15)) {
+          boxX = Math.round(prevSig.x2 + 8);
+        } else {
+          // If neither side fits, stack with tight spacing
+          boxY = Math.round(prevSig.y2 + 4);
+          boxX = Math.round(prevSig.x1);
+        }
+      } else if (detectedLine.width >= 180) {
+        // Wide underline with no existing signature yet: Place counter-signer on the left half
+        boxX = Math.round(lineCenter - boxW - 8);
+        if (boxX < detectedLine.minX) boxX = Math.round(detectedLine.minX);
+      } else {
+        boxX = Math.round(lineCenter - boxW / 2);
+      }
+    } else {
+      // Primary signer: check if another signature already occupies the center
+      const centerOccupied = existingOnLastPage.some(
+        (es) => Math.abs((es.x1 + es.x2) / 2 - lineCenter) < 40 && Math.abs(es.y1 - boxY) < 30
+      );
+      if (centerOccupied && detectedLine.width >= 180) {
+        // Center is occupied, shift primary signer to the right half
+        boxX = Math.round(lineCenter + 8);
+        if (boxX + boxW > (detectedLine as any).maxX) boxX = Math.round((detectedLine as any).maxX - boxW);
+      } else {
+        // Single primary signer: horizontally centered directly over the signature line
+        boxX = Math.round(lineCenter - boxW / 2);
+      }
+    }
+  } else {
+    // Proportional fallback when no text and no line is detected:
+    // On portrait certificates, clearances, and memos, signature line is at ~10-14% of page height.
+    // Placing at height * 0.125 + 4 guarantees sitting strictly ABOVE the name/line and safely BELOW description text (y >= 160).
+    const baseY = isPortrait ? Math.round(height * 0.125 + 4) : Math.round(height * 0.20);
+    boxY = baseY;
+
+    if (isCounter || csIndex > 0) {
+      const prevSig = existingOnLastPage[existingOnLastPage.length - 1];
+      if (prevSig && prevSig.x2 + boxW + 8 <= width - 15) {
+        boxX = Math.round(prevSig.x2 + 8);
+        boxY = prevSig.y1;
+      } else if (prevSig && prevSig.x1 - boxW - 8 >= 15) {
+        boxX = Math.round(prevSig.x1 - boxW - 8);
+        boxY = prevSig.y1;
+      } else {
+        boxX = Math.round(width * 0.50 - boxW / 2);
+        boxY = Math.min(150, Math.round(baseY + (csIndex || 1) * (boxH + 4)));
+      }
+    } else {
+      boxX = Math.round(width * 0.50 - boxW / 2);
+    }
+
+    if (isPortrait && boxY + boxH > 155) {
+      boxY = 155 - boxH;
+    }
+  }
+
+  // Strict Column Boundary Detection on fallback:
+  if (lastPageVLines.length > 0) {
+    // If vertical lines exist, ensure the signature never straddles or invades a vertical column line
+    const relevantVLines = lastPageVLines.filter((vl) => vl.minY <= boxY + 30 && vl.maxY >= boxY - 30);
+    for (const vl of relevantVLines) {
+      if (boxX <= vl.x && boxX + boxW >= vl.x) {
+        // Straddling column divider! Shift safely to the right
+        boxX = Math.round(vl.x + 6);
       }
     }
   }
 
   if (boxX + boxW > width - 15) {
     boxX = Math.max(15, width - boxW - 15);
+  }
+  if (boxX < 15) {
+    boxX = 15;
   }
 
   return {

@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+import { PDFDocument, rgb, StandardFonts, PDFName, PDFArray } from "pdf-lib";
 import { findPersonnelSignatureCoordinates, findApprovalSectionCoordinates } from "../src/utils/dtrVectorPdf.js";
 import { signPdfBuffer, normalizeSignatureBoundingBox } from "../server/services/pnpkiSigningService.js";
 
@@ -676,6 +676,63 @@ async function runTestSuite() {
     assert(locAnnabelOnAceDoc.appliedPosition === "above", "Test 15.7", `Fallback on signatory line appliedPosition must be "above"`);
     assert(locAnnabelOnAceDoc.boxX >= vLineX + 4, "Test 15.8", `Annabel on Ace doc boxX (${locAnnabelOnAceDoc.boxX}) MUST be >= ${vLineX + 4}, NEVER overlapping left column!`);
     assert(locAnnabelOnAceDoc.boxX + locAnnabelOnAceDoc.boxW <= rightBorderX - 2, "Test 15.9", `Annabel on Ace doc boxX + boxW (${locAnnabelOnAceDoc.boxX + locAnnabelOnAceDoc.boxW}) must stay within right border`);
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // TEST 16: Certificate & Raster Documents (Single Signer & Dual Signers)
+  // "fix the algorithm for the placing DigiSigned in the above of the name it must fix with all different type of document regardless theres a column bottom center etc. and even certification"
+  // "look to this i signed it and mam bhel but our sign place in the top align with the description text not above the name"
+  // ─────────────────────────────────────────────────────────────────
+  console.log("\n[Test 16] Certificate Bottom-Center & Dual Signer Placement (Cert_SMM_Final-9.pdf)");
+  {
+    const certPath = "scratch/cert_test.pdf";
+    if (fs.existsSync(certPath)) {
+      const certBytes = fs.readFileSync(certPath);
+      const certDoc = await PDFDocument.load(certBytes);
+
+      // 1. Primary Signer: DIR. ANNABEL C. ODOÑO-CALIMPONG
+      const locAnnabel = findPersonnelSignatureCoordinates(certDoc, "DIR. ANNABEL C. ODOÑO-CALIMPONG");
+      assert(locAnnabel.appliedPosition === "above", "Test 16.1", `appliedPosition must be "above", got "${locAnnabel.appliedPosition}"`);
+      assert(locAnnabel.boxY >= 105 && locAnnabel.boxY <= 120, "Test 16.2", `boxY must sit strictly directly above name/line (105-120), got ${locAnnabel.boxY}`);
+      assert(locAnnabel.boxY + locAnnabel.boxH < 155, "Test 16.3", `boxY + boxH (${locAnnabel.boxY + locAnnabel.boxH}) must NOT touch description text (>= 165 pt)!`);
+      assert(locAnnabel.boxX >= 180 && locAnnabel.boxX <= 280, "Test 16.4", `boxX must be centered over signature line, got ${locAnnabel.boxX}`);
+
+      // 2. Dual / Counter-Signing: Ace Malto counter-signing
+      const page0 = certDoc.getPages()[0];
+      const annot = certDoc.context.obj({
+        Type: "Annot",
+        Subtype: "Widget",
+        FT: "Sig",
+        Rect: [locAnnabel.boxX, locAnnabel.boxY, locAnnabel.boxX + locAnnabel.boxW, locAnnabel.boxY + locAnnabel.boxH],
+      });
+      const annotRef = certDoc.context.register(annot);
+      let annots = page0.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
+      if (!annots) {
+        annots = certDoc.context.obj([]) as any;
+        page0.node.set(PDFName.of("Annots"), annots!);
+      }
+      annots!.push(annotRef);
+
+      const locAceCounter = findPersonnelSignatureCoordinates(certDoc, "ACE MALTO", {
+        isCounterSign: true,
+        counterSignIndex: 0,
+        counterSignPosition: "auto",
+      });
+      assert(locAceCounter.appliedPosition === "above", "Test 16.5", `Counter-signer appliedPosition must be "above", got "${locAceCounter.appliedPosition}"`);
+      assert(locAceCounter.boxY >= 105 && locAceCounter.boxY <= 120, "Test 16.6", `Counter-signer boxY must sit at signature line height (105-120), got ${locAceCounter.boxY}`);
+      assert(locAceCounter.boxY + locAceCounter.boxH < 155, "Test 16.7", `Counter-signer must NOT touch description text, top is ${locAceCounter.boxY + locAceCounter.boxH}`);
+      // Zero overlap between Ace and Annabel
+      const gap = locAnnabel.boxX - (locAceCounter.boxX + locAceCounter.boxW);
+      assert(gap >= 4, "Test 16.8", `Clean gap between Ace and Annabel must be >= 4 pt, got ${gap} pt (ZERO OVERLAP)`);
+    }
+
+    // 3. Generic Portrait Document with NO text and NO line fallback
+    const blankDoc = await PDFDocument.create();
+    blankDoc.addPage([595.3, 841.9]); // Standard A4
+    const locBlank = findPersonnelSignatureCoordinates(blankDoc, "DIR. ANNABEL C. ODOÑO-CALIMPONG");
+    assert(locBlank.appliedPosition === "above", "Test 16.9", `Blank fallback appliedPosition must be "above"`);
+    assert(locBlank.boxY >= 105 && locBlank.boxY <= 115, "Test 16.10", `Blank portrait fallback boxY (${locBlank.boxY}) must sit cleanly in bottom signature zone (105-115), NEVER 162 pt!`);
+    assert(locBlank.boxY + locBlank.boxH < 155, "Test 16.11", `Blank portrait fallback box top (${locBlank.boxY + locBlank.boxH}) must stay well below 160 pt`);
   }
 
   // ─────────────────────────────────────────────────────────────────
