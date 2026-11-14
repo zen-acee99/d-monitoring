@@ -111,6 +111,25 @@ async function runTests() {
   assert.equal(blankHasTj, true, "Blank document without pre-existing text should have /Helv text in /AP /N");
   console.log("  PASS: Test 4 - Visual text correctly drawn for documents that do not already have it");
 
+  // ── Test 5: autoSignPdfWithReneJane on already-signed AR preserves bytes and suppresses duplicate ──
+  console.log("\n[Test 5] autoSignPdfWithReneJane detects pre-existing signature in AR and prevents duplicate overlay");
+  const { autoSignPdfWithReneJane } = await import("../src/utils/reneJaneAutoSign.js");
+  const existingArBytes = fs.readFileSync("public/AR_Ace_M._Malto_September_2026.pdf");
+  const resAr = await autoSignPdfWithReneJane(new Uint8Array(existingArBytes), "AR_Ace_M._Malto_September_2026.pdf");
+  assert.equal(resAr.success, true, "Should report success for already-signed document");
+  assert.equal(resAr.signedPdfBytes.length, existingArBytes.length, "Byte count should be untouched (no double signing)");
+  assert.ok(resAr.detectedReason.includes("Already Signed"), "Should indicate document is already signed");
+  console.log("  PASS: Test 5 - autoSignPdfWithReneJane successfully identified pre-existing signature in AR");
+
+  // ── Test 6: autoSignPdfWithReneJane on already-signed DTR preserves bytes and suppresses duplicate ──
+  console.log("\n[Test 6] autoSignPdfWithReneJane detects pre-existing signature in DTR and prevents duplicate overlay");
+  const existingDtrBytes = fs.readFileSync("public/DTR_Ace_M._Malto_September_2026.pdf");
+  const resDtr = await autoSignPdfWithReneJane(new Uint8Array(existingDtrBytes), "DTR_Ace_M._Malto_September_2026.pdf");
+  assert.equal(resDtr.success, true, "Should report success for already-signed document");
+  assert.equal(resDtr.signedPdfBytes.length, existingDtrBytes.length, "Byte count should be untouched (no double signing)");
+  assert.ok(resDtr.detectedReason.includes("Already Signed"), "Should indicate document is already signed");
+  console.log("  PASS: Test 6 - autoSignPdfWithReneJane successfully identified pre-existing signature in DTR");
+
   console.log("\n======================================================================");
   console.log("ALL DIGISIGNED TYPOGRAPHY DEDUPLICATION TESTS PASSED PERFECTLY!");
   console.log("======================================================================\n");

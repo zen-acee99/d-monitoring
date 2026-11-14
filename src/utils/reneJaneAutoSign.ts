@@ -415,15 +415,112 @@ export async function autoSignPdfWithReneJane(
     const fontCMaps = loadPageFontCMaps(pdfDoc, targetPage);
     const textItems = sBytes.length > 0 ? extractTextItemsFromContentStream(sBytes, fontCMaps) : [];
     const fullPageText = textItems.map((it) => it.text).join(" ").toUpperCase();
+
+    // Inspect raw PDF byte strings for signature dictionary names or supervisor signature fields
+    const pdfRawStr = new TextDecoder("latin1").decode(incomingBytes);
+    const hasBuenaInRawPdf =
+      /\/Name\s*\([^)]*(?:Buena|Rene\s*Jane)[^)]*\)/i.test(pdfRawStr) ||
+      /\/T\s*\([^)]*Supervisor_Signature[^)]*\)/i.test(pdfRawStr) ||
+      /\/Reason\s*\([^)]*Accomplishment Report Verification[^)]*\)/i.test(pdfRawStr) ||
+      /\/Reason\s*\([^)]*Civil Service Form No\. 48 Official Verification[^)]*\)/i.test(pdfRawStr) ||
+      /(?:Buena\s+Rene\s+Jane|Digitally\s+signed\s+by\s+Buena)/i.test(pdfRawStr);
+
+    let hasSigFieldForBuena = false;
+    try {
+      const form = pdfDoc.getForm();
+      const fields = form.getFields();
+      for (const f of fields) {
+        const name = f.getName().toLowerCase();
+        if (name.includes("supervisor") || name.includes("buena") || name.includes("renejane")) {
+          hasSigFieldForBuena = true;
+          break;
+        }
+      }
+    } catch {
+      // form might not be AcroForm standard
+    }
+
     const isAlreadySignedByReneJane =
       fullPageText.includes("BUENA RENE JANE") ||
       fullPageText.includes("BUENA RENE JANE ROSENDO") ||
-      fullPageText.includes("DIGITALLY SIGNED BY BUENA");
+      fullPageText.includes("DIGITALLY SIGNED BY BUENA") ||
+      hasBuenaInRawPdf ||
+      hasSigFieldForBuena;
 
-    let modifiedBytes = incomingBytes;
+    // IF ALREADY SIGNED BY RENE JANE: Return immediately to prevent duplicate signature overlays
+    if (isAlreadySignedByReneJane) {
+      console.log(`[autoSignPdfWithReneJane] Document '${filename}' is already signed by Rene Jane R. Buena. Retaining existing signature without duplicate overlay.`);
+      const blob = new Blob([incomingBytes], { type: "application/pdf" });
+      const blobUrl =
+        typeof URL !== "undefined" && typeof URL.createObjectURL === "function"
+          ? URL.createObjectURL(blob)
+          : `data:application/pdf;base64,${uint8ArrayToBase64(incomingBytes)}`;
 
-    if (!isAlreadySignedByReneJane) {
-      // 4. Embed Rene Jane's visual signature image with foolproof fallback
+      return {
+        success: true,
+        docType,
+        pageIndex: targetPageIndex,
+        signatureCount: sigRects.length,
+        detectedReason: `${detectedReason} (Already Signed)`,
+        downloadFilename: filename,
+        signedPdfBytes: incomingBytes,
+        blobUrl,
+        signerIdentity: {
+          ...RENE_JANE_CERT_METADATA,
+          timestamp: formattedTimestamp,
+        },
+        isCryptographic: true,
+      };
+    }
+
+    // 4. Cryptographic PNPKI Signing via Backend API
+    // Send raw incomingBytes directly to backend with signatureImage.
+    // The backend handles ISO 32000 digital signature embedding and renders the visual appearance into /AP /N once.
+    // We NEVER pre-draw visual text client-side beforehand, which would cause blurry/doubled ghost text.
+    let finalBytes = incomingBytes;
+    let isCryptographic = false;
+
+    const reason =
+      docType === "DTR"
+        ? "Civil Service Form No. 48 Official Verification"
+        : docType === "AR"
+        ? "Accomplishment Report Verification & Official Approval"
+        : docType === "GATE_PASS"
+        ? "Official DICT Gate Pass Supervisor Approval & Authorization"
+        : "Official DICT Document Supervisor Verification & Approval";
+
+    const fieldName =
+      docType === "DTR" && sigRects.length > 1
+        ? "Supervisor_Signature_Copy1"
+        : "Supervisor_Signature_ReneJane";
+
+    try {
+      const rawPdfBase64 = uint8ArrayToBase64(incomingBytes);
+
+      const signResult = await dtrGeneratorApi.signPdfDocument({
+        pdfBase64: rawPdfBase64,
+        profileId: RENE_JANE_CERT_METADATA.p12ProfileId,
+        user_Id: RENE_JANE_CERT_METADATA.userId,
+        sigRect: sigRects[0],
+        sigRects: sigRects,
+        fieldName,
+        pageIndex: targetPageIndex,
+        signatureImage: RENE_JANE_SIGNATURE_BASE64,
+        signerName: "Buena Rene Jane Rosendo",
+        reason,
+      });
+
+      if (signResult.success && signResult.signedPdfBase64) {
+        finalBytes = base64ToUint8Array(signResult.signedPdfBase64);
+        isCryptographic = true;
+      } else if (signResult.error) {
+        console.warn("Backend cryptographic signing returned error, falling back to client visual stamp:", signResult.error);
+        throw new Error(signResult.error);
+      }
+    } catch (cryptoErr) {
+      console.warn("Backend cryptographic signing fallback to client visual stamp:", cryptoErr);
+
+      // Fallback: ONLY draw client-side visual elements if backend signing failed or is unreachable!
       let embeddedPng;
       try {
         const resp = await fetch("/signatures/rene-jane-r-buena-signature.png");
@@ -469,51 +566,8 @@ export async function autoSignPdfWithReneJane(
         });
       });
 
-      modifiedBytes = await pdfDoc.save({ useObjectStreams: false });
-      modifiedBytes = await normalizePdfAnnotations(modifiedBytes);
-    }
-
-    // 5. Cryptographic PNPKI Signing via Backend API
-    let finalBytes = modifiedBytes;
-    let isCryptographic = false;
-
-    try {
-      const rawPdfBase64 = uint8ArrayToBase64(modifiedBytes);
-
-      const reason =
-        docType === "DTR"
-          ? "Civil Service Form No. 48 Official Verification"
-          : docType === "AR"
-          ? "Accomplishment Report Verification & Official Approval"
-          : docType === "GATE_PASS"
-          ? "Official DICT Gate Pass Supervisor Approval & Authorization"
-          : "Official DICT Document Supervisor Verification & Approval";
-
-      const fieldName =
-        docType === "DTR" && sigRects.length > 1
-          ? "Supervisor_Signature_Copy1"
-          : "Supervisor_Signature_ReneJane";
-
-      const signResult = await dtrGeneratorApi.signPdfDocument({
-        pdfBase64: rawPdfBase64,
-        profileId: RENE_JANE_CERT_METADATA.p12ProfileId,
-        user_Id: RENE_JANE_CERT_METADATA.userId,
-        sigRect: sigRects[0],
-        sigRects: sigRects,
-        fieldName,
-        pageIndex: targetPageIndex,
-        reason,
-        skipVisualText: true,
-      });
-
-      if (signResult.success && signResult.signedPdfBase64) {
-        finalBytes = base64ToUint8Array(signResult.signedPdfBase64);
-        isCryptographic = true;
-      } else if (signResult.error) {
-        console.warn("Backend cryptographic signing returned error:", signResult.error);
-      }
-    } catch (cryptoErr) {
-      console.warn("Backend cryptographic signing fallback to visual stamp:", cryptoErr);
+      const modifiedBytes = await pdfDoc.save({ useObjectStreams: false });
+      finalBytes = await normalizePdfAnnotations(modifiedBytes);
     }
 
     // 6. Retain Original Filename (Never rename or append _Signed or suffixes)

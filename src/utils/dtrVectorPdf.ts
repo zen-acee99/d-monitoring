@@ -2401,19 +2401,24 @@ export async function signUploadedArPdfBytes(
   let resolvedSignerName = targetSigner || "Super Admin";
   let finalUint8 = incoming;
 
-  // Incremental Mode for Already-Signed Accomplishment Reports (ISO 32000 Compliance)
-  if (isAlreadySigned) {
-    if (p12Options?.p12Base64 || p12Options?.profileId || p12Options?.user_Id) {
+  const hasP12Credentials = Boolean(p12Options?.p12Base64 || p12Options?.profileId || p12Options?.user_Id);
+
+  // ── Cryptographic PNPKI .p12 Mode (Both Already-Signed and First-Signature) ──
+  // Delegate directly to backend signing pipeline with signatureImage and signerName.
+  // The backend handles ISO 32000 digital signature embedding and renders the visual appearance into /AP /N once.
+  // We NEVER draw duplicate visual stamps client-side beforehand, which would cause blurry/doubled ghost text.
+  if (isAlreadySigned || hasP12Credentials) {
+    if (hasP12Credentials) {
       const rawPdfBase64 = arrayBufferToBase64(incoming);
 
       const signResult = await dtrGeneratorApi.signPdfDocument({
         pdfBase64: rawPdfBase64,
-        profileId: p12Options.profileId,
-        user_Id: p12Options.user_Id,
-        p12: p12Options.p12Base64,
-        p12_password: p12Options.p12Password,
-        account_password: p12Options.account_password,
-        isGoogleAuth: p12Options.isGoogleAuth,
+        profileId: p12Options?.profileId,
+        user_Id: p12Options?.user_Id,
+        p12: p12Options?.p12Base64,
+        p12_password: p12Options?.p12Password,
+        account_password: p12Options?.account_password,
+        isGoogleAuth: p12Options?.isGoogleAuth,
         reason: "Official Accomplishment Report Provincial Approval",
         sigRect: [boxX, boxY, boxW, boxH],
         sigRects: [[boxX, boxY, boxX + boxW, boxY + boxH]],
@@ -2427,9 +2432,11 @@ export async function signUploadedArPdfBytes(
         if (signResult.signerName) {
           resolvedSignerName = signResult.signerName;
         }
+        return { bytes: finalUint8, resolvedSignerName };
       }
+    } else if (isAlreadySigned) {
+      return { bytes: finalUint8, resolvedSignerName };
     }
-    return { bytes: finalUint8, resolvedSignerName };
   }
 
   // 1. Embed and draw signature stroke image if available
