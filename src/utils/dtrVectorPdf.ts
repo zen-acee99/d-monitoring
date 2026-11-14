@@ -1905,7 +1905,14 @@ export function checkVisualTypographyOnPage(
             } catch {
               decoded = stm.getContents ? stm.getContents() : new Uint8Array(0);
             }
-            const apStr = Buffer.from(decoded).toString("latin1").toLowerCase();
+            let apStr = "";
+            if (typeof TextDecoder !== "undefined") {
+              apStr = new TextDecoder("latin1").decode(decoded).toLowerCase();
+            } else if (typeof Buffer !== "undefined") {
+              apStr = (Buffer as any).from(decoded).toString("latin1").toLowerCase();
+            } else {
+              apStr = Array.from(decoded).map((b) => String.fromCharCode(b)).join("").toLowerCase();
+            }
             const hasDigi = apStr.includes("digitally signed") || apStr.includes("digisigned");
             const hasSigner = !normSigner || apStr.replace(/[^a-z0-9]/g, "").includes(normSigner);
 
@@ -2866,7 +2873,7 @@ export function binaryStringToUint8Array(str: string): Uint8Array {
  * or has malformed dictionary syntax from incremental updates.
  * Uses 100% byte-safe binary string manipulation to prevent corrupting flate streams or binary images.
  */
-export function repairPdfCatalogIfCorrupted(buf: Uint8Array | Buffer | ArrayBuffer): Uint8Array {
+export function repairPdfCatalogIfCorrupted(buf: Uint8Array | ArrayBuffer | any): Uint8Array {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
   const str = uint8ArrayToBinaryString(bytes);
 
