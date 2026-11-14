@@ -41,7 +41,7 @@ export interface ReneJaneAutoSignResult {
   signedPdfBase64?: string;
   blobUrl?: string;
   downloadFilename: string;
-  docType: "DTR" | "AR" | "GATE_PASS" | "GENERAL_DOCUMENT";
+  docType: "DTR" | "AR" | "GATE_PASS" | "OB_SLIP" | "GENERAL_DOCUMENT";
   detectedReason: string;
   pageIndex: number; // 0-based
   signatureCount: number;
@@ -54,14 +54,15 @@ export interface ReneJaneAutoSignResult {
 
 /**
  * Intelligently inspects the structure of any PDF to detect whether it is a
- * Civil Service Form No. 48 (DTR), an Accomplishment Report (AR), an Official Gate Pass, or general official document,
+ * Civil Service Form No. 48 (DTR), an Accomplishment Report (AR), an Official Business (OB) Slip,
+ * an Official Gate Pass, or general official document,
  * and pinpoints optimal signature coordinates for Supervisor Rene Jane R. Buena.
  */
 export function detectSignatureCoordinatesForReneJane(
   pdfDoc: PDFDocument,
   filename = ""
 ): {
-  docType: "DTR" | "AR" | "GATE_PASS" | "GENERAL_DOCUMENT";
+  docType: "DTR" | "AR" | "GATE_PASS" | "OB_SLIP" | "GENERAL_DOCUMENT";
   targetPageIndex: number;
   sigRects: Array<[number, number, number, number]>;
   detectedReason: string;
@@ -95,6 +96,16 @@ export function detectSignatureCoordinatesForReneJane(
     lowerName.includes("gatepass") ||
     lowerName.includes("gp-pov") ||
     lowerName.includes("gp_pov");
+  const isObName =
+    lowerName.includes("ob") ||
+    lowerName.includes("official_business") ||
+    lowerName.includes("official business") ||
+    lowerName.includes("ob_slip") ||
+    lowerName.includes("ob-slip") ||
+    lowerName.includes("obs") ||
+    lowerName.includes("form 05") ||
+    lowerName.includes("form_05") ||
+    lowerName.includes("form-05");
 
   // 1. Scan pages for Civil Service Form No. 48 / DTR
   for (let pIdx = 0; pIdx < pageCount; pIdx++) {
@@ -210,6 +221,97 @@ export function detectSignatureCoordinatesForReneJane(
         targetPageIndex: arLoc.pageIndex,
         sigRects: [[arLoc.boxX, arLoc.boxY, arLoc.boxW, arLoc.boxH]],
         detectedReason: "Accomplishment Report detected — supervisor approval section matched on page " + (arLoc.pageIndex + 1),
+      };
+    }
+  }
+
+  // 2.3. Scan pages for Official Business (OB) Slip (DICT R5 AFD Form No. 05)
+  for (let pIdx = 0; pIdx < pageCount; pIdx++) {
+    const page = pdfDoc.getPage(pIdx);
+    const { width, height } = page.getSize();
+    const sBytes = extractPageContentStreamBytes(pdfDoc, page);
+    if (sBytes.length === 0) continue;
+    const fontCMaps = loadPageFontCMaps(pdfDoc, page);
+    const textItems = extractTextItemsFromContentStream(sBytes, fontCMaps);
+    const fullPageText = textItems.map((it) => it.text).join(" ").toUpperCase();
+
+    const isObSlip =
+      fullPageText.includes("OFFICIAL BUSINESS (OB) SLIP") ||
+      fullPageText.includes("OFFICIAL BUSINESS") ||
+      fullPageText.includes("OB SLIP") ||
+      fullPageText.includes("AFD FORM NO. 05") ||
+      fullPageText.includes("FORM NO. 05") ||
+      fullPageText.includes("NATURE OF LEAVING THE OFFICIAL STATION") ||
+      (isObName &&
+        (fullPageText.includes("APPROVED BY") ||
+          fullPageText.includes("DATE OF DEPARTURE") ||
+          fullPageText.includes("DESTINATION")));
+
+    if (isObSlip) {
+      const boxW = 195;
+      const boxH = 32;
+
+      // Signature 1: Approved by section (above RENE JANE R. BUENO / BUENA)
+      const approvedMatches = textItems.filter((it) => {
+        const u = it.text.toUpperCase();
+        return (
+          (u.includes("BUEN") && it.y > 220 && it.y < 420) ||
+          (u.includes("APPROVED BY") && it.y > 220 && it.y < 420)
+        );
+      });
+
+      let sig1X = 235;
+      let sig1Y = 338;
+      const buenaApproveItem = approvedMatches.find((it) => it.text.toUpperCase().includes("BUEN"));
+      if (buenaApproveItem) {
+        sig1Y = Math.round(buenaApproveItem.y + 10);
+        const nameCenter = buenaApproveItem.x + (buenaApproveItem.text.length * 6.5) / 2;
+        sig1X = Math.round(nameCenter - boxW / 2);
+        sig1X = Math.max(160, Math.min(width - boxW - 20, sig1X));
+      } else {
+        const approveItem = approvedMatches.find((it) => it.text.toUpperCase().includes("APPROVED BY"));
+        if (approveItem) {
+          sig1Y = Math.round(approveItem.y - 10);
+        }
+      }
+
+      // Signature 2: Departure table under Guard on Duty / Provincial Officer
+      const guardMatches = textItems.filter((it) => {
+        const u = it.text.toUpperCase();
+        return (
+          (u.includes("GUARD ON DUTY") || u.includes("PROVINCIAL OFFICER")) &&
+          it.y < 230 &&
+          it.y > 90
+        );
+      });
+      const tableBuenaMatches = textItems.filter((it) => {
+        const u = it.text.toUpperCase();
+        return u.includes("BUEN") && it.y < 230 && it.y > 90;
+      });
+
+      let sig2X = 310;
+      let sig2Y = 184;
+      if (guardMatches.length > 0) {
+        const guardItem = guardMatches[0];
+        sig2X = Math.round(guardItem.x + 10);
+        sig2Y = Math.round(guardItem.y + 25);
+      } else if (tableBuenaMatches.length > 0) {
+        const bItem = tableBuenaMatches[0];
+        sig2X = Math.round(bItem.x - 54);
+        sig2Y = Math.round(bItem.y - 13);
+      }
+
+      return {
+        docType: "OB_SLIP",
+        targetPageIndex: pIdx,
+        sigRects: [
+          [sig1X, sig1Y, boxW, boxH],
+          [sig2X, sig2Y, boxW, boxH],
+        ],
+        detectedReason:
+          "Official Business (OB) Slip detected on page " +
+          (pIdx + 1) +
+          " — dual supervisor signature applied (1: Approved by, 2: Provincial Officer Departure)",
       };
     }
   }
@@ -514,10 +616,14 @@ export async function autoSignPdfWithReneJane(
         ? "Accomplishment Report Verification & Official Approval"
         : docType === "GATE_PASS"
         ? "Official DICT Gate Pass Supervisor Approval & Authorization"
+        : docType === "OB_SLIP"
+        ? "Official Business (OB) Slip Provincial Officer Verification & Approval"
         : "Official DICT Document Supervisor Verification & Approval";
 
     const fieldName =
-      docType === "DTR" && sigRects.length > 1
+      docType === "OB_SLIP"
+        ? "Supervisor_Signature_OB"
+        : docType === "DTR" && sigRects.length > 1
         ? "Supervisor_Signature_Copy1"
         : "Supervisor_Signature_ReneJane";
 

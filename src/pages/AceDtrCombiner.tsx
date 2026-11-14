@@ -49,7 +49,7 @@ export interface UploadedFileItem {
   fileSizeFormatted: string;
   fileSizeBytes: number;
   uploadedAt: string;
-  docType: "DTR" | "AR" | "GATE_PASS" | "GENERAL_DOCUMENT";
+  docType: "DTR" | "AR" | "GATE_PASS" | "OB_SLIP" | "GENERAL_DOCUMENT";
   status: "processing" | "signed" | "error";
   detectedReason: string;
   pageIndex: number;
@@ -92,7 +92,7 @@ export function AceDtrCombiner() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [docTypeFilter, setDocTypeFilter] = useState<"ALL" | "DTR" | "AR" | "GATE_PASS" | "GENERAL_DOCUMENT">("ALL");
+  const [docTypeFilter, setDocTypeFilter] = useState<"ALL" | "DTR" | "AR" | "GATE_PASS" | "OB_SLIP" | "GENERAL_DOCUMENT">("ALL");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
@@ -883,6 +883,8 @@ export function AceDtrCombiner() {
                     ? "Accomplishment Report"
                     : activeUploadedFile.docType === "GATE_PASS"
                     ? "Official Gate Pass"
+                    : activeUploadedFile.docType === "OB_SLIP"
+                    ? "Official Business (OB) Slip"
                     : "Official PDF Document")
                 : "Sept 1–30, 2026"}
             </div>
@@ -1110,7 +1112,7 @@ export function AceDtrCombiner() {
                 {/* Filter Pills */}
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <span className="text-[11px] text-slate-500 font-mono mr-1">Filter:</span>
-                  {(["ALL", "DTR", "AR", "GATE_PASS", "GENERAL_DOCUMENT"] as const).map((filter) => {
+                  {(["ALL", "DTR", "AR", "GATE_PASS", "OB_SLIP", "GENERAL_DOCUMENT"] as const).map((filter) => {
                     const count =
                       filter === "ALL"
                         ? uploadedFiles.length
@@ -1134,6 +1136,8 @@ export function AceDtrCombiner() {
                           ? "AR"
                           : filter === "GATE_PASS"
                           ? "Gate Pass"
+                          : filter === "OB_SLIP"
+                          ? "OB Slip"
                           : "General"}
                         <span className="ml-1 opacity-70">({count})</span>
                       </button>
@@ -1214,6 +1218,8 @@ export function AceDtrCombiner() {
                                     ? "bg-purple-500/20 text-purple-400 border border-purple-500/30"
                                     : item.docType === "GATE_PASS"
                                     ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                                    : item.docType === "OB_SLIP"
+                                    ? "bg-teal-500/20 text-teal-300 border border-teal-500/30"
                                     : "bg-slate-800 text-slate-300 border border-slate-700"
                                 )}
                               >
@@ -1223,6 +1229,8 @@ export function AceDtrCombiner() {
                                   <FileText className="w-4 h-4" />
                                 ) : item.docType === "GATE_PASS" ? (
                                   <Zap className="w-4 h-4" />
+                                ) : item.docType === "OB_SLIP" ? (
+                                  <FileText className="w-4 h-4" />
                                 ) : (
                                   <File className="w-4 h-4" />
                                 )}
@@ -1263,6 +1271,11 @@ export function AceDtrCombiner() {
                               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono">
                                 <Zap className="w-3 h-3 text-amber-400" />
                                 Official Gate Pass
+                              </span>
+                            ) : item.docType === "OB_SLIP" ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-teal-500/20 text-teal-300 border border-teal-500/30 font-mono">
+                                <FileText className="w-3 h-3 text-teal-400" />
+                                Official Business (OB) Slip
                               </span>
                             ) : (
                               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-slate-800 text-slate-300 border border-slate-700 font-mono">
