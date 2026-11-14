@@ -430,6 +430,7 @@ export async function appendSignatureIncremental(
     signatureImage?: string;
     isCounterSign?: boolean;
     counterSignPosition?: string;
+    skipVisualText?: boolean;
   }
 ): Promise<Buffer> {
   const pdfStr = pdfBuffer.toString("latin1");
@@ -715,33 +716,80 @@ export async function appendSignatureIncremental(
     const textX = imgObjNum ? 36 : (isCounter ? 20 : 6);
     const availW = Math.max(55, bboxW - textX - 6);
 
-    if (nameLines.length >= 2) {
-      // ── Multi-line Name Layout (Enlarged +5px padding, clean line wrap for long names) ──
-      let fontSize = 6.2;
-      const charWidthFactor = 0.55;
-      for (const nl of nameLines) {
-        while (fontSize > 4.5 && nl.length * (fontSize * charWidthFactor) > availW) {
+    // Deduplication guard: Check if visual text is explicitly skipped or already present in document
+    let alreadyHasVisualText = Boolean(visualOptions?.skipVisualText);
+    if (!alreadyHasVisualText) {
+      try {
+        const contentsMatch = pageBody.match(/\/Contents\s+(?:(\d+)\s+0\s+R|\[([^\]]*)\])/);
+        if (contentsMatch) {
+          let contentObjNums: number[] = [];
+          if (contentsMatch[1]) {
+            contentObjNums.push(parseInt(contentsMatch[1]));
+          } else if (contentsMatch[2]) {
+            const refs = contentsMatch[2].match(/\d+\s+0\s+R/g) || [];
+            contentObjNums = refs.map((r) => parseInt(r));
+          }
+          let pageStreamCombined = "";
+          for (const cNum of contentObjNums) {
+            const cObjRegex = new RegExp(`${cNum}\\s+0\\s+obj[\\s\\S]*?stream\\r?\\n([\\s\\S]*?)\\r?\\nendstream`);
+            const cMatch = cObjRegex.exec(pdfStr);
+            if (cMatch) {
+              const raw = Buffer.from(cMatch[1], "binary");
+              let dec = "";
+              try { dec = zlib.inflateSync(raw).toString("latin1"); } catch { dec = raw.toString("latin1"); }
+              pageStreamCombined += dec + "\n";
+            }
+          }
+          // Decode any hex-encoded text strings (<44696769...>) from pdf-lib / Acrobat to plain text
+          pageStreamCombined = pageStreamCombined.replace(/<([0-9a-fA-F]{4,})>/g, (_, hex) => {
+            try {
+              return Buffer.from(hex, "hex").toString("latin1");
+            } catch {
+              return "";
+            }
+          });
+          const hasDigi = /Digitally\s+signed/i.test(pageStreamCombined) || /DigiSigned/i.test(pageStreamCombined);
+          const cleanSignerLower = (signerName || "").toLowerCase();
+          const nameTokens = cleanSignerLower.split(/\s+/).filter((t) => t.length > 2);
+          const hasSignerName = nameTokens.length > 0 && nameTokens.some((tok) => pageStreamCombined.toLowerCase().includes(tok));
+          if (hasDigi && (hasSignerName || !signerName)) {
+            alreadyHasVisualText = true;
+          }
+        }
+      } catch (chkErr) {
+        console.warn("[pnpki] Could not inspect incremental page stream for existing text:", chkErr);
+      }
+    }
+
+    if (!alreadyHasVisualText) {
+      if (nameLines.length >= 2) {
+        // ── Multi-line Name Layout (Enlarged +5px padding, clean line wrap for long names) ──
+        let fontSize = 6.2;
+        const charWidthFactor = 0.55;
+        for (const nl of nameLines) {
+          while (fontSize > 4.5 && nl.length * (fontSize * charWidthFactor) > availW) {
+            fontSize -= 0.1;
+          }
+        }
+        fontSize = Math.round(fontSize * 10) / 10;
+        const titleSize = Math.max(6.2, Math.round((fontSize + 0.3) * 10) / 10);
+
+        const l1 = nameLines[0].replace(/[()\\]/g, "\\$&");
+        const l2 = nameLines[1].replace(/[()\\]/g, "\\$&");
+        streamContent += `q\nBT\n/Helv ${titleSize} Tf\n0 0 0 rg\n${textX} 19.0 Td\n(${titleText}) Tj\n0 -7.5 Td\n/Helv ${fontSize} Tf\n(${l1}) Tj\n0 -7.5 Td\n(${l2}) Tj\nET\nQ\n`;
+      } else {
+        // ── Standard 2-Line Layout (Title + Single Line Name, font size enlarged ~6.4pt) ──
+        let fontSize = 6.4;
+        const charWidthFactor = 0.55;
+        while (fontSize > 4.5 && nameLines[0].length * (fontSize * charWidthFactor) > availW) {
           fontSize -= 0.1;
         }
-      }
-      fontSize = Math.round(fontSize * 10) / 10;
-      const titleSize = Math.max(6.2, Math.round((fontSize + 0.3) * 10) / 10);
+        fontSize = Math.round(fontSize * 10) / 10;
+        const titleSize = Math.max(6.5, Math.round((fontSize + 0.3) * 10) / 10);
 
-      const l1 = nameLines[0].replace(/[()\\]/g, "\\$&");
-      const l2 = nameLines[1].replace(/[()\\]/g, "\\$&");
-      streamContent += `q\nBT\n/Helv ${titleSize} Tf\n0 0 0 rg\n${textX} 19.0 Td\n(${titleText}) Tj\n0 -7.5 Td\n/Helv ${fontSize} Tf\n(${l1}) Tj\n0 -7.5 Td\n(${l2}) Tj\nET\nQ\n`;
-    } else {
-      // ── Standard 2-Line Layout (Title + Single Line Name, font size enlarged ~6.4pt) ──
-      let fontSize = 6.4;
-      const charWidthFactor = 0.55;
-      while (fontSize > 4.5 && nameLines[0].length * (fontSize * charWidthFactor) > availW) {
-        fontSize -= 0.1;
+        const l1 = nameLines[0].replace(/[()\\]/g, "\\$&");
+        streamContent += `q\nBT\n/Helv ${titleSize} Tf\n0 0 0 rg\n${textX} 16.0 Td\n(${titleText}) Tj\n0 -9.0 Td\n/Helv ${fontSize} Tf\n(${l1}) Tj\nET\nQ\n`;
       }
-      fontSize = Math.round(fontSize * 10) / 10;
-      const titleSize = Math.max(6.5, Math.round((fontSize + 0.3) * 10) / 10);
-
-      const l1 = nameLines[0].replace(/[()\\]/g, "\\$&");
-      streamContent += `q\nBT\n/Helv ${titleSize} Tf\n0 0 0 rg\n${textX} 16.0 Td\n(${titleText}) Tj\n0 -9.0 Td\n/Helv ${fontSize} Tf\n(${l1}) Tj\nET\nQ\n`;
     }
 
     const streamLen = Buffer.from(streamContent, "binary").length;
@@ -934,6 +982,7 @@ export async function signPdfBuffer(
     signerName?: string;
     isCounterSign?: boolean;
     counterSignPosition?: string;
+    skipVisualText?: boolean;
   }
 ): Promise<{ signedBuffer: Buffer; signerName: string; certificateInfo: any; signerIdentity: SignerIdentity }> {
   // Extract signer identity strictly from certificate
@@ -986,6 +1035,7 @@ export async function signPdfBuffer(
         signatureImage: options?.signatureImage,
         isCounterSign: options?.isCounterSign,
         counterSignPosition: options?.counterSignPosition,
+        skipVisualText: options?.skipVisualText,
       }
     );
   } else {
@@ -1150,36 +1200,76 @@ export async function signPdfBuffer(
     fontSize = Math.round(fontSize * 10) / 10;
     const titleSize = Math.max(apNameLines.length >= 2 ? 6.2 : 6.5, Math.round((fontSize + 0.3) * 10) / 10);
 
-    // Draw visual DigiSigned typography directly onto Page canvas so Chromium PDFium / browser iframe renders it 100% reliably
-    let pageTextOps = "q\n";
-    if (isCounter && !hasImg) {
-      pageTextOps += `1.4 w\n0 0 0 RG\n${minX + 4} ${minY + 14} m\n${minX + 8} ${minY + 9} l\n${minX + 16} ${minY + 20} l\nS\n`;
-    }
-    const pageTextX = minX + apTextX;
-    if (apNameLines.length >= 2) {
-      const l1 = apNameLines[0].replace(/[()\\]/g, "\\$&");
-      const l2 = apNameLines[1].replace(/[()\\]/g, "\\$&");
-      pageTextOps += `BT\n/F_PNPKI ${titleSize} Tf\n0 0 0 rg\n${pageTextX} ${minY + 19.0} Td\n(${apTitleText}) Tj\n0 -7.5 Td\n/F_PNPKI ${fontSize} Tf\n(${l1}) Tj\n0 -7.5 Td\n(${l2}) Tj\nET\nQ\n`;
-    } else {
-      const l1 = apNameLines[0].replace(/[()\\]/g, "\\$&");
-      pageTextOps += `BT\n/F_PNPKI ${titleSize} Tf\n0 0 0 rg\n${pageTextX} ${minY + 16.0} Td\n(${apTitleText}) Tj\n0 -9.0 Td\n/F_PNPKI ${fontSize} Tf\n(${l1}) Tj\nET\nQ\n`;
-    }
-
-    const textStream = pdfDoc.context.stream(pageTextOps);
-    const textStreamRef = pdfDoc.context.register(textStream);
-
-    // Append text stream to Page Contents
-    let contents = page.node.lookupMaybe(PDFName.of("Contents"), PDFArray);
-    if (!contents) {
-      const rawContents = page.node.get(PDFName.of("Contents"));
-      if (rawContents) {
-        const arr = pdfDoc.context.obj([rawContents, textStreamRef]);
-        page.node.set(PDFName.of("Contents"), arr);
-      } else {
-        page.node.set(PDFName.of("Contents"), textStreamRef);
+    // Deduplication guard: Check if visual text is explicitly skipped or already present in page contents
+    let alreadyHasVisualText = Boolean(options?.skipVisualText);
+    if (!alreadyHasVisualText) {
+      try {
+        const existingContents = page.node.get(PDFName.of("Contents"));
+        if (existingContents) {
+          const refs = existingContents instanceof PDFArray ? existingContents.asArray() : [existingContents];
+          let streamText = "";
+          for (const ref of refs) {
+            const stm: any = pdfDoc.context.lookup(ref);
+            if (stm && stm.getContents) {
+              const raw = Buffer.from(stm.getContents());
+              let dec = "";
+              try { dec = zlib.inflateSync(raw).toString("latin1"); } catch { dec = raw.toString("latin1"); }
+              streamText += dec + "\n";
+            }
+          }
+          // Decode any hex-encoded text strings (<44696769...>) from pdf-lib / Acrobat to plain text
+          streamText = streamText.replace(/<([0-9a-fA-F]{4,})>/g, (_, hex) => {
+            try {
+              return Buffer.from(hex, "hex").toString("latin1");
+            } catch {
+              return "";
+            }
+          });
+          const hasDigi = /Digitally\s+signed/i.test(streamText) || /DigiSigned/i.test(streamText);
+          const cleanSignerLower = (signerName || "").toLowerCase();
+          const nameTokens = cleanSignerLower.split(/\s+/).filter((t) => t.length > 2);
+          const hasSignerName = nameTokens.length > 0 && nameTokens.some((tok) => streamText.toLowerCase().includes(tok));
+          if (hasDigi && (hasSignerName || !signerName)) {
+            alreadyHasVisualText = true;
+          }
+        }
+      } catch (e) {
+        console.warn("[pnpki] Could not inspect page content stream for existing text:", e);
       }
-    } else {
-      contents.push(textStreamRef);
+    }
+
+    if (!alreadyHasVisualText) {
+      // Draw visual DigiSigned typography directly onto Page canvas so Chromium PDFium / browser iframe renders it 100% reliably
+      let pageTextOps = "q\n";
+      if (isCounter && !hasImg) {
+        pageTextOps += `1.4 w\n0 0 0 RG\n${minX + 4} ${minY + 14} m\n${minX + 8} ${minY + 9} l\n${minX + 16} ${minY + 20} l\nS\n`;
+      }
+      const pageTextX = minX + apTextX;
+      if (apNameLines.length >= 2) {
+        const l1 = apNameLines[0].replace(/[()\\]/g, "\\$&");
+        const l2 = apNameLines[1].replace(/[()\\]/g, "\\$&");
+        pageTextOps += `BT\n/F_PNPKI ${titleSize} Tf\n0 0 0 rg\n${pageTextX} ${minY + 19.0} Td\n(${apTitleText}) Tj\n0 -7.5 Td\n/F_PNPKI ${fontSize} Tf\n(${l1}) Tj\n0 -7.5 Td\n(${l2}) Tj\nET\nQ\n`;
+      } else {
+        const l1 = apNameLines[0].replace(/[()\\]/g, "\\$&");
+        pageTextOps += `BT\n/F_PNPKI ${titleSize} Tf\n0 0 0 rg\n${pageTextX} ${minY + 16.0} Td\n(${apTitleText}) Tj\n0 -9.0 Td\n/F_PNPKI ${fontSize} Tf\n(${l1}) Tj\nET\nQ\n`;
+      }
+
+      const textStream = pdfDoc.context.stream(pageTextOps);
+      const textStreamRef = pdfDoc.context.register(textStream);
+
+      // Append text stream to Page Contents
+      let contents = page.node.lookupMaybe(PDFName.of("Contents"), PDFArray);
+      if (!contents) {
+        const rawContents = page.node.get(PDFName.of("Contents"));
+        if (rawContents) {
+          const arr = pdfDoc.context.obj([rawContents, textStreamRef]);
+          page.node.set(PDFName.of("Contents"), arr);
+        } else {
+          page.node.set(PDFName.of("Contents"), textStreamRef);
+        }
+      } else {
+        contents.push(textStreamRef);
+      }
     }
 
     // Appearance stream on signature widget is an empty Form XObject (q Q) so Adobe Acrobat does NOT render duplicate text

@@ -1087,6 +1087,7 @@ export async function getSignedDtrVectorPdfBytes(
           reason: `Civil Service Form No. 48 Daily Time Record Submission (Copy ${copyNum})`,
           sigRect: rect,
           fieldName,
+          skipVisualText: true,
         });
 
         if (empSignResult.success && empSignResult.signedPdfBase64) {
@@ -1119,6 +1120,7 @@ export async function getSignedDtrVectorPdfBytes(
           reason: `Civil Service Form No. 48 Official Verification (Copy ${copyNum})`,
           sigRect: rect,
           fieldName,
+          skipVisualText: true,
         });
 
         if (supSignResult.success && supSignResult.signedPdfBase64) {
@@ -2519,6 +2521,7 @@ export async function signUploadedArPdfBytes(
       sigRect: [boxX, boxY, boxW, boxH],
       sigRects: (loc as any).sigRects && (loc as any).sigRects.length > 0 ? (loc as any).sigRects : [[boxX, boxY, boxX + boxW, boxY + boxH]],
       pageIndex: loc.pageIndex,
+      skipVisualText: true,
     });
 
     if (signResult.success && signResult.signedPdfBase64) {

@@ -617,6 +617,7 @@ async function main() {
       reason: "Civil Service Form No. 48 Daily Time Record Submission (Copy 1)",
       sigRect: employeeSigRects[0],
       fieldName: "Personnel_Signature_Copy1",
+      skipVisualText: true,
     }
   );
 
@@ -629,6 +630,7 @@ async function main() {
       reason: "Civil Service Form No. 48 Daily Time Record Submission (Copy 2)",
       sigRect: employeeSigRects[1],
       fieldName: "Personnel_Signature_Copy2",
+      skipVisualText: true,
     }
   );
 

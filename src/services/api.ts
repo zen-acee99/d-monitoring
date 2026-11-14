@@ -850,6 +850,7 @@ export const dtrGeneratorApi = {
     signerName?: string;
     isCounterSign?: boolean;
     counterSignPosition?: string;
+    skipVisualText?: boolean;
   }): Promise<{
     success: boolean;
     signedPdfBase64?: string;

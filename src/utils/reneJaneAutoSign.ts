@@ -406,58 +406,72 @@ export async function autoSignPdfWithReneJane(
     const { docType, targetPageIndex, sigRects, detectedReason } = detectSignatureCoordinatesForReneJane(pdfDoc, filename);
     const targetPage = pdfDoc.getPage(targetPageIndex);
 
-    // 4. Embed Rene Jane's visual signature image with foolproof fallback
-    let embeddedPng;
-    try {
-      const resp = await fetch("/signatures/rene-jane-r-buena-signature.png");
-      const contentType = (resp.headers?.get("content-type") || "").toLowerCase();
-      if (resp.ok && !contentType.includes("text/html")) {
-        const fetchBytes = new Uint8Array(await resp.arrayBuffer());
-        embeddedPng = await pdfDoc.embedPng(fetchBytes);
-      } else {
-        throw new Error("Signature asset returned non-image response");
-      }
-    } catch {
-      const cleanB64 = RENE_JANE_SIGNATURE_BASE64.replace(/^data:image\/\w+;base64,/, "");
-      const sigImgBytes = base64ToUint8Array(cleanB64);
-      embeddedPng = await pdfDoc.embedPng(sigImgBytes);
-    }
-
-    const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
-
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, "0");
     const formattedTimestamp = `${now.getFullYear()}.${pad(now.getMonth() + 1)}.${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())} +08'00'`;
 
-    // Draw on all detected rectangles (Visual stroke + official badge text without Date/Time)
-    sigRects.forEach(([rx, ry, rw, rh]) => {
-      targetPage.drawImage(embeddedPng, {
-        x: rx + 2,
-        y: ry + 2,
-        width: 38,
-        height: rh - 4,
+    // Inspect whether targetPage or document is already signed by Rene Jane (prevents duplicate signature overlay)
+    const sBytes = extractPageContentStreamBytes(pdfDoc, targetPage);
+    const fontCMaps = loadPageFontCMaps(pdfDoc, targetPage);
+    const textItems = sBytes.length > 0 ? extractTextItemsFromContentStream(sBytes, fontCMaps) : [];
+    const fullPageText = textItems.map((it) => it.text).join(" ").toUpperCase();
+    const isAlreadySignedByReneJane =
+      fullPageText.includes("BUENA RENE JANE") ||
+      fullPageText.includes("BUENA RENE JANE ROSENDO") ||
+      fullPageText.includes("DIGITALLY SIGNED BY BUENA");
+
+    let modifiedBytes = incomingBytes;
+
+    if (!isAlreadySignedByReneJane) {
+      // 4. Embed Rene Jane's visual signature image with foolproof fallback
+      let embeddedPng;
+      try {
+        const resp = await fetch("/signatures/rene-jane-r-buena-signature.png");
+        const contentType = (resp.headers?.get("content-type") || "").toLowerCase();
+        if (resp.ok && !contentType.includes("text/html")) {
+          const fetchBytes = new Uint8Array(await resp.arrayBuffer());
+          embeddedPng = await pdfDoc.embedPng(fetchBytes);
+        } else {
+          throw new Error("Signature asset returned non-image response");
+        }
+      } catch {
+        const cleanB64 = RENE_JANE_SIGNATURE_BASE64.replace(/^data:image\/\w+;base64,/, "");
+        const sigImgBytes = base64ToUint8Array(cleanB64);
+        embeddedPng = await pdfDoc.embedPng(sigImgBytes);
+      }
+
+      const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+      // Draw on all detected rectangles (Visual stroke + official badge text without Date/Time)
+      sigRects.forEach(([rx, ry, rw, rh]) => {
+        targetPage.drawImage(embeddedPng, {
+          x: rx + 2,
+          y: ry + 2,
+          width: 38,
+          height: rh - 4,
+        });
+
+        const textX = rx + 44;
+        targetPage.drawText("Digitally signed by", {
+          x: textX,
+          y: ry + 13.5,
+          size: 6.2,
+          font: helvetica,
+          color: rgb(0.0, 0.0, 0.0),
+        });
+
+        targetPage.drawText("Buena Rene Jane Rosendo", {
+          x: textX,
+          y: ry + 6,
+          size: 5.8,
+          font: helvetica,
+          color: rgb(0.0, 0.0, 0.0),
+        });
       });
 
-      const textX = rx + 44;
-      targetPage.drawText("Digitally signed by", {
-        x: textX,
-        y: ry + 13.5,
-        size: 6.2,
-        font: helvetica,
-        color: rgb(0.0, 0.0, 0.0),
-      });
-
-      targetPage.drawText("Buena Rene Jane Rosendo", {
-        x: textX,
-        y: ry + 6,
-        size: 5.8,
-        font: helvetica,
-        color: rgb(0.0, 0.0, 0.0),
-      });
-    });
-
-    let modifiedBytes = await pdfDoc.save({ useObjectStreams: false });
-    modifiedBytes = await normalizePdfAnnotations(modifiedBytes);
+      modifiedBytes = await pdfDoc.save({ useObjectStreams: false });
+      modifiedBytes = await normalizePdfAnnotations(modifiedBytes);
+    }
 
     // 5. Cryptographic PNPKI Signing via Backend API
     let finalBytes = modifiedBytes;
@@ -489,6 +503,7 @@ export async function autoSignPdfWithReneJane(
         fieldName,
         pageIndex: targetPageIndex,
         reason,
+        skipVisualText: true,
       });
 
       if (signResult.success && signResult.signedPdfBase64) {

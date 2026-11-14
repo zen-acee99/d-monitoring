@@ -445,6 +445,7 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
       signatureImage,
       isCounterSign,
       counterSignPosition,
+      skipVisualText,
     } = req.body;
 
     if (!pdfBase64) {
@@ -707,6 +708,7 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
         signerName: effectiveSignerName,
         isCounterSign: Boolean(isCounterSign),
         counterSignPosition: typeof counterSignPosition === "string" ? counterSignPosition : undefined,
+        skipVisualText: Boolean(skipVisualText),
       }
     );
 
