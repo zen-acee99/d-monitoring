@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import forge from "node-forge";
 import zlib from "zlib";
-import { PDFDocument, PDFName, PDFNumber, PDFString, PDFHexString, PDFArray, PDFDict, PDFInvalidObject, rgb, StandardFonts } from "pdf-lib";
+import { PDFDocument, PDFName, PDFNumber, PDFString, PDFHexString, PDFArray, PDFDict, PDFInvalidObject, PDFRawStream, decodePDFRawStream, rgb, StandardFonts } from "pdf-lib";
 import { SignPdf } from "@signpdf/signpdf";
 import { P12Signer } from "@signpdf/signer-p12";
 import { DEFAULT_BYTE_RANGE_PLACEHOLDER, ANNOTATION_FLAGS, SIG_FLAGS } from "@signpdf/utils";
@@ -410,6 +410,589 @@ export function normalizeSignatureBoundingBox(coords: [number, number, number, n
   return { minX, minY, maxX, maxY, bboxW, bboxH };
 }
 
+export interface PdfTextItem {
+  text: string;
+  x: number;
+  y: number;
+}
+
+/**
+ * Parses Adobe /ToUnicode CMap stream syntax (extracting bfchar and bfrange definitions)
+ * into a lookup Map from hexadecimal glyph index strings to Unicode characters.
+ */
+export function parsePdfCMap(cmapText: string): Map<string, string> {
+  const map = new Map<string, string>();
+  const bfCharBlocks = cmapText.match(/beginbfchar([\s\S]*?)endbfchar/g) || [];
+  for (const block of bfCharBlocks) {
+    const matches = block.matchAll(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g);
+    for (const m of matches) {
+      const srcHex = m[1].toUpperCase().padStart(4, "0");
+      const dstHex = m[2];
+      let str = "";
+      for (let i = 0; i < dstHex.length; i += 4) {
+        const code = parseInt(dstHex.substring(i, i + 4), 16);
+        str += String.fromCharCode(code);
+      }
+      map.set(srcHex, str);
+    }
+  }
+
+  const bfRangeBlocks = cmapText.match(/beginbfrange([\s\S]*?)endbfrange/g) || [];
+  for (const block of bfRangeBlocks) {
+    const lines = block.split("\n");
+    for (const line of lines) {
+      const match1 = line.match(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/);
+      if (match1) {
+        const start = parseInt(match1[1], 16);
+        const end = parseInt(match1[2], 16);
+        let dstStart = parseInt(match1[3], 16);
+        for (let code = start; code <= end; code++) {
+          const srcHex = code.toString(16).toUpperCase().padStart(4, "0");
+          map.set(srcHex, String.fromCharCode(dstStart));
+          dstStart++;
+        }
+        continue;
+      }
+      const match2 = line.match(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*\[([\s\S]*?)\]/);
+      if (match2) {
+        const start = parseInt(match2[1], 16);
+        const end = parseInt(match2[2], 16);
+        const hexList = match2[3].match(/<([0-9A-Fa-f]+)>/g) || [];
+        for (let i = 0; i < hexList.length && start + i <= end; i++) {
+          const srcHex = (start + i).toString(16).toUpperCase().padStart(4, "0");
+          const dstHex = hexList[i].replace(/[<>]/g, "");
+          let str = "";
+          for (let j = 0; j < dstHex.length; j += 4) {
+            const code = parseInt(dstHex.substring(j, j + 4), 16);
+            str += String.fromCharCode(code);
+          }
+          map.set(srcHex, str);
+        }
+      }
+    }
+  }
+  return map;
+}
+
+export function loadPageFontCMaps(pdfDoc: PDFDocument, page: any): Map<string, Map<string, string>> {
+  const fontCMaps = new Map<string, Map<string, string>>();
+  try {
+    const resources = page.node.lookup(PDFName.of("Resources"), PDFDict);
+    if (!resources) return fontCMaps;
+    const fontDict = resources.lookup(PDFName.of("Font"), PDFDict);
+    if (!fontDict) return fontCMaps;
+
+    for (const k of fontDict.keys()) {
+      const fontName = k.asString().replace(/^\//, "");
+      const fontObj = fontDict.lookup(k, PDFDict);
+      if (fontObj) {
+        const toUnicodeRef = fontObj.get(PDFName.of("ToUnicode"));
+        if (toUnicodeRef) {
+          const toUnicodeStream = pdfDoc.context.lookup(toUnicodeRef);
+          if (toUnicodeStream && (toUnicodeStream instanceof PDFRawStream || (toUnicodeStream as any).getContents || (toUnicodeStream as any).decode)) {
+            const decoded = decodePDFRawStream(toUnicodeStream as any).decode();
+            const cmapText = new TextDecoder("latin1").decode(decoded);
+            fontCMaps.set(fontName, parsePdfCMap(cmapText));
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("Could not load page font CMaps:", e);
+  }
+  return fontCMaps;
+}
+
+export function extractPageContentStreamBytes(pdfDoc: PDFDocument, page: any): Uint8Array {
+  const contentsNode = page.node.Contents();
+  if (!contentsNode) return new Uint8Array(0);
+
+  const streamObjects: any[] = [];
+  try {
+    if ((contentsNode as any).asArray) {
+      const arr = (contentsNode as any).asArray();
+      for (const ref of arr) {
+        const obj = pdfDoc.context.lookup(ref);
+        if (obj) streamObjects.push(obj);
+      }
+    } else {
+      const obj = pdfDoc.context.lookup(contentsNode as any);
+      if (obj) streamObjects.push(obj);
+    }
+
+    let totalBytes = 0;
+    const decodedChunks: Uint8Array[] = [];
+
+    for (const sObj of streamObjects) {
+      try {
+        if (sObj instanceof PDFRawStream || (sObj as any).getContents || (sObj as any).decode) {
+          const dec = decodePDFRawStream(sObj as any).decode();
+          if (dec && dec.length > 0) {
+            decodedChunks.push(dec);
+            totalBytes += dec.length;
+          }
+        }
+      } catch {}
+    }
+
+    if (totalBytes === 0) return new Uint8Array(0);
+    const combined = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of decodedChunks) {
+      combined.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return combined;
+  } catch {
+    return new Uint8Array(0);
+  }
+}
+
+function decodeBytesWithCMap(rawBytes: Uint8Array, cmap?: Map<string, string>): string {
+  if (cmap) {
+    if (rawBytes.length >= 2 && rawBytes.length % 2 === 0) {
+      let decoded2 = "";
+      let matchedCount = 0;
+      for (let i = 0; i < rawBytes.length; i += 2) {
+        const hexKey = (rawBytes[i].toString(16).padStart(2, "0") + rawBytes[i + 1].toString(16).padStart(2, "0")).toUpperCase();
+        if (cmap.has(hexKey)) {
+          decoded2 += cmap.get(hexKey);
+          matchedCount++;
+        } else {
+          if (rawBytes[i] === 0 && rawBytes[i + 1] >= 32) {
+            decoded2 += String.fromCharCode(rawBytes[i + 1]);
+          } else {
+            decoded2 += " ";
+          }
+        }
+      }
+      if (matchedCount > 0) return decoded2;
+    }
+
+    let decoded1 = "";
+    let matched1 = 0;
+    for (let i = 0; i < rawBytes.length; i++) {
+      const hexKey = rawBytes[i].toString(16).toUpperCase().padStart(4, "0");
+      if (cmap.has(hexKey)) {
+        decoded1 += cmap.get(hexKey);
+        matched1++;
+      } else {
+        if (rawBytes[i] >= 32) decoded1 += String.fromCharCode(rawBytes[i]);
+      }
+    }
+    if (matched1 > 0) return decoded1;
+  }
+
+  if (rawBytes.length >= 2 && rawBytes.length % 2 === 0 && rawBytes[0] === 0) {
+    let s = "";
+    for (let i = 0; i < rawBytes.length; i += 2) {
+      const code = (rawBytes[i] << 8) | rawBytes[i + 1];
+      if (code >= 32 || code === 10 || code === 13) s += String.fromCharCode(code);
+    }
+    if (s.trim()) return s;
+  }
+
+  return new TextDecoder("latin1").decode(rawBytes);
+}
+
+export function extractTextItemsFromContentStream(
+  streamInput: Uint8Array | string,
+  fontCMaps?: Map<string, Map<string, string>>
+): PdfTextItem[] {
+  let streamBytes: Uint8Array;
+  if (streamInput instanceof Uint8Array) {
+    streamBytes = streamInput;
+  } else if (typeof streamInput === "string") {
+    streamBytes = new Uint8Array(streamInput.length);
+    for (let i = 0; i < streamInput.length; i++) {
+      streamBytes[i] = streamInput.charCodeAt(i) & 0xff;
+    }
+  } else {
+    return [];
+  }
+
+  const items: PdfTextItem[] = [];
+  let currentFont = "";
+  let lineStartX = 0, lineStartY = 0, currentX = 0, currentY = 0;
+  let currentLeading = 12;
+  let ctmA = 1, ctmB = 0, ctmC = 0, ctmD = 1, ctmE = 0, ctmF = 0;
+  const ctmStack: Array<[number, number, number, number, number, number]> = [];
+
+  let tmA = 1, tmB = 0, tmC = 0, tmD = 1, tmE = 0, tmF = 0;
+  let tlmA = 1, tlmB = 0, tlmC = 0, tlmD = 1, tlmE = 0, tlmF = 0;
+
+  function updateCurrentCoordsFromTm() {
+    const textX = tmE;
+    const textY = tmF;
+    currentX = textX * ctmA + textY * ctmC + ctmE;
+    currentY = textX * ctmB + textY * ctmD + ctmF;
+    lineStartX = currentX;
+    lineStartY = currentY;
+  }
+
+  let idx = 0;
+  const len = streamBytes.length;
+
+  function skipWhitespace() {
+    while (idx < len && (streamBytes[idx] <= 32 || streamBytes[idx] === 0)) idx++;
+  }
+
+  function readWord(): string {
+    skipWhitespace();
+    const start = idx;
+    while (
+      idx < len &&
+      streamBytes[idx] > 32 &&
+      streamBytes[idx] !== 40 &&
+      streamBytes[idx] !== 41 &&
+      streamBytes[idx] !== 60 &&
+      streamBytes[idx] !== 62 &&
+      streamBytes[idx] !== 91 &&
+      streamBytes[idx] !== 93 &&
+      streamBytes[idx] !== 47
+    ) {
+      idx++;
+    }
+    return new TextDecoder("latin1").decode(streamBytes.subarray(start, idx));
+  }
+
+  function readLiteralStringBytes(): Uint8Array {
+    idx++; // skip '('
+    const bytes: number[] = [];
+    let depth = 1;
+    while (idx < len) {
+      const b = streamBytes[idx];
+      if (b === 92) {
+        idx++;
+        if (idx >= len) break;
+        const nb = streamBytes[idx];
+        if (nb >= 48 && nb <= 55) {
+          let oct = String.fromCharCode(nb);
+          idx++;
+          if (idx < len && streamBytes[idx] >= 48 && streamBytes[idx] <= 55) {
+            oct += String.fromCharCode(streamBytes[idx]);
+            idx++;
+            if (idx < len && streamBytes[idx] >= 48 && streamBytes[idx] <= 55) {
+              oct += String.fromCharCode(streamBytes[idx]);
+              idx++;
+            }
+          }
+          bytes.push(parseInt(oct, 8));
+          continue;
+        } else if (nb === 110) bytes.push(10);
+        else if (nb === 114) bytes.push(13);
+        else if (nb === 116) bytes.push(9);
+        else if (nb === 98) bytes.push(8);
+        else if (nb === 102) bytes.push(12);
+        else bytes.push(nb);
+        idx++;
+      } else if (b === 40) {
+        depth++;
+        bytes.push(b);
+        idx++;
+      } else if (b === 41) {
+        depth--;
+        idx++;
+        if (depth === 0) break;
+        bytes.push(b);
+        idx++;
+      } else {
+        bytes.push(b);
+        idx++;
+      }
+    }
+    return new Uint8Array(bytes);
+  }
+
+  function readHexStringBytes(): Uint8Array {
+    idx++; // skip '<'
+    let hex = "";
+    while (idx < len && streamBytes[idx] !== 62) {
+      const b = streamBytes[idx];
+      if ((b >= 48 && b <= 57) || (b >= 65 && b <= 70) || (b >= 97 && b <= 102)) {
+        hex += String.fromCharCode(b);
+      }
+      idx++;
+    }
+    if (idx < len && streamBytes[idx] === 62) idx++;
+    if (hex.length % 2 !== 0) hex += "0";
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < hex.length; i += 2) {
+      bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+    }
+    return bytes;
+  }
+
+  const tokenOperandStack: any[] = [];
+
+  while (idx < len) {
+    skipWhitespace();
+    if (idx >= len) break;
+
+    const b = streamBytes[idx];
+    if (b === 47) {
+      idx++;
+      let name = "";
+      while (
+        idx < len &&
+        streamBytes[idx] > 32 &&
+        streamBytes[idx] !== 47 &&
+        streamBytes[idx] !== 40 &&
+        streamBytes[idx] !== 60 &&
+        streamBytes[idx] !== 91
+      ) {
+        name += String.fromCharCode(streamBytes[idx]);
+        idx++;
+      }
+      tokenOperandStack.push("/" + name);
+    } else if (b === 40) {
+      tokenOperandStack.push({ type: "str", bytes: readLiteralStringBytes() });
+    } else if (b === 60 && idx + 1 < len && streamBytes[idx + 1] !== 60) {
+      tokenOperandStack.push({ type: "str", bytes: readHexStringBytes() });
+    } else if (b === 91) {
+      idx++; // skip '['
+      const arr: any[] = [];
+      while (idx < len) {
+        skipWhitespace();
+        if (idx >= len) break;
+        if (streamBytes[idx] === 93) {
+          idx++;
+          break;
+        } else if (streamBytes[idx] === 40) {
+          arr.push({ type: "str", bytes: readLiteralStringBytes() });
+        } else if (streamBytes[idx] === 60 && streamBytes[idx + 1] !== 60) {
+          arr.push({ type: "str", bytes: readHexStringBytes() });
+        } else {
+          const numStr = readWord();
+          const n = parseFloat(numStr);
+          if (!isNaN(n)) arr.push(n);
+        }
+      }
+      tokenOperandStack.push({ type: "arr", items: arr });
+    } else {
+      const word = readWord();
+      if (!word) {
+        idx++;
+        continue;
+      }
+
+      if (word === "q") {
+        ctmStack.push([ctmA, ctmB, ctmC, ctmD, ctmE, ctmF]);
+        tokenOperandStack.length = 0;
+      } else if (word === "Q") {
+        if (ctmStack.length > 0) {
+          const top = ctmStack.pop()!;
+          ctmA = top[0]; ctmB = top[1]; ctmC = top[2]; ctmD = top[3]; ctmE = top[4]; ctmF = top[5];
+        }
+        tokenOperandStack.length = 0;
+      } else if (word === "cm") {
+        if (tokenOperandStack.length >= 6) {
+          const [a1, b1, c1, d1, e1, f1] = tokenOperandStack.slice(-6).map(Number);
+          const a2 = ctmA * a1 + ctmC * b1;
+          const b2 = ctmB * a1 + ctmD * b1;
+          const c2 = ctmA * c1 + ctmC * d1;
+          const d2 = ctmB * c1 + ctmD * d1;
+          const e2 = ctmA * e1 + ctmC * f1 + ctmE;
+          const f2 = ctmB * e1 + ctmD * f1 + ctmF;
+          ctmA = a2; ctmB = b2; ctmC = c2; ctmD = d2; ctmE = e2; ctmF = f2;
+        }
+        tokenOperandStack.length = 0;
+      } else if (word === "BT") {
+        tmA = 1; tmB = 0; tmC = 0; tmD = 1; tmE = 0; tmF = 0;
+        tlmA = 1; tlmB = 0; tlmC = 0; tlmD = 1; tlmE = 0; tlmF = 0;
+        updateCurrentCoordsFromTm();
+        tokenOperandStack.length = 0;
+      } else if (word === "ET") {
+        tokenOperandStack.length = 0;
+      } else if (word === "TL") {
+        if (tokenOperandStack.length >= 1) {
+          currentLeading = parseFloat(tokenOperandStack[tokenOperandStack.length - 1]) || 12;
+        }
+        tokenOperandStack.length = 0;
+      } else if (word === "Tm") {
+        if (tokenOperandStack.length >= 6) {
+          const parts = tokenOperandStack.slice(-6).map(Number);
+          tmA = parts[0]; tmB = parts[1]; tmC = parts[2]; tmD = parts[3]; tmE = parts[4]; tmF = parts[5];
+          tlmA = tmA; tlmB = tmB; tlmC = tmC; tlmD = tmD; tlmE = tmE; tlmF = tmF;
+          updateCurrentCoordsFromTm();
+        }
+        tokenOperandStack.length = 0;
+      } else if (word === "Td" || word === "TD") {
+        if (tokenOperandStack.length >= 2) {
+          const [tx, ty] = tokenOperandStack.slice(-2).map(Number);
+          if (word === "TD") currentLeading = -ty;
+          tlmE = tx * tlmA + ty * tlmC + tlmE;
+          tlmF = tx * tlmB + ty * tlmD + tlmF;
+          tmA = tlmA; tmB = tlmB; tmC = tlmC; tmD = tlmD; tmE = tlmE; tmF = tlmF;
+          updateCurrentCoordsFromTm();
+        }
+        tokenOperandStack.length = 0;
+      } else if (word === "T*") {
+        tlmE = 0 * tlmA + (-currentLeading) * tlmC + tlmE;
+        tlmF = 0 * tlmB + (-currentLeading) * tlmD + tlmF;
+        tmA = tlmA; tmB = tlmB; tmC = tlmC; tmD = tlmD; tmE = tlmE; tmF = tlmF;
+        updateCurrentCoordsFromTm();
+      } else if (word === "Tf") {
+        if (tokenOperandStack.length >= 2) {
+          currentFont = String(tokenOperandStack[tokenOperandStack.length - 2]).replace(/^\//, "");
+        }
+        tokenOperandStack.length = 0;
+      } else if (word === "Tj") {
+        if (tokenOperandStack.length >= 1) {
+          const op = tokenOperandStack[tokenOperandStack.length - 1];
+          if (op && op.type === "str") {
+            const cmap = fontCMaps?.get(currentFont);
+            const decoded = decodeBytesWithCMap(op.bytes, cmap);
+            if (decoded && decoded.trim()) {
+              items.push({ text: decoded.trim(), x: currentX, y: currentY });
+            }
+          }
+        }
+        tokenOperandStack.length = 0;
+      } else if (word === "TJ") {
+        if (tokenOperandStack.length >= 1) {
+          const op = tokenOperandStack[tokenOperandStack.length - 1];
+          if (op && op.type === "arr") {
+            const cmap = fontCMaps?.get(currentFont);
+            let combined = "";
+            for (const elem of op.items) {
+              if (elem && elem.type === "str") {
+                combined += decodeBytesWithCMap(elem.bytes, cmap);
+              } else if (typeof elem === "number" && elem < -120) {
+                if (!combined.endsWith(" ")) combined += " ";
+              }
+            }
+            if (combined && combined.trim()) {
+              items.push({ text: combined.trim(), x: currentX, y: currentY });
+            }
+          }
+        }
+        tokenOperandStack.length = 0;
+      } else {
+        tokenOperandStack.push(word);
+      }
+    }
+  }
+
+  return items;
+}
+
+/**
+ * Deduplication inspector: Checks whether a PDF page already contains visual typography
+ * (such as "Digitally signed", "DigiSigned", or the signer's name) on the page canvas
+ * or in existing annotation appearance streams.
+ */
+export function checkVisualTypographyOnPage(
+  pdfDoc: PDFDocument,
+  pageIndex: number,
+  sigBox: { minX: number; minY: number; maxX: number; maxY: number },
+  signerName?: string
+): { exists: boolean; reason: string } {
+  const pages = pdfDoc.getPages();
+  const page = pages[pageIndex] || pages[0];
+  if (!page) return { exists: false, reason: "No page" };
+
+  const normSigner = (signerName || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  // 1. Check existing Widget annotations and their /AP /N streams
+  const annots = page.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
+  if (annots) {
+    for (let i = 0; i < annots.size(); i++) {
+      const annot = pdfDoc.context.lookup(annots.get(i));
+      if (!annot || !(annot instanceof PDFDict)) continue;
+
+      const ap = annot.lookup(PDFName.of("AP"));
+      if (ap && ap instanceof PDFDict) {
+        const n = ap.lookup(PDFName.of("N"));
+        if (n) {
+          const stm: any = pdfDoc.context.lookup(n);
+          if (stm && (stm instanceof PDFRawStream || stm.getContents || stm.decode)) {
+            let decoded: Uint8Array;
+            try {
+              decoded = decodePDFRawStream(stm).decode();
+            } catch {
+              decoded = stm.getContents ? stm.getContents() : new Uint8Array(0);
+            }
+            const apStr = Buffer.from(decoded).toString("latin1").toLowerCase();
+            const hasDigi = apStr.includes("digitally signed") || apStr.includes("digisigned");
+            const hasSigner = !normSigner || apStr.replace(/[^a-z0-9]/g, "").includes(normSigner);
+
+            if (hasDigi && hasSigner) {
+              const rectArr = annot.lookupMaybe(PDFName.of("Rect"), PDFArray);
+              if (rectArr && rectArr.size() === 4) {
+                const rx1 = (rectArr.get(0) as any).asNumber ? (rectArr.get(0) as any).asNumber() : Number(rectArr.get(0));
+                const ry1 = (rectArr.get(1) as any).asNumber ? (rectArr.get(1) as any).asNumber() : Number(rectArr.get(1));
+                const rx2 = (rectArr.get(2) as any).asNumber ? (rectArr.get(2) as any).asNumber() : Number(rectArr.get(2));
+                const ry2 = (rectArr.get(3) as any).asNumber ? (rectArr.get(3) as any).asNumber() : Number(rectArr.get(3));
+                const ax = Math.min(rx1, rx2);
+                const ay = Math.min(ry1, ry2);
+                if (Math.abs(ay - sigBox.minY) < 35 && Math.abs(ax - sigBox.minX) < 65) {
+                  return { exists: true, reason: `Found in annotation AP/N stream at (${ax}, ${ay})` };
+                }
+              } else {
+                return { exists: true, reason: "Found in annotation AP/N stream" };
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Check page canvas content streams (jsPDF or pre-drawn text)
+  const sBytes = extractPageContentStreamBytes(pdfDoc, page);
+  if (sBytes.length === 0) return { exists: false, reason: "Empty content stream" };
+
+  const fontCMaps = loadPageFontCMaps(pdfDoc, page);
+  const textItems = extractTextItemsFromContentStream(sBytes, fontCMaps);
+
+  // Signature box bounds: tight vertical tolerance to never invade preprinted signatory title below
+  const minX = sigBox.minX - 35;
+  const maxX = sigBox.maxX + 35;
+  const minY = sigBox.minY - 4; // NEVER look below signature box into preprinted name line!
+  const maxY = sigBox.maxY + 15;
+
+  const inBoxItems = textItems.filter((it) => it.x >= minX && it.x <= maxX && it.y >= minY && it.y <= maxY);
+
+  const hasDigi = inBoxItems.some((it) => {
+    const l = it.text.toLowerCase();
+    return l.includes("digitally signed") || l.includes("digisigned");
+  });
+
+  const hasSigner = !normSigner || inBoxItems.some((it) => {
+    return it.text.toLowerCase().replace(/[^a-z0-9]/g, "").includes(normSigner);
+  });
+
+  if (hasDigi && hasSigner) {
+    const matched = inBoxItems.find((it) => it.text.toLowerCase().includes("digitally") || it.text.toLowerCase().includes("digisigned"));
+    return {
+      exists: true,
+      reason: `Found canvas digital signature "${matched?.text}" at (${matched?.x.toFixed(1)}, ${matched?.y.toFixed(1)})`,
+    };
+  }
+
+  return { exists: false, reason: "No matching visual typography in target box" };
+}
+
+export function checkIfVisualTypographyExists(
+  pageContentsStr: string,
+  pdfBuffer: Buffer,
+  signerName: string,
+  sigBox: { minX: number; minY: number; maxX: number; maxY: number },
+  fieldName?: string,
+  reason?: string
+): boolean {
+  try {
+    const normSigner = (signerName || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const lowerContents = pageContentsStr.toLowerCase();
+    const hasDigi = lowerContents.includes("digitally signed") || lowerContents.includes("digisigned");
+    const hasSigner = !normSigner || lowerContents.replace(/[^a-z0-9]/g, "").includes(normSigner);
+    return hasDigi && hasSigner;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Appends a digital signature incrementally to an already-signed PDF buffer,
  * preserving all previous signatures and their cryptographic byte ranges intact (ISO 32000 compliant).
@@ -681,6 +1264,13 @@ export async function appendSignatureIncremental(
     }
   }
 
+  let pdfDocForCheck: PDFDocument | null = null;
+  try {
+    pdfDocForCheck = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
+  } catch (loadErr) {
+    console.warn("[pnpki] Could not load PDF buffer for incremental typography check:", loadErr);
+  }
+
   uniqueRects.forEach(({ minX, minY, maxX, maxY, bboxW, bboxH }, idx) => {
     const wNum = nextFreeObj++;
     const apNum = nextFreeObj++;
@@ -718,44 +1308,15 @@ export async function appendSignatureIncremental(
 
     // Deduplication guard: Check if visual text is explicitly skipped or already present in document
     let alreadyHasVisualText = Boolean(visualOptions?.skipVisualText);
-    if (!alreadyHasVisualText) {
+    if (!alreadyHasVisualText && pdfDocForCheck) {
       try {
-        const contentsMatch = pageBody.match(/\/Contents\s+(?:(\d+)\s+0\s+R|\[([^\]]*)\])/);
-        if (contentsMatch) {
-          let contentObjNums: number[] = [];
-          if (contentsMatch[1]) {
-            contentObjNums.push(parseInt(contentsMatch[1]));
-          } else if (contentsMatch[2]) {
-            const refs = contentsMatch[2].match(/\d+\s+0\s+R/g) || [];
-            contentObjNums = refs.map((r) => parseInt(r));
-          }
-          let pageStreamCombined = "";
-          for (const cNum of contentObjNums) {
-            const cObjRegex = new RegExp(`${cNum}\\s+0\\s+obj[\\s\\S]*?stream\\r?\\n([\\s\\S]*?)\\r?\\nendstream`);
-            const cMatch = cObjRegex.exec(pdfStr);
-            if (cMatch) {
-              const raw = Buffer.from(cMatch[1], "binary");
-              let dec = "";
-              try { dec = zlib.inflateSync(raw).toString("latin1"); } catch { dec = raw.toString("latin1"); }
-              pageStreamCombined += dec + "\n";
-            }
-          }
-          // Decode any hex-encoded text strings (<44696769...>) from pdf-lib / Acrobat to plain text
-          pageStreamCombined = pageStreamCombined.replace(/<([0-9a-fA-F]{4,})>/g, (_, hex) => {
-            try {
-              return Buffer.from(hex, "hex").toString("latin1");
-            } catch {
-              return "";
-            }
-          });
-          const hasDigi = /Digitally\s+signed/i.test(pageStreamCombined) || /DigiSigned/i.test(pageStreamCombined);
-          const cleanSignerLower = (signerName || "").toLowerCase();
-          const nameTokens = cleanSignerLower.split(/\s+/).filter((t) => t.length > 2);
-          const hasSignerName = nameTokens.length > 0 && nameTokens.some((tok) => pageStreamCombined.toLowerCase().includes(tok));
-          if (hasDigi && (hasSignerName || !signerName)) {
-            alreadyHasVisualText = true;
-          }
-        }
+        const check = checkVisualTypographyOnPage(
+          pdfDocForCheck,
+          targetPageIndex,
+          { minX, minY, maxX, maxY },
+          signerName
+        );
+        alreadyHasVisualText = check.exists;
       } catch (chkErr) {
         console.warn("[pnpki] Could not inspect incremental page stream for existing text:", chkErr);
       }
@@ -791,6 +1352,9 @@ export async function appendSignatureIncremental(
         streamContent += `q\nBT\n/Helv ${titleSize} Tf\n0 0 0 rg\n${textX} 16.0 Td\n(${titleText}) Tj\n0 -9.0 Td\n/Helv ${fontSize} Tf\n(${l1}) Tj\nET\nQ\n`;
       }
     }
+
+    // Always close outer graphics state
+    streamContent += "Q\n";
 
     const streamLen = Buffer.from(streamContent, "binary").length;
     const imgResourceEntry = imgObjNum ? `/XObject << /SigImg ${imgObjNum} 0 R >>\n` : "";
@@ -1200,39 +1764,22 @@ export async function signPdfBuffer(
     fontSize = Math.round(fontSize * 10) / 10;
     const titleSize = Math.max(apNameLines.length >= 2 ? 6.2 : 6.5, Math.round((fontSize + 0.3) * 10) / 10);
 
+    const roleName = reason.toLowerCase().includes("verification") ? "Supervisor" : "Personnel";
+    const fieldName = options?.fieldName
+      ? (widgetRects.length > 1 ? `${options.fieldName}_${index + 1}` : options.fieldName)
+      : `${roleName}_Signature_Copy${index + 1}`;
+
     // Deduplication guard: Check if visual text is explicitly skipped or already present in page contents
     let alreadyHasVisualText = Boolean(options?.skipVisualText);
     if (!alreadyHasVisualText) {
       try {
-        const existingContents = page.node.get(PDFName.of("Contents"));
-        if (existingContents) {
-          const refs = existingContents instanceof PDFArray ? existingContents.asArray() : [existingContents];
-          let streamText = "";
-          for (const ref of refs) {
-            const stm: any = pdfDoc.context.lookup(ref);
-            if (stm && stm.getContents) {
-              const raw = Buffer.from(stm.getContents());
-              let dec = "";
-              try { dec = zlib.inflateSync(raw).toString("latin1"); } catch { dec = raw.toString("latin1"); }
-              streamText += dec + "\n";
-            }
-          }
-          // Decode any hex-encoded text strings (<44696769...>) from pdf-lib / Acrobat to plain text
-          streamText = streamText.replace(/<([0-9a-fA-F]{4,})>/g, (_, hex) => {
-            try {
-              return Buffer.from(hex, "hex").toString("latin1");
-            } catch {
-              return "";
-            }
-          });
-          const hasDigi = /Digitally\s+signed/i.test(streamText) || /DigiSigned/i.test(streamText);
-          const cleanSignerLower = (signerName || "").toLowerCase();
-          const nameTokens = cleanSignerLower.split(/\s+/).filter((t) => t.length > 2);
-          const hasSignerName = nameTokens.length > 0 && nameTokens.some((tok) => streamText.toLowerCase().includes(tok));
-          if (hasDigi && (hasSignerName || !signerName)) {
-            alreadyHasVisualText = true;
-          }
-        }
+        const check = checkVisualTypographyOnPage(
+          pdfDoc,
+          targetPageIndex,
+          { minX, minY, maxX, maxY },
+          signerName
+        );
+        alreadyHasVisualText = check.exists;
       } catch (e) {
         console.warn("[pnpki] Could not inspect page content stream for existing text:", e);
       }
@@ -1278,11 +1825,6 @@ export async function signPdfBuffer(
       Subtype: "Form",
       BBox: [0, 0, rw, rh],
     });
-
-    const roleName = reason.toLowerCase().includes("verification") ? "Supervisor" : "Personnel";
-    const fieldName = options?.fieldName
-      ? (widgetRects.length > 1 ? `${options.fieldName}_${index + 1}` : options.fieldName)
-      : `${roleName}_Signature_Copy${index + 1}`;
 
     const widgetDict = pdfDoc.context.obj({
       Type: "Annot",

@@ -1,4 +1,4 @@
-import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+import { PDFDocument, PDFName, rgb, StandardFonts } from "pdf-lib";
 import { dtrGeneratorApi } from "@/services/api";
 import {
   normalizePdfAnnotations,
@@ -6,6 +6,7 @@ import {
   extractPageContentStreamBytes,
   loadPageFontCMaps,
   extractTextItemsFromContentStream,
+  checkVisualTypographyOnPage,
 } from "./dtrVectorPdf";
 
 /**
@@ -238,8 +239,8 @@ export function detectSignatureCoordinatesForReneJane(
         return (
           u.includes("BUENA") ||
           u.includes("RENE JANE") ||
-          u.includes("APPROVED BY") ||
-          u.includes("PROVINCIAL OFFICER")
+          (u.includes("APPROVED BY") && it.x > width * 0.4) ||
+          (u.includes("PROVINCIAL OFFICER") && it.x > width * 0.4)
         );
       });
 
@@ -410,20 +411,41 @@ export async function autoSignPdfWithReneJane(
     const pad = (n: number) => String(n).padStart(2, "0");
     const formattedTimestamp = `${now.getFullYear()}.${pad(now.getMonth() + 1)}.${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())} +08'00'`;
 
-    // Inspect whether targetPage or document is already signed by Rene Jane (prevents duplicate signature overlay)
-    const sBytes = extractPageContentStreamBytes(pdfDoc, targetPage);
-    const fontCMaps = loadPageFontCMaps(pdfDoc, targetPage);
-    const textItems = sBytes.length > 0 ? extractTextItemsFromContentStream(sBytes, fontCMaps) : [];
-    const fullPageText = textItems.map((it) => it.text).join(" ").toUpperCase();
+    // 1. Check whether supervisor area on targetPage already contains visual typography
+    let hasExistingSupervisorTypography = false;
+    for (const rect of sigRects) {
+      let minX: number, minY: number, maxX: number, maxY: number;
+      if (rect[3] < rect[1] || (rect[2] < rect[0] && rect[2] < 300)) {
+        minX = rect[0];
+        minY = rect[1];
+        maxX = rect[0] + rect[2];
+        maxY = rect[1] + rect[3];
+      } else {
+        minX = Math.min(rect[0], rect[2]);
+        minY = Math.min(rect[1], rect[3]);
+        maxX = Math.max(rect[0], rect[2]);
+        maxY = Math.max(rect[1], rect[3]);
+      }
 
-    // Inspect raw PDF byte strings for signature dictionary names or supervisor signature fields
+      const boxCheck = checkVisualTypographyOnPage(
+        pdfDoc,
+        targetPageIndex,
+        { minX, minY, maxX, maxY },
+        "Buena"
+      );
+      if (boxCheck.exists) {
+        hasExistingSupervisorTypography = true;
+        break;
+      }
+    }
+
+    // 2. Inspect raw PDF byte strings for Rene Jane digital signatures
     const pdfRawStr = new TextDecoder("latin1").decode(incomingBytes);
     const hasBuenaInRawPdf =
       /\/Name\s*\([^)]*(?:Buena|Rene\s*Jane)[^)]*\)/i.test(pdfRawStr) ||
-      /\/T\s*\([^)]*Supervisor_Signature[^)]*\)/i.test(pdfRawStr) ||
-      /\/Reason\s*\([^)]*Accomplishment Report Verification[^)]*\)/i.test(pdfRawStr) ||
-      /\/Reason\s*\([^)]*Civil Service Form No\. 48 Official Verification[^)]*\)/i.test(pdfRawStr) ||
-      /(?:Buena\s+Rene\s+Jane|Digitally\s+signed\s+by\s+Buena)/i.test(pdfRawStr);
+      (/\/Reason\s*\([^)]*Accomplishment Report Verification[^)]*\)/i.test(pdfRawStr) && /(?:Buena|Rene)/i.test(pdfRawStr)) ||
+      (/\/Reason\s*\([^)]*Civil Service Form No\. 48 Official Verification[^)]*\)/i.test(pdfRawStr) && /(?:Buena|Rene)/i.test(pdfRawStr)) ||
+      /(?:Digitally\s+signed\s+by\s+Buena|DigiSigned\s+by\s+Buena|Buena\s+Rene\s+Jane\s+Rosendo)/i.test(pdfRawStr);
 
     let hasSigFieldForBuena = false;
     try {
@@ -432,19 +454,24 @@ export async function autoSignPdfWithReneJane(
       for (const f of fields) {
         const name = f.getName().toLowerCase();
         if (name.includes("supervisor") || name.includes("buena") || name.includes("renejane")) {
-          hasSigFieldForBuena = true;
-          break;
+          const dict = (f as any).acroField?.dict;
+          const vRef = dict?.get(PDFName.of("V"));
+          if ((vRef || name.includes("buena") || name.includes("renejane")) && hasBuenaInRawPdf) {
+            hasSigFieldForBuena = true;
+            break;
+          }
         }
       }
     } catch {
       // form might not be AcroForm standard
     }
 
+    const hasBuenaSigDict =
+      /\/Name\s*\([^)]*(?:Buena|Rene\s*Jane)[^)]*\)/i.test(pdfRawStr);
+
     const isAlreadySignedByReneJane =
-      fullPageText.includes("BUENA RENE JANE") ||
-      fullPageText.includes("BUENA RENE JANE ROSENDO") ||
-      fullPageText.includes("DIGITALLY SIGNED BY BUENA") ||
-      hasBuenaInRawPdf ||
+      hasBuenaSigDict ||
+      (hasExistingSupervisorTypography && hasBuenaInRawPdf) ||
       hasSigFieldForBuena;
 
     // IF ALREADY SIGNED BY RENE JANE: Return immediately to prevent duplicate signature overlays
@@ -508,6 +535,7 @@ export async function autoSignPdfWithReneJane(
         signatureImage: RENE_JANE_SIGNATURE_BASE64,
         signerName: "Buena Rene Jane Rosendo",
         reason,
+        skipVisualText: hasExistingSupervisorTypography,
       });
 
       if (signResult.success && signResult.signedPdfBase64) {
@@ -541,29 +569,32 @@ export async function autoSignPdfWithReneJane(
 
       // Draw on all detected rectangles (Visual stroke + official badge text without Date/Time)
       sigRects.forEach(([rx, ry, rw, rh]) => {
-        targetPage.drawImage(embeddedPng, {
-          x: rx + 2,
-          y: ry + 2,
-          width: 38,
-          height: rh - 4,
-        });
+        // Only draw visual elements if not already present on page canvas
+        if (!hasExistingSupervisorTypography) {
+          targetPage.drawImage(embeddedPng, {
+            x: rx + 2,
+            y: ry + 2,
+            width: 38,
+            height: rh - 4,
+          });
 
-        const textX = rx + 44;
-        targetPage.drawText("Digitally signed by", {
-          x: textX,
-          y: ry + 13.5,
-          size: 6.2,
-          font: helvetica,
-          color: rgb(0.0, 0.0, 0.0),
-        });
+          const textX = rx + 44;
+          targetPage.drawText("Digitally signed by", {
+            x: textX,
+            y: ry + 13.5,
+            size: 6.2,
+            font: helvetica,
+            color: rgb(0.0, 0.0, 0.0),
+          });
 
-        targetPage.drawText("Buena Rene Jane Rosendo", {
-          x: textX,
-          y: ry + 6,
-          size: 5.8,
-          font: helvetica,
-          color: rgb(0.0, 0.0, 0.0),
-        });
+          targetPage.drawText("Buena Rene Jane Rosendo", {
+            x: textX,
+            y: ry + 6,
+            size: 5.8,
+            font: helvetica,
+            color: rgb(0.0, 0.0, 0.0),
+          });
+        }
       });
 
       const modifiedBytes = await pdfDoc.save({ useObjectStreams: false });
