@@ -1884,7 +1884,16 @@ export function checkVisualTypographyOnPage(
   const page = pages[pageIndex] || pages[0];
   if (!page) return { exists: false, reason: "No page" };
 
-  const normSigner = (signerName || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const checkSignerTokenMatch = (targetStr: string): boolean => {
+    if (!signerName) return true;
+    const cleanSigner = signerName.toLowerCase().replace(/[^a-z0-9\s]/g, " ").trim();
+    const tokens = cleanSigner
+      .split(/\s+/)
+      .filter((t) => t.length >= 3 && !COMMON_STOP_WORDS.has(t.toUpperCase()));
+    if (tokens.length === 0) return true;
+    const cleanTarget = targetStr.toLowerCase().replace(/[^a-z0-9\s]/g, " ");
+    return tokens.some((tok) => cleanTarget.includes(tok));
+  };
 
   // 1. Check existing Widget annotations and their /AP /N streams
   const annots = page.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
@@ -1914,7 +1923,7 @@ export function checkVisualTypographyOnPage(
               apStr = Array.from(decoded).map((b) => String.fromCharCode(b)).join("").toLowerCase();
             }
             const hasDigi = apStr.includes("digitally signed") || apStr.includes("digisigned");
-            const hasSigner = !normSigner || apStr.replace(/[^a-z0-9]/g, "").includes(normSigner);
+            const hasSigner = checkSignerTokenMatch(apStr);
 
             if (hasDigi && hasSigner) {
               const rectArr = annot.lookupMaybe(PDFName.of("Rect"), PDFArray);
@@ -1952,21 +1961,16 @@ export function checkVisualTypographyOnPage(
   const maxY = sigBox.maxY + 15;
 
   const inBoxItems = textItems.filter((it) => it.x >= minX && it.x <= maxX && it.y >= minY && it.y <= maxY);
+  const combinedBoxText = inBoxItems.map((it) => it.text).join(" ");
 
-  const hasDigi = inBoxItems.some((it) => {
-    const l = it.text.toLowerCase();
-    return l.includes("digitally signed") || l.includes("digisigned");
-  });
-
-  const hasSigner = !normSigner || inBoxItems.some((it) => {
-    return it.text.toLowerCase().replace(/[^a-z0-9]/g, "").includes(normSigner);
-  });
+  const hasDigi = /digitally\s+signed|digisigned/i.test(combinedBoxText);
+  const hasSigner = checkSignerTokenMatch(combinedBoxText);
 
   if (hasDigi && hasSigner) {
     const matched = inBoxItems.find((it) => it.text.toLowerCase().includes("digitally") || it.text.toLowerCase().includes("digisigned"));
     return {
       exists: true,
-      reason: `Found canvas digital signature "${matched?.text}" at (${matched?.x.toFixed(1)}, ${matched?.y.toFixed(1)})`,
+      reason: `Found canvas digital signature "${matched?.text || "Digitally signed"}" at (${matched?.x.toFixed(1) || minX}, ${matched?.y.toFixed(1) || minY})`,
     };
   }
 

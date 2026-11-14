@@ -555,10 +555,12 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
 
     let p12ToUse = p12;
     let passwordToUse = p12_password;
-    let sigImgToUse = signatureImage;
+    // When skipVisualText is true, caller has already rendered visual stamp (text + signature stroke)
+    // Clear sigImgToUse so backend cryptographic embedding does not stamp a duplicate signature image
+    let sigImgToUse = skipVisualText ? undefined : signatureImage;
 
     // If profileId or user_Id provided, look up saved profile in database
-    if ((!p12ToUse || !passwordToUse || !sigImgToUse) && (profileId || user_Id)) {
+    if ((!p12ToUse || !passwordToUse || (!sigImgToUse && !skipVisualText)) && (profileId || user_Id)) {
       const lookupId = profileId || user_Id;
       const check = await db.execute({
         sql: "SELECT * FROM dtr_generator WHERE (id = ? OR user_Id = ?) AND (user_Id IS NULL OR user_Id NOT LIKE 'g-%') AND id NOT LIKE 'dtr-sig-g-%'",
@@ -573,7 +575,7 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
         if (!passwordToUse && row.p12_password) {
           passwordToUse = decryptP12Password(String(row.p12_password));
         }
-        if (!sigImgToUse && row.image_digiSigned) {
+        if (!sigImgToUse && !skipVisualText && row.image_digiSigned) {
           sigImgToUse = String(row.image_digiSigned);
         }
       } else {
@@ -588,7 +590,7 @@ dtrGeneratorRouter.post("/sign-pdf", async (req: Request, res: Response) => {
           if (!passwordToUse && matched.p12_password) {
             passwordToUse = decryptP12Password(String(matched.p12_password));
           }
-          if (!sigImgToUse && matched.image_digiSigned) {
+          if (!sigImgToUse && !skipVisualText && matched.image_digiSigned) {
             sigImgToUse = String(matched.image_digiSigned);
           }
         }

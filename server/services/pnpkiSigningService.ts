@@ -1295,17 +1295,6 @@ export async function appendSignatureIncremental(
       ? ["Buena Rene Jane Rosendo"]
       : splitSignerNameToLines(escapedSigner, 18);
 
-    if (imgObjNum) {
-      const drawH = Math.max(16, bboxH - 6);
-      streamContent += `q\n32 0 0 ${drawH} 2 3 cm\n/SigImg Do\nQ\n`;
-    } else if (isCounter) {
-      // Crisp vector checkmark on left if no image
-      streamContent += `q\n1.4 w\n0 0 0 RG\n4 14 m\n8 9 l\n16 20 l\nS\nQ\n`;
-    }
-
-    const textX = imgObjNum ? 36 : (isCounter ? 20 : 6);
-    const availW = Math.max(55, bboxW - textX - 6);
-
     // Deduplication guard: Check if visual text is explicitly skipped or already present in document
     let alreadyHasVisualText = Boolean(visualOptions?.skipVisualText);
     if (!alreadyHasVisualText && pdfDocForCheck) {
@@ -1321,6 +1310,17 @@ export async function appendSignatureIncremental(
         console.warn("[pnpki] Could not inspect incremental page stream for existing text:", chkErr);
       }
     }
+
+    if (imgObjNum && !alreadyHasVisualText) {
+      const drawH = Math.max(16, bboxH - 6);
+      streamContent += `q\n32 0 0 ${drawH} 2 3 cm\n/SigImg Do\nQ\n`;
+    } else if (isCounter && !alreadyHasVisualText) {
+      // Crisp vector checkmark on left if no image
+      streamContent += `q\n1.4 w\n0 0 0 RG\n4 14 m\n8 9 l\n16 20 l\nS\nQ\n`;
+    }
+
+    const textX = imgObjNum ? 36 : (isCounter ? 20 : 6);
+    const availW = Math.max(55, bboxW - textX - 6);
 
     if (!alreadyHasVisualText) {
       if (nameLines.length >= 2) {
@@ -1695,9 +1695,25 @@ export async function signPdfBuffer(
     const rw = maxX - minX;
     const rh = maxY - minY;
 
-    // Draw handwritten signature image once directly onto page canvas if provided
+    // Deduplication guard: Check if visual text is explicitly skipped or already present in page contents
+    let alreadyHasVisualText = Boolean(options?.skipVisualText);
+    if (!alreadyHasVisualText) {
+      try {
+        const check = checkVisualTypographyOnPage(
+          pdfDoc,
+          targetPageIndex,
+          { minX, minY, maxX, maxY },
+          signerName
+        );
+        alreadyHasVisualText = check.exists;
+      } catch (e) {
+        console.warn("[pnpki] Could not inspect page content stream for existing text:", e);
+      }
+    }
+
+    // Draw handwritten signature image once directly onto page canvas if provided AND NOT already visually present/skipped
     let hasImg = false;
-    if (options?.signatureImage) {
+    if (options?.signatureImage && !options?.skipVisualText && !alreadyHasVisualText) {
       try {
         const imgData = options.signatureImage.replace(/^data:image\/\w+;base64,/, "");
         const imgBuf = Buffer.from(imgData, "base64");
@@ -1768,22 +1784,6 @@ export async function signPdfBuffer(
     const fieldName = options?.fieldName
       ? (widgetRects.length > 1 ? `${options.fieldName}_${index + 1}` : options.fieldName)
       : `${roleName}_Signature_Copy${index + 1}`;
-
-    // Deduplication guard: Check if visual text is explicitly skipped or already present in page contents
-    let alreadyHasVisualText = Boolean(options?.skipVisualText);
-    if (!alreadyHasVisualText) {
-      try {
-        const check = checkVisualTypographyOnPage(
-          pdfDoc,
-          targetPageIndex,
-          { minX, minY, maxX, maxY },
-          signerName
-        );
-        alreadyHasVisualText = check.exists;
-      } catch (e) {
-        console.warn("[pnpki] Could not inspect page content stream for existing text:", e);
-      }
-    }
 
     if (!alreadyHasVisualText) {
       // Draw visual DigiSigned typography directly onto Page canvas so Chromium PDFium / browser iframe renders it 100% reliably
