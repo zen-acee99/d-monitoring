@@ -1319,7 +1319,7 @@ export async function appendSignatureIncremental(
       streamContent += `q\n1.4 w\n0 0 0 RG\n4 14 m\n8 9 l\n16 20 l\nS\nQ\n`;
     }
 
-    const textX = imgObjNum ? 36 : (isCounter ? 20 : 6);
+    const textX = imgObjNum ? 44 : (isCounter ? 20 : 6);
     const availW = Math.max(55, bboxW - textX - 6);
 
     if (!alreadyHasVisualText) {
@@ -1767,7 +1767,7 @@ export async function signPdfBuffer(
     const apNameLines = isReneJane
       ? ["Buena Rene Jane Rosendo"]
       : splitSignerNameToLines(escapedSigner, 18);
-    const apTextX = (isCounter && !hasImg) ? 20 : (hasImg ? 36 : 6);
+    const apTextX = (isCounter && !hasImg) ? 20 : (hasImg ? 44 : 6);
     const availW = Math.max(55, rw - apTextX - 6);
 
     let fontSize = apNameLines.length >= 2 ? 6.2 : 6.4;

@@ -578,7 +578,7 @@ export async function autoSignPdfWithReneJane(
             height: rh - 4,
           });
 
-          const textX = rx + 44;
+          const textX = rx + 50;
           targetPage.drawText("Digitally signed by", {
             x: textX,
             y: ry + 13.5,

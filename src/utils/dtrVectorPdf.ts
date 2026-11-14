@@ -588,9 +588,9 @@ export function generateDtrVectorPdf(
 
       if (empSignatureImg) {
         try {
-          const imgW = 42;
+          const imgW = 38;
           const imgH = boxH - 4;
-          doc.addImage(empSignatureImg, "PNG", boxX + 4, boxY + 2, imgW, imgH);
+          doc.addImage(empSignatureImg, "PNG", boxX + 2, boxY + 2, imgW, imgH);
         } catch (err) {
           console.warn("Could not embed employee signature image in box:", err);
         }
@@ -602,7 +602,9 @@ export function generateDtrVectorPdf(
       if (empSigner.length > 28) empFontSize = 5.2;
       doc.setFontSize(empFontSize);
       doc.setTextColor(0, 0, 0);
-      const textX = empSignatureImg ? boxX + 42 : boxX + boxW / 2;
+      // Spacing: image placed at boxX + 2 with width 38 (ends at boxX + 40).
+      // textX placed at boxX + 50 provides a clean 10pt (gap-3) spacing between signature stroke and text
+      const textX = empSignatureImg ? boxX + 50 : boxX + boxW / 2;
       const textAlign = empSignatureImg ? "left" : "center";
 
       if (config.includeDateTime) {
@@ -679,9 +681,9 @@ export function generateDtrVectorPdf(
 
       if (supSignatureImg) {
         try {
-          const imgW = 42;
+          const imgW = 38;
           const imgH = boxH - 4;
-          doc.addImage(supSignatureImg, "PNG", boxX + 4, boxY + 2, imgW, imgH);
+          doc.addImage(supSignatureImg, "PNG", boxX + 2, boxY + 2, imgW, imgH);
         } catch (err) {
           console.warn("Could not embed supervisor signature image in box:", err);
         }
@@ -693,7 +695,9 @@ export function generateDtrVectorPdf(
       if (supSigner.length > 28) supFontSize = 5.2;
       doc.setFontSize(supFontSize);
       doc.setTextColor(0, 0, 0);
-      const textX = supSignatureImg ? boxX + 42 : boxX + boxW / 2;
+      // Spacing: image placed at boxX + 2 with width 38 (ends at boxX + 40).
+      // textX placed at boxX + 50 provides a clean 10pt (gap-3) spacing between signature stroke and text
+      const textX = supSignatureImg ? boxX + 50 : boxX + boxW / 2;
       const textAlign = supSignatureImg ? "left" : "center";
 
       const isReneJaneSup =
@@ -1067,68 +1071,60 @@ export async function getSignedDtrVectorPdfBytes(
   };
 
   // -------------------------------------------------------------
-  // SEQUENTIAL PASS 1 & 2: Employee Digital Signatures (Copy 1 & Copy 2)
+  // PASS 1: Employee Digital Signature (Copy 1 & Copy 2 in a single cryptographic revision)
   // -------------------------------------------------------------
   if (empProfile && employeeSigRects.length > 0) {
-    for (let i = 0; i < employeeSigRects.length; i++) {
-      const rect = employeeSigRects[i];
-      const copyNum = i + 1;
-      const fieldName = `Personnel_Signature_Copy${copyNum}`;
-      try {
-        const rawPdfBase64 = uint8ToBase64(finalUint8);
-        const empSignResult = await dtrGeneratorApi.signPdfDocument({
-          pdfBase64: rawPdfBase64,
-          profileId: empProfile.id,
-          user_Id: empProfile.user_Id,
-          p12: empProfile.p12 || undefined,
-          p12_password: empProfile.p12_password,
-          account_password: empProfile.account_password,
-          isGoogleAuth: empProfile.isGoogleAuth,
-          reason: `Civil Service Form No. 48 Daily Time Record Submission (Copy ${copyNum})`,
-          sigRect: rect,
-          fieldName,
-          skipVisualText: true,
-        });
+    try {
+      const rawPdfBase64 = uint8ToBase64(finalUint8);
+      const empSignResult = await dtrGeneratorApi.signPdfDocument({
+        pdfBase64: rawPdfBase64,
+        profileId: empProfile.id,
+        user_Id: empProfile.user_Id,
+        p12: empProfile.p12 || undefined,
+        p12_password: empProfile.p12_password,
+        account_password: empProfile.account_password,
+        isGoogleAuth: empProfile.isGoogleAuth,
+        reason: "Civil Service Form No. 48 Daily Time Record Submission",
+        sigRect: employeeSigRects[0],
+        sigRects: employeeSigRects,
+        fieldName: "Personnel_Signature",
+        skipVisualText: true,
+      });
 
-        if (empSignResult.success && empSignResult.signedPdfBase64) {
-          finalUint8 = base64ToUint8(empSignResult.signedPdfBase64);
-        }
-      } catch (empErr) {
-        console.warn("Pass Employee Copy", copyNum, "warning:", empErr);
+      if (empSignResult.success && empSignResult.signedPdfBase64) {
+        finalUint8 = base64ToUint8(empSignResult.signedPdfBase64);
       }
+    } catch (empErr) {
+      console.warn("Pass Employee DTR signing warning:", empErr);
     }
   }
 
   // -------------------------------------------------------------
-  // SEQUENTIAL PASS 3 & 4: Supervisor Digital Signatures (Copy 1 & Copy 2)
+  // PASS 2: Supervisor Digital Signature (Copy 1 & Copy 2 in a single cryptographic revision)
   // -------------------------------------------------------------
   if (supProfile && supervisorSigRects.length > 0) {
-    for (let i = 0; i < supervisorSigRects.length; i++) {
-      const rect = supervisorSigRects[i];
-      const copyNum = i + 1;
-      const fieldName = `Supervisor_Signature_Copy${copyNum}`;
-      try {
-        const currentPdfBase64 = uint8ToBase64(finalUint8);
-        const supSignResult = await dtrGeneratorApi.signPdfDocument({
-          pdfBase64: currentPdfBase64,
-          profileId: supProfile.id,
-          user_Id: supProfile.user_Id,
-          p12: supProfile.p12 || undefined,
-          p12_password: supProfile.p12_password,
-          account_password: supProfile.account_password,
-          isGoogleAuth: supProfile.isGoogleAuth,
-          reason: `Civil Service Form No. 48 Official Verification (Copy ${copyNum})`,
-          sigRect: rect,
-          fieldName,
-          skipVisualText: true,
-        });
+    try {
+      const currentPdfBase64 = uint8ToBase64(finalUint8);
+      const supSignResult = await dtrGeneratorApi.signPdfDocument({
+        pdfBase64: currentPdfBase64,
+        profileId: supProfile.id,
+        user_Id: supProfile.user_Id,
+        p12: supProfile.p12 || undefined,
+        p12_password: supProfile.p12_password,
+        account_password: supProfile.account_password,
+        isGoogleAuth: supProfile.isGoogleAuth,
+        reason: "Civil Service Form No. 48 Official Verification",
+        sigRect: supervisorSigRects[0],
+        sigRects: supervisorSigRects,
+        fieldName: "Supervisor_Signature",
+        skipVisualText: true,
+      });
 
-        if (supSignResult.success && supSignResult.signedPdfBase64) {
-          finalUint8 = base64ToUint8(supSignResult.signedPdfBase64);
-        }
-      } catch (supErr) {
-        console.warn("Pass Supervisor Copy", copyNum, "warning:", supErr);
+      if (supSignResult.success && supSignResult.signedPdfBase64) {
+        finalUint8 = base64ToUint8(supSignResult.signedPdfBase64);
       }
+    } catch (supErr) {
+      console.warn("Pass Supervisor DTR signing warning:", supErr);
     }
   }
 
@@ -2560,7 +2556,7 @@ export async function signUploadedArPdfBytes(
       targetPage.drawImage(embeddedImg, {
         x: boxX + 2,
         y: boxY + 2,
-        width: 44,
+        width: 38,
         height: boxH - 4,
       });
     } catch (e) {
@@ -2571,7 +2567,7 @@ export async function signUploadedArPdfBytes(
   // 2. Draw official DTR-style "Digitally signed by <Name>" typography
   try {
     const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const textX = signatureImage ? boxX + 38 : boxX + 4;
+    const textX = signatureImage ? boxX + 50 : boxX + 4;
 
     const isReneJaneAr =
       resolvedSignerName.toLowerCase().includes("buena") ||
@@ -4774,7 +4770,7 @@ export async function signUploadedPersonnelPdfBytes(
 
     try {
       const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const textX = hasDrawnImage ? (imgBytes ? rX + 34 : rX + 18) : rX + 4;
+      const textX = hasDrawnImage ? (imgBytes ? rX + 42 : rX + 18) : rX + 4;
       const isReneJane =
         resolvedSignerName.toLowerCase().includes("buena") ||
         resolvedSignerName.toLowerCase().includes("rene jane");
