@@ -1136,15 +1136,16 @@ export async function appendSignatureIncremental(
     if (fieldsMatch) existingFields = fieldsMatch[1].trim();
   }
 
-  // Preserve all existing signature widget references in AcroForm /Fields
+  // Preserve all existing signature root field references in AcroForm /Fields
   const fieldRefsSet = new Set<string>();
   if (existingFields) {
     const refs = existingFields.match(/\d+\s+0\s+R/g) || [];
     refs.forEach((r) => fieldRefsSet.add(r));
-  }
-  for (const [objNum, body] of objMap.entries()) {
-    if (/\/FT\s*\/Sig\b/.test(body) || (/\/Type\s*\/Annot\b/.test(body) && /\/Subtype\s*\/Widget\b/.test(body))) {
-      fieldRefsSet.add(`${objNum} 0 R`);
+  } else {
+    for (const [objNum, body] of objMap.entries()) {
+      if (/\/FT\s*\/Sig\b/.test(body) && !/\/Parent\b/.test(body)) {
+        fieldRefsSet.add(`${objNum} 0 R`);
+      }
     }
   }
 
@@ -1271,18 +1272,19 @@ export async function appendSignatureIncremental(
     console.warn("[pnpki] Could not load PDF buffer for incremental typography check:", loadErr);
   }
 
+  const isMultiWidget = uniqueRects.length > 1;
+  const parentFieldNum = isMultiWidget ? nextFreeObj++ : 0;
+  const newFieldRefs: string[] = [];
+
+  const defaultFieldName = isCounter
+    ? `CounterSignature_${existingSigCount + 1}_${cleanSignerTag}`
+    : `Signature_${existingSigCount + 1}_${cleanSignerTag}`;
+  const baseFieldName = customFieldName || defaultFieldName;
+
   uniqueRects.forEach(({ minX, minY, maxX, maxY, bboxW, bboxH }, idx) => {
     const wNum = nextFreeObj++;
     const apNum = nextFreeObj++;
     newWidgetRefs.push(`${wNum} 0 R`);
-
-    const sigIndex = existingSigCount + 1 + idx;
-    const defaultFieldName = isCounter
-      ? `CounterSignature_${sigIndex}_${cleanSignerTag}`
-      : `Signature_${sigIndex}_${cleanSignerTag}`;
-    const fieldName = customFieldName
-      ? (uniqueRects.length > 1 ? `${customFieldName}_${idx + 1}` : customFieldName)
-      : defaultFieldName;
 
     let streamContent = "q\n";
 
@@ -1365,15 +1367,33 @@ export async function appendSignatureIncremental(
       `<<\n/Type /XObject\n/Subtype /Form\n/BBox [0 0 ${bboxW} ${bboxH}]\n/Resources <<\n/ProcSet [/PDF /Text /ImageC]\n/Font << /Helv ${fontObjNum} 0 R >>\n${imgResourceEntry}>>\n/Length ${streamLen}\n>>\nstream\n${streamContent}\nendstream`
     );
 
-    // Widget Annotation
-    appendObj(
-      wNum,
-      `<<\n/Type /Annot\n/Subtype /Widget\n/FT /Sig\n/Rect [${minX} ${minY} ${maxX} ${maxY}]\n/V ${sigDictObjNum} 0 R\n/T (${fieldName})\n/F 132\n/P ${pageObjNum} 0 R\n/AP << /N ${apNum} 0 R >>\n>>`
-    );
+    if (isMultiWidget) {
+      // Child widget annotation: NO /T, NO /FT, NO /V! Inherits from /Parent to avoid duplicate signature errors in Acrobat
+      appendObj(
+        wNum,
+        `<<\n/Type /Annot\n/Subtype /Widget\n/Parent ${parentFieldNum} 0 R\n/Rect [${minX} ${minY} ${maxX} ${maxY}]\n/F 132\n/P ${pageObjNum} 0 R\n/AP << /N ${apNum} 0 R >>\n>>`
+      );
+    } else {
+      // Single terminal field
+      appendObj(
+        wNum,
+        `<<\n/Type /Annot\n/Subtype /Widget\n/FT /Sig\n/Rect [${minX} ${minY} ${maxX} ${maxY}]\n/V ${sigDictObjNum} 0 R\n/T (${baseFieldName})\n/F 132\n/P ${pageObjNum} 0 R\n/AP << /N ${apNum} 0 R >>\n>>`
+      );
+      newFieldRefs.push(`${wNum} 0 R`);
+    }
   });
 
-  // Add new widgets to the combined fields set
-  newWidgetRefs.forEach((r) => fieldRefsSet.add(r));
+  if (isMultiWidget) {
+    const kidsStr = newWidgetRefs.join(" ");
+    appendObj(
+      parentFieldNum,
+      `<<\n/FT /Sig\n/T (${baseFieldName})\n/V ${sigDictObjNum} 0 R\n/Kids [${kidsStr}]\n>>`
+    );
+    newFieldRefs.push(`${parentFieldNum} 0 R`);
+  }
+
+  // Add new root field(s) to the combined fields set
+  newFieldRefs.forEach((r) => fieldRefsSet.add(r));
   const finalFieldsStr = Array.from(fieldRefsSet).join(" ");
 
   // 5. AcroForm Object: If existingAcroFormObjNum is an indirect object, reuse its object number!
@@ -1657,7 +1677,10 @@ export async function signPdfBuffer(
   const signatureDictRef = pdfDoc.context.register(signatureObj);
 
   // Create widget annotations for every copy on the page (Copy 1 and Copy 2)
-  const widgetRefs: any[] = [];
+  const isMultiWidget = widgetRects.length > 1;
+  const parentFieldRef = isMultiWidget ? pdfDoc.context.nextRef() : null;
+  const childWidgetRefs: any[] = [];
+  const rootFieldRefs: any[] = [];
   let annotations = page.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
   if (!annotations) {
     annotations = pdfDoc.context.obj([]);
@@ -1685,6 +1708,8 @@ export async function signPdfBuffer(
 
   const sigUid = Math.random().toString(36).substring(2, 7);
   const isCounter = Boolean(options?.isCounterSign);
+  const roleName = reason.toLowerCase().includes("verification") ? "Supervisor" : "Personnel";
+  const baseFieldName = options?.fieldName || `${roleName}_Signature`;
 
   for (let index = 0; index < widgetRects.length; index++) {
     const rectCoords = widgetRects[index];
@@ -1780,11 +1805,6 @@ export async function signPdfBuffer(
     fontSize = Math.round(fontSize * 10) / 10;
     const titleSize = Math.max(apNameLines.length >= 2 ? 6.2 : 6.5, Math.round((fontSize + 0.3) * 10) / 10);
 
-    const roleName = reason.toLowerCase().includes("verification") ? "Supervisor" : "Personnel";
-    const fieldName = options?.fieldName
-      ? (widgetRects.length > 1 ? `${options.fieldName}_${index + 1}` : options.fieldName)
-      : `${roleName}_Signature_Copy${index + 1}`;
-
     if (!alreadyHasVisualText) {
       // Draw visual DigiSigned typography directly onto Page canvas so Chromium PDFium / browser iframe renders it 100% reliably
       let pageTextOps = "q\n";
@@ -1826,21 +1846,50 @@ export async function signPdfBuffer(
       BBox: [0, 0, rw, rh],
     });
 
-    const widgetDict = pdfDoc.context.obj({
-      Type: "Annot",
-      Subtype: "Widget",
-      FT: "Sig",
-      Rect: rect,
-      V: signatureDictRef,
-      T: PDFString.of(fieldName),
-      F: ANNOTATION_FLAGS.PRINT | 128, // PRINT | LOCKED
-      P: page.ref,
-      AP: { N: pdfDoc.context.register(apStream) },
-    });
+    if (isMultiWidget) {
+      // Child widget annotation: NO /T, NO /FT, NO /V! References /Parent to prevent duplicate signature errors in Acrobat
+      const widgetDict = pdfDoc.context.obj({
+        Type: "Annot",
+        Subtype: "Widget",
+        Rect: rect,
+        Parent: parentFieldRef,
+        F: ANNOTATION_FLAGS.PRINT | 128, // PRINT | LOCKED
+        P: page.ref,
+        AP: { N: pdfDoc.context.register(apStream) },
+      });
 
-    const widgetRef = pdfDoc.context.register(widgetDict);
-    widgetRefs.push(widgetRef);
-    annotations.push(widgetRef);
+      const widgetRef = pdfDoc.context.register(widgetDict);
+      childWidgetRefs.push(widgetRef);
+      annotations.push(widgetRef);
+    } else {
+      // Single terminal field
+      const widgetDict = pdfDoc.context.obj({
+        Type: "Annot",
+        Subtype: "Widget",
+        FT: "Sig",
+        Rect: rect,
+        V: signatureDictRef,
+        T: PDFString.of(baseFieldName),
+        F: ANNOTATION_FLAGS.PRINT | 128, // PRINT | LOCKED
+        P: page.ref,
+        AP: { N: pdfDoc.context.register(apStream) },
+      });
+
+      const widgetRef = pdfDoc.context.register(widgetDict);
+      annotations.push(widgetRef);
+      rootFieldRefs.push(widgetRef);
+    }
+  }
+
+  if (isMultiWidget) {
+    const parentFieldDict = pdfDoc.context.obj({
+      FT: "Sig",
+      T: PDFString.of(baseFieldName),
+      V: signatureDictRef,
+      Kids: childWidgetRefs,
+    });
+    pdfDoc.context.assign(parentFieldRef!, parentFieldDict);
+    rootFieldRefs.push(parentFieldRef);
   }
 
   page.node.set(PDFName.of("Annots"), annotations);
@@ -1853,14 +1902,14 @@ export async function signPdfBuffer(
       fields = pdfDoc.context.obj([]);
       existingAcroForm.set(PDFName.of("Fields"), fields);
     }
-    widgetRefs.forEach((ref) => fields!.push(ref));
+    rootFieldRefs.forEach((ref) => fields!.push(ref));
     existingAcroForm.set(
       PDFName.of("SigFlags"),
       PDFNumber.of(SIG_FLAGS.SIGNATURES_EXIST | SIG_FLAGS.APPEND_ONLY)
     );
   } else {
     const acroFormObj = pdfDoc.context.obj({
-      Fields: widgetRefs,
+      Fields: rootFieldRefs,
       SigFlags: SIG_FLAGS.SIGNATURES_EXIST | SIG_FLAGS.APPEND_ONLY,
     });
     const acroFormRef = pdfDoc.context.register(acroFormObj);
