@@ -237,6 +237,21 @@ signingWorkspaceRouter.post("/", async (req: Request, res: Response) => {
     const hasP12 = body.hasP12 || body.has_p12 ? 1 : 0;
     const signatureImage = body.signatureImage || body.signature_image || null;
 
+    // Strict validation: Do not allow inserting new PDF documents without binary PDF stream
+    const isPdfDoc = fileName.toLowerCase().endsWith(".pdf");
+    if (isPdfDoc && (!pdfData || String(pdfData).trim().length < 50)) {
+      const existing = await db.execute({
+        sql: `SELECT id, pdf_data FROM signing_workspace_documents WHERE id = ? LIMIT 1`,
+        args: [id],
+      });
+      if (existing.rows.length === 0 || !existing.rows[0].pdf_data) {
+        return res.status(400).json({
+          success: false,
+          error: "Binary PDF stream (pdfDataUrl) is required when registering a new PDF document.",
+        });
+      }
+    }
+
     await db.execute({
       sql: `INSERT INTO signing_workspace_documents (
         id, file_name, file_size, uploaded_at, uploaded_by, status, target_personnel,
@@ -330,6 +345,19 @@ signingWorkspaceRouter.post("/batch", async (req: Request, res: Response) => {
       const notes = String(doc.notes || "");
       const hasP12 = doc.hasP12 || doc.has_p12 ? 1 : 0;
       const signatureImage = doc.signatureImage || doc.signature_image || null;
+
+      // Strict validation: Skip batch item if new PDF document has no binary PDF data
+      const isPdfDoc = fileName.toLowerCase().endsWith(".pdf");
+      if (isPdfDoc && (!pdfData || String(pdfData).trim().length < 50)) {
+        const existing = await db.execute({
+          sql: `SELECT id, pdf_data FROM signing_workspace_documents WHERE id = ? LIMIT 1`,
+          args: [id],
+        });
+        if (existing.rows.length === 0 || !existing.rows[0].pdf_data) {
+          console.warn(`[signing-workspace] Skipping batch insert for ${fileName} (${id}) - missing binary PDF stream`);
+          continue;
+        }
+      }
 
       await db.execute({
         sql: `INSERT INTO signing_workspace_documents (

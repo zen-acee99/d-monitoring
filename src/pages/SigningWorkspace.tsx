@@ -5313,75 +5313,82 @@ export function SigningWorkspace() {
       let itemSuccess = false;
       let lastErr = "";
 
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        try {
-          const res = await signingWorkspaceApi.saveDocument({
-            id: item.doc.id,
-            fileName: originalFileName,
-            fileSize: item.doc.fileSize,
-            uploadedAt: item.doc.uploadedAt,
-            uploadedBy: item.doc.uploadedBy,
-            status: item.doc.status,
-            targetPersonnel: item.doc.targetPersonnel,
-            requiredSigners: item.doc.requiredSigners,
-            signers: item.doc.signers,
-            scannedInfo: item.doc.scannedInfo,
-            pdfDataUrl: dataUrl,
-            province: item.doc.province || userProv,
-            notes: item.doc.notes,
-          });
+      const isPdfFile = originalFileName.toLowerCase().endsWith(".pdf");
+      if (isPdfFile && (!dataUrl || dataUrl.length < 50)) {
+        lastErr = "Failed reading PDF binary stream before upload";
+      } else {
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            const res = await signingWorkspaceApi.saveDocument({
+              id: item.doc.id,
+              fileName: originalFileName,
+              fileSize: item.doc.fileSize,
+              uploadedAt: item.doc.uploadedAt,
+              uploadedBy: item.doc.uploadedBy,
+              status: item.doc.status,
+              targetPersonnel: item.doc.targetPersonnel,
+              requiredSigners: item.doc.requiredSigners,
+              signers: item.doc.signers,
+              scannedInfo: item.doc.scannedInfo,
+              pdfDataUrl: dataUrl,
+              province: item.doc.province || userProv,
+              notes: item.doc.notes,
+            });
 
-          if (res && res.success !== false) {
-            itemSuccess = true;
-            break;
+            if (res && res.success !== false) {
+              itemSuccess = true;
+              break;
+            }
+            lastErr = res?.error || `Upload failed on attempt ${attempt}`;
+          } catch (e: any) {
+            lastErr = e?.message || "Network error";
           }
-          lastErr = res?.error || `Upload failed on attempt ${attempt}`;
-        } catch (e: any) {
-          lastErr = e?.message || "Network error";
-        }
 
-        if (attempt < 2) {
-          await new Promise((r) => setTimeout(r, 150));
+          if (attempt < 2) {
+            await new Promise((r) => setTimeout(r, 150));
+          }
         }
       }
 
-      // Replicate to legacy dtrStorageApi in the background
-      const uploadPayload = {
-        id: item.doc.id,
-        userId: activeUserId,
-        employeeName: item.doc.targetPersonnel,
-        employeeId: activeEmpId,
-        module: "SIGNING_WORKSPACE",
-        province: item.doc.province || userProv,
-        sectionDivision: "Regional Office V",
-        periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
-        month: new Date().getMonth() + 1,
-        year: new Date().getFullYear(),
-        scope: "full-month",
-        status: item.doc.status,
-        submittedDate: item.doc.uploadedAt,
-        pdfFileName: originalFileName,
-        pdfFileSize: item.doc.fileSize,
-        pdfDataUrl: dataUrl,
-        docType: "AR",
-        remarks: JSON.stringify({
-          originalFileName,
-          targetPersonnel: item.doc.targetPersonnel,
-          requiredSigners: item.doc.requiredSigners,
-          signers: item.doc.signers,
-          counterSigners: item.doc.counterSigners,
-          scannedInfo: item.doc.scannedInfo,
-          notes: item.doc.notes,
-        }),
-      };
-      dtrStorageApi.saveRecord(uploadPayload).catch(() => {});
-
       if (itemSuccess) {
+        // Replicate to legacy dtrStorageApi in the background only when save succeeded with binary
+        const uploadPayload = {
+          id: item.doc.id,
+          userId: activeUserId,
+          employeeName: item.doc.targetPersonnel,
+          employeeId: activeEmpId,
+          module: "SIGNING_WORKSPACE",
+          province: item.doc.province || userProv,
+          sectionDivision: "Regional Office V",
+          periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+          month: new Date().getMonth() + 1,
+          year: new Date().getFullYear(),
+          scope: "full-month",
+          status: item.doc.status,
+          submittedDate: item.doc.uploadedAt,
+          pdfFileName: originalFileName,
+          pdfFileSize: item.doc.fileSize,
+          pdfDataUrl: dataUrl,
+          docType: "AR",
+          remarks: JSON.stringify({
+            originalFileName,
+            targetPersonnel: item.doc.targetPersonnel,
+            requiredSigners: item.doc.requiredSigners,
+            signers: item.doc.signers,
+            counterSigners: item.doc.counterSigners,
+            scannedInfo: item.doc.scannedInfo,
+            notes: item.doc.notes,
+          }),
+        };
+        dtrStorageApi.saveRecord(uploadPayload).catch(() => {});
+
         setDocuments((prev) =>
           prev.map((d) => (d.id === item.doc.id ? { ...d, pdfDataUrl: dataUrl, fileObj: item.file, isPendingSync: false } : d))
         );
         completedCounter++;
       } else {
+        // Remove failed un-synced document from local table view
+        setDocuments((prev) => prev.filter((d) => d.id !== item.doc.id));
         failedCounter++;
         failedCollector.push({ doc: item.doc, file: item.file, error: lastErr });
       }
@@ -5472,69 +5479,74 @@ export function SigningWorkspace() {
       let itemSuccess = false;
       let lastErr = "";
 
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        try {
-          const res = await signingWorkspaceApi.saveDocument({
-            id: item.doc.id,
-            fileName: originalFileName,
-            fileSize: item.doc.fileSize,
-            uploadedAt: item.doc.uploadedAt,
-            uploadedBy: item.doc.uploadedBy,
-            status: item.doc.status,
-            targetPersonnel: item.doc.targetPersonnel,
-            requiredSigners: item.doc.requiredSigners,
-            signers: item.doc.signers,
-            scannedInfo: item.doc.scannedInfo,
-            pdfDataUrl: dataUrl,
-            province: item.doc.province || userProv,
-            notes: item.doc.notes,
-          });
+      const isPdfFile = originalFileName.toLowerCase().endsWith(".pdf");
+      if (isPdfFile && (!dataUrl || dataUrl.length < 50)) {
+        lastErr = "Failed reading PDF binary stream before retry";
+      } else {
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            const res = await signingWorkspaceApi.saveDocument({
+              id: item.doc.id,
+              fileName: originalFileName,
+              fileSize: item.doc.fileSize,
+              uploadedAt: item.doc.uploadedAt,
+              uploadedBy: item.doc.uploadedBy,
+              status: item.doc.status,
+              targetPersonnel: item.doc.targetPersonnel,
+              requiredSigners: item.doc.requiredSigners,
+              signers: item.doc.signers,
+              scannedInfo: item.doc.scannedInfo,
+              pdfDataUrl: dataUrl,
+              province: item.doc.province || userProv,
+              notes: item.doc.notes,
+            });
 
-          if (res && res.success !== false) {
-            itemSuccess = true;
-            break;
+            if (res && res.success !== false) {
+              itemSuccess = true;
+              break;
+            }
+            lastErr = res?.error || `Upload failed on attempt ${attempt}`;
+          } catch (e: any) {
+            lastErr = e?.message || "Network error";
           }
-          lastErr = res?.error || `Upload failed on attempt ${attempt}`;
-        } catch (e: any) {
-          lastErr = e?.message || "Network error";
-        }
 
-        if (attempt < 2) {
-          await new Promise((r) => setTimeout(r, 150));
+          if (attempt < 2) {
+            await new Promise((r) => setTimeout(r, 150));
+          }
         }
       }
 
-      const uploadPayload = {
-        id: item.doc.id,
-        userId: activeUserId,
-        employeeName: item.doc.targetPersonnel,
-        employeeId: activeEmpId,
-        module: "SIGNING_WORKSPACE",
-        province: item.doc.province || userProv,
-        sectionDivision: "Regional Office V",
-        periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
-        month: new Date().getMonth() + 1,
-        year: new Date().getFullYear(),
-        scope: "full-month",
-        status: item.doc.status,
-        submittedDate: item.doc.uploadedAt,
-        pdfFileName: originalFileName,
-        pdfFileSize: item.doc.fileSize,
-        pdfDataUrl: dataUrl,
-        docType: "AR",
-        remarks: JSON.stringify({
-          originalFileName,
-          targetPersonnel: item.doc.targetPersonnel,
-          requiredSigners: item.doc.requiredSigners,
-          signers: item.doc.signers,
-          counterSigners: item.doc.counterSigners,
-          scannedInfo: item.doc.scannedInfo,
-          notes: item.doc.notes,
-        }),
-      };
-      dtrStorageApi.saveRecord(uploadPayload).catch(() => {});
-
       if (itemSuccess) {
+        const uploadPayload = {
+          id: item.doc.id,
+          userId: activeUserId,
+          employeeName: item.doc.targetPersonnel,
+          employeeId: activeEmpId,
+          module: "SIGNING_WORKSPACE",
+          province: item.doc.province || userProv,
+          sectionDivision: "Regional Office V",
+          periodText: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+          month: new Date().getMonth() + 1,
+          year: new Date().getFullYear(),
+          scope: "full-month",
+          status: item.doc.status,
+          submittedDate: item.doc.uploadedAt,
+          pdfFileName: originalFileName,
+          pdfFileSize: item.doc.fileSize,
+          pdfDataUrl: dataUrl,
+          docType: "AR",
+          remarks: JSON.stringify({
+            originalFileName,
+            targetPersonnel: item.doc.targetPersonnel,
+            requiredSigners: item.doc.requiredSigners,
+            signers: item.doc.signers,
+            counterSigners: item.doc.counterSigners,
+            scannedInfo: item.doc.scannedInfo,
+            notes: item.doc.notes,
+          }),
+        };
+        dtrStorageApi.saveRecord(uploadPayload).catch(() => {});
+
         setDocuments((prev) =>
           prev.map((d) => (d.id === item.doc.id ? { ...d, pdfDataUrl: dataUrl, fileObj: item.file, isPendingSync: false } : d))
         );
