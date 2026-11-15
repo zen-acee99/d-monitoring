@@ -1330,6 +1330,8 @@ export async function appendSignatureIncremental(
     console.warn("[pnpki] Could not load PDF buffer for incremental typography check:", loadErr);
   }
 
+  const isMultiWidget = uniqueRects.length > 1;
+  const parentFieldNum = isMultiWidget ? nextFreeObj++ : 0;
   const newFieldRefs: string[] = [];
 
   const defaultFieldName = isCounter
@@ -1423,21 +1425,30 @@ export async function appendSignatureIncremental(
       `<<\n/Type /XObject\n/Subtype /Form\n/BBox [0 0 ${bboxW} ${bboxH}]\n/Resources <<\n/ProcSet [/PDF /Text /ImageC]\n/Font << /Helv ${fontObjNum} 0 R >>\n${imgResourceEntry}>>\n/Length ${streamLen}\n>>\nstream\n${streamContent}\nendstream`
     );
 
-    if (idx === 0) {
+    if (isMultiWidget) {
+      // Child widget annotation under parent signature field
+      appendObj(
+        wNum,
+        `<<\n/Type /Annot\n/Subtype /Widget\n/Parent ${parentFieldNum} 0 R\n/Rect [${minX} ${minY} ${maxX} ${maxY}]\n/F 132\n/P ${pageObjNum} 0 R\n/AP << /N ${apNum} 0 R >>\n>>`
+      );
+    } else {
       // Single terminal widget signature field bound to uniqueRects[0]
       appendObj(
         wNum,
         `<<\n/Type /Annot\n/Subtype /Widget\n/FT /Sig\n/Rect [${minX} ${minY} ${maxX} ${maxY}]\n/V ${sigDictObjNum} 0 R\n/T (${baseFieldName})\n/F 132\n/P ${pageObjNum} 0 R\n/AP << /N ${apNum} 0 R >>\n>>`
       );
       newFieldRefs.push(`${wNum} 0 R`);
-    } else {
-      // Visual Stamp annotation for secondary copy (Copy 2) without signature field /Kids
-      appendObj(
-        wNum,
-        `<<\n/Type /Annot\n/Subtype /Stamp\n/Rect [${minX} ${minY} ${maxX} ${maxY}]\n/F 132\n/P ${pageObjNum} 0 R\n/AP << /N ${apNum} 0 R >>\n>>`
-      );
     }
   });
+
+  if (isMultiWidget) {
+    const kidsStr = newWidgetRefs.join(" ");
+    appendObj(
+      parentFieldNum,
+      `<<\n/FT /Sig\n/T (${baseFieldName})\n/V ${sigDictObjNum} 0 R\n/Kids [${kidsStr}]\n>>`
+    );
+    newFieldRefs.push(`${parentFieldNum} 0 R`);
+  }
 
   // Add new root field(s) to the combined fields set
   newFieldRefs.forEach((r) => fieldRefsSet.add(r));
@@ -1726,7 +1737,10 @@ export async function signPdfBuffer(
   const signatureObj = PDFInvalidObject.of(signatureBuffer);
   const signatureDictRef = pdfDoc.context.register(signatureObj);
 
-  // Create single terminal widget annotation for digital signature
+  // Create widget annotations for every copy on the page (Copy 1 and Copy 2)
+  const isMultiWidget = widgetRects.length > 1;
+  const parentFieldRef = isMultiWidget ? pdfDoc.context.nextRef() : null;
+  const childWidgetRefs: any[] = [];
   const rootFieldRefs: any[] = [];
   let annotations = page.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
   if (!annotations) {
@@ -1886,16 +1900,31 @@ export async function signPdfBuffer(
       }
     }
 
-    if (index === 0) {
-      // Appearance stream on signature widget is an empty Form XObject (q Q) with mandatory /Resources << >>
-      const apStream = pdfDoc.context.stream("q\nQ\n", {
-        Type: "XObject",
-        Subtype: "Form",
-        BBox: [0, 0, rw, rh],
-        Resources: pdfDoc.context.obj({}),
+    // Appearance stream on signature widget is an empty Form XObject (q Q) with mandatory /Resources << >>
+    const apStream = pdfDoc.context.stream("q\nQ\n", {
+      Type: "XObject",
+      Subtype: "Form",
+      BBox: [0, 0, rw, rh],
+      Resources: pdfDoc.context.obj({}),
+    });
+
+    if (isMultiWidget) {
+      // Child widget annotation referencing parent signature field
+      const widgetDict = pdfDoc.context.obj({
+        Type: "Annot",
+        Subtype: "Widget",
+        Rect: rect,
+        Parent: parentFieldRef,
+        F: ANNOTATION_FLAGS.PRINT | 128, // PRINT | LOCKED
+        P: page.ref,
+        AP: { N: pdfDoc.context.register(apStream) },
       });
 
-      // Single terminal widget annotation bound to primary signature box (widgetRects[0])
+      const widgetRef = pdfDoc.context.register(widgetDict);
+      childWidgetRefs.push(widgetRef);
+      annotations.push(widgetRef);
+    } else {
+      // Single terminal widget annotation bound to primary signature box
       const widgetDict = pdfDoc.context.obj({
         Type: "Annot",
         Subtype: "Widget",
@@ -1912,6 +1941,17 @@ export async function signPdfBuffer(
       annotations.push(widgetRef);
       rootFieldRefs.push(widgetRef);
     }
+  }
+
+  if (isMultiWidget) {
+    const parentFieldDict = pdfDoc.context.obj({
+      FT: "Sig",
+      T: PDFString.of(baseFieldName),
+      V: signatureDictRef,
+      Kids: childWidgetRefs,
+    });
+    pdfDoc.context.assign(parentFieldRef!, parentFieldDict);
+    rootFieldRefs.push(parentFieldRef);
   }
 
   page.node.set(PDFName.of("Annots"), annotations);
