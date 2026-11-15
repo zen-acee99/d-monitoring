@@ -250,6 +250,48 @@ function extractBalancedDict(str: string, startIndex: number): string | null {
 }
 
 /**
+ * Safely counts opening '<<' and closing '>>' dictionary delimiters while ignoring
+ * comments (%...), literal strings ((...)), and hex strings (<...>).
+ */
+function countDictionaryBrackets(str: string): { open: number; close: number } {
+  let open = 0;
+  let close = 0;
+  let inString = false;
+  let parenDepth = 0;
+  let inComment = false;
+  let inHex = false;
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    const next = i + 1 < str.length ? str[i + 1] : "";
+
+    if (inComment) {
+      if (ch === "\r" || ch === "\n") inComment = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === "\\") { i++; continue; }
+      if (ch === "(") parenDepth++;
+      else if (ch === ")") {
+        parenDepth--;
+        if (parenDepth === 0) inString = false;
+      }
+      continue;
+    }
+    if (inHex) {
+      if (ch === ">") inHex = false;
+      continue;
+    }
+    if (ch === "%") { inComment = true; continue; }
+    if (ch === "(") { inString = true; parenDepth = 1; continue; }
+    if (ch === "<" && next === "<") { open++; i++; continue; }
+    if (ch === "<" && next !== "<") { inHex = true; continue; }
+    if (ch === ">" && next === ">") { close++; i++; continue; }
+  }
+  return { open, close };
+}
+
+/**
  * Parses all PDF objects including uncompressed objects and objects stored inside
  * compressed Object Streams (/Type /ObjStm), returning a Map containing the latest definition body.
  */
@@ -1433,8 +1475,8 @@ export async function appendSignatureIncremental(
     `<<\n${cleanedPageBody}\n/Annots [${finalAnnotsStr}]\n>>`
   );
 
-  // 7. Updated Catalog Object ONLY if AcroForm was newly created or was inline
-  if (!existingAcroFormObjNum) {
+  // 7. Updated Catalog Object
+  {
     let cleanedCatalogBody = catalogBody.trim();
     cleanedCatalogBody = cleanedCatalogBody.replace(/^\d+\s+\d+\s+obj\s*/, "");
 
@@ -1446,7 +1488,10 @@ export async function appendSignatureIncremental(
     }
 
     // Clean dangling >> if any safely without stripping nested dictionaries
-    cleanedCatalogBody = cleanedCatalogBody.replace(/>>\s*$/, "").trim();
+    const { open: catOpen, close: catClose } = countDictionaryBrackets(cleanedCatalogBody);
+    if (catClose > catOpen) {
+      cleanedCatalogBody = cleanedCatalogBody.replace(/>>\s*$/, "").trim();
+    }
 
     // Remove any existing /AcroForm reference or inline dictionary
     cleanedCatalogBody = cleanedCatalogBody.replace(/\/AcroForm\s+\d+\s+0\s+R/g, "").trim();
@@ -1604,7 +1649,7 @@ export async function signPdfBuffer(
       : [options?.sigRect || [98, 218, 122, 26]];
 
   const pdfStr = pdfBuffer.toString("binary");
-  const isAlreadySigned = /\/Type\s*\/Sig/.test(pdfStr) && /startxref/.test(pdfStr);
+  const isAlreadySigned = /\/Type\s*\/Sig\b/.test(pdfStr) && /startxref/.test(pdfStr);
 
   let pdfWithPlaceholder: Buffer;
 
@@ -1891,6 +1936,22 @@ export async function signPdfBuffer(
     });
     const acroFormRef = pdfDoc.context.register(acroFormObj);
     pdfDoc.catalog.set(PDFName.of("AcroForm"), acroFormRef);
+  }
+
+  // Ensure all embedded Image XObjects (RGB and Alpha SMasks) and Form XObjects contain mandatory /Resources << >>
+  await pdfDoc.flush();
+  for (const [, obj] of pdfDoc.context.enumerateIndirectObjects()) {
+    const dict = (obj as any)?.dict || (obj instanceof PDFDict ? obj : null);
+    if (dict && typeof dict.has === "function" && typeof dict.get === "function") {
+      const subtype = dict.get(PDFName.of("Subtype"));
+      if (
+        (subtype === PDFName.of("Image") || subtype?.toString() === "/Image" ||
+         subtype === PDFName.of("Form") || subtype?.toString() === "/Form") &&
+        !dict.has(PDFName.of("Resources"))
+      ) {
+        dict.set(PDFName.of("Resources"), pdfDoc.context.obj({}));
+      }
+    }
   }
 
   const savedBytes = await pdfDoc.save({ useObjectStreams: false });
