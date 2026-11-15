@@ -39,8 +39,8 @@ async function runObSlipTests() {
     throw new Error(`Box 1 coordinates out of expected range for Approved by: ${JSON.stringify(box1)}`);
   }
 
-  // Validate Box 2 (Departure Guard/Officer): should be in table column 2 (X > 290, Y between 175 and 200)
-  if (box2[0] < 290 || box2[0] > 330 || box2[1] < 170 || box2[1] > 200) {
+  // Validate Box 2 (Departure Guard/Officer): should be above printed name ReneJane R. Buena (X > 290, Y between 198 and 210)
+  if (box2[0] < 290 || box2[0] > 330 || box2[1] < 198 || box2[1] > 210) {
     throw new Error(`Box 2 coordinates out of expected range for Departure Officer: ${JSON.stringify(box2)}`);
   }
   console.log("  PASS: Test 1 - Correctly detected OB_SLIP and positioned dual signature boxes");

@@ -290,15 +290,16 @@ export function detectSignatureCoordinatesForReneJane(
       });
 
       let sig2X = 310;
-      let sig2Y = 184;
-      if (guardMatches.length > 0) {
-        const guardItem = guardMatches[0];
-        sig2X = Math.round(guardItem.x + 10);
-        sig2Y = Math.round(guardItem.y + 25);
-      } else if (tableBuenaMatches.length > 0) {
+      let sig2Y = 202;
+      let sig2H = 26;
+      if (tableBuenaMatches.length > 0) {
         const bItem = tableBuenaMatches[0];
         sig2X = Math.round(bItem.x - 54);
-        sig2Y = Math.round(bItem.y - 13);
+        sig2Y = Math.round(bItem.y + 5);
+      } else if (guardMatches.length > 0) {
+        const guardItem = guardMatches[0];
+        sig2X = Math.round(guardItem.x + 10);
+        sig2Y = Math.round(guardItem.y + 43);
       }
 
       return {
@@ -306,7 +307,7 @@ export function detectSignatureCoordinatesForReneJane(
         targetPageIndex: pIdx,
         sigRects: [
           [sig1X, sig1Y, boxW, boxH],
-          [sig2X, sig2Y, boxW, boxH],
+          [sig2X, sig2Y, boxW, sig2H],
         ],
         detectedReason:
           "Official Business (OB) Slip detected on page " +
