@@ -1118,17 +1118,33 @@ export async function appendSignatureIncremental(
     const fieldsMatch = afBody.match(/\/Fields\s*\[([^\]]*)\]/);
     if (fieldsMatch) existingFields = fieldsMatch[1].trim();
 
-    const drIdx = afBody.indexOf("/DR");
-    if (drIdx !== -1) {
-      existingDR = extractBalancedDict(afBody, drIdx) || "";
+    const drRefMatch = afBody.match(/\/DR\s+(\d+\s+0\s+R)/);
+    if (drRefMatch) {
+      existingDR = drRefMatch[1].trim();
+    } else {
+      const drIdx = afBody.indexOf("/DR");
+      if (drIdx !== -1) {
+        const afterDr = afBody.slice(drIdx + 3).trim();
+        if (afterDr.startsWith("<<")) {
+          existingDR = extractBalancedDict(afBody, drIdx) || "";
+        }
+      }
     }
 
     const daMatch = afBody.match(/\/DA\s*(\([^\)]*\))/);
     if (daMatch) existingDA = daMatch[1];
   } else {
-    const drIdx = catalogBody.indexOf("/DR");
-    if (drIdx !== -1) {
-      existingDR = extractBalancedDict(catalogBody, drIdx) || "";
+    const drRefMatch = catalogBody.match(/\/DR\s+(\d+\s+0\s+R)/);
+    if (drRefMatch) {
+      existingDR = drRefMatch[1].trim();
+    } else {
+      const drIdx = catalogBody.indexOf("/DR");
+      if (drIdx !== -1) {
+        const afterDr = catalogBody.slice(drIdx + 3).trim();
+        if (afterDr.startsWith("<<")) {
+          existingDR = extractBalancedDict(catalogBody, drIdx) || "";
+        }
+      }
     }
     const daMatch = catalogBody.match(/\/DA\s*(\([^\)]*\))/);
     if (daMatch) existingDA = daMatch[1];
@@ -1232,14 +1248,14 @@ export async function appendSignatureIncremental(
       smaskObjNum = nextFreeObj++;
       appendObj(
         smaskObjNum,
-        `<<\n/Type /XObject\n/Subtype /Image\n/Width ${imgW}\n/Height ${imgH}\n/ColorSpace /DeviceGray\n/BitsPerComponent 8\n/Filter /FlateDecode\n/Length ${defAlpha.length}\n>>\nstream\n${defAlpha.toString("binary")}\nendstream`
+        `<<\n/Type /XObject\n/Subtype /Image\n/Width ${imgW}\n/Height ${imgH}\n/ColorSpace /DeviceGray\n/BitsPerComponent 8\n/Resources << >>\n/Filter /FlateDecode\n/Length ${defAlpha.length}\n>>\nstream\n${defAlpha.toString("binary")}\nendstream`
       );
     }
     imgObjNum = nextFreeObj++;
     const smaskEntry = smaskObjNum ? `/SMask ${smaskObjNum} 0 R\n` : "";
     appendObj(
       imgObjNum,
-      `<<\n/Type /XObject\n/Subtype /Image\n/Width ${imgW}\n/Height ${imgH}\n/ColorSpace /DeviceRGB\n/BitsPerComponent 8\n${smaskEntry}/Filter /FlateDecode\n/Length ${defRGB.length}\n>>\nstream\n${defRGB.toString("binary")}\nendstream`
+      `<<\n/Type /XObject\n/Subtype /Image\n/Width ${imgW}\n/Height ${imgH}\n/ColorSpace /DeviceRGB\n/BitsPerComponent 8\n/Resources << >>\n${smaskEntry}/Filter /FlateDecode\n/Length ${defRGB.length}\n>>\nstream\n${defRGB.toString("binary")}\nendstream`
     );
   }
 
@@ -1272,8 +1288,6 @@ export async function appendSignatureIncremental(
     console.warn("[pnpki] Could not load PDF buffer for incremental typography check:", loadErr);
   }
 
-  const isMultiWidget = uniqueRects.length > 1;
-  const parentFieldNum = isMultiWidget ? nextFreeObj++ : 0;
   const newFieldRefs: string[] = [];
 
   const defaultFieldName = isCounter
@@ -1367,30 +1381,21 @@ export async function appendSignatureIncremental(
       `<<\n/Type /XObject\n/Subtype /Form\n/BBox [0 0 ${bboxW} ${bboxH}]\n/Resources <<\n/ProcSet [/PDF /Text /ImageC]\n/Font << /Helv ${fontObjNum} 0 R >>\n${imgResourceEntry}>>\n/Length ${streamLen}\n>>\nstream\n${streamContent}\nendstream`
     );
 
-    if (isMultiWidget) {
-      // Child widget annotation: NO /T, NO /FT, NO /V! Inherits from /Parent to avoid duplicate signature errors in Acrobat
-      appendObj(
-        wNum,
-        `<<\n/Type /Annot\n/Subtype /Widget\n/Parent ${parentFieldNum} 0 R\n/Rect [${minX} ${minY} ${maxX} ${maxY}]\n/F 132\n/P ${pageObjNum} 0 R\n/AP << /N ${apNum} 0 R >>\n>>`
-      );
-    } else {
-      // Single terminal field
+    if (idx === 0) {
+      // Single terminal widget signature field bound to uniqueRects[0]
       appendObj(
         wNum,
         `<<\n/Type /Annot\n/Subtype /Widget\n/FT /Sig\n/Rect [${minX} ${minY} ${maxX} ${maxY}]\n/V ${sigDictObjNum} 0 R\n/T (${baseFieldName})\n/F 132\n/P ${pageObjNum} 0 R\n/AP << /N ${apNum} 0 R >>\n>>`
       );
       newFieldRefs.push(`${wNum} 0 R`);
+    } else {
+      // Visual Stamp annotation for secondary copy (Copy 2) without signature field /Kids
+      appendObj(
+        wNum,
+        `<<\n/Type /Annot\n/Subtype /Stamp\n/Rect [${minX} ${minY} ${maxX} ${maxY}]\n/F 132\n/P ${pageObjNum} 0 R\n/AP << /N ${apNum} 0 R >>\n>>`
+      );
     }
   });
-
-  if (isMultiWidget) {
-    const kidsStr = newWidgetRefs.join(" ");
-    appendObj(
-      parentFieldNum,
-      `<<\n/FT /Sig\n/T (${baseFieldName})\n/V ${sigDictObjNum} 0 R\n/Kids [${kidsStr}]\n>>`
-    );
-    newFieldRefs.push(`${parentFieldNum} 0 R`);
-  }
 
   // Add new root field(s) to the combined fields set
   newFieldRefs.forEach((r) => fieldRefsSet.add(r));
@@ -1440,8 +1445,8 @@ export async function appendSignatureIncremental(
       cleanedCatalogBody = cleanedCatalogBody.slice(firstDictOpen + 2, lastDictClose).trim();
     }
 
-    // Clean dangling >> if any
-    cleanedCatalogBody = cleanedCatalogBody.replace(/>{2,}/g, "").trim();
+    // Clean dangling >> if any safely without stripping nested dictionaries
+    cleanedCatalogBody = cleanedCatalogBody.replace(/>>\s*$/, "").trim();
 
     // Remove any existing /AcroForm reference or inline dictionary
     cleanedCatalogBody = cleanedCatalogBody.replace(/\/AcroForm\s+\d+\s+0\s+R/g, "").trim();
@@ -1676,10 +1681,7 @@ export async function signPdfBuffer(
   const signatureObj = PDFInvalidObject.of(signatureBuffer);
   const signatureDictRef = pdfDoc.context.register(signatureObj);
 
-  // Create widget annotations for every copy on the page (Copy 1 and Copy 2)
-  const isMultiWidget = widgetRects.length > 1;
-  const parentFieldRef = isMultiWidget ? pdfDoc.context.nextRef() : null;
-  const childWidgetRefs: any[] = [];
+  // Create single terminal widget annotation for digital signature
   const rootFieldRefs: any[] = [];
   let annotations = page.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
   if (!annotations) {
@@ -1824,45 +1826,31 @@ export async function signPdfBuffer(
       const textStream = pdfDoc.context.stream(pageTextOps);
       const textStreamRef = pdfDoc.context.register(textStream);
 
-      // Append text stream to Page Contents
-      let contents = page.node.lookupMaybe(PDFName.of("Contents"), PDFArray);
-      if (!contents) {
-        const rawContents = page.node.get(PDFName.of("Contents"));
-        if (rawContents) {
-          const arr = pdfDoc.context.obj([rawContents, textStreamRef]);
-          page.node.set(PDFName.of("Contents"), arr);
-        } else {
-          page.node.set(PDFName.of("Contents"), textStreamRef);
-        }
+      // Append text stream to Page Contents safely handling both PDFArray and PDFRawStream/PDFStream
+      const existingContents = page.node.get(PDFName.of("Contents"));
+      if (!existingContents) {
+        page.node.set(PDFName.of("Contents"), textStreamRef);
       } else {
-        contents.push(textStreamRef);
+        const derefContents = page.node.lookup(PDFName.of("Contents"));
+        if (derefContents instanceof PDFArray) {
+          derefContents.push(textStreamRef);
+        } else {
+          const arr = pdfDoc.context.obj([existingContents, textStreamRef]);
+          page.node.set(PDFName.of("Contents"), arr);
+        }
       }
     }
 
-    // Appearance stream on signature widget is an empty Form XObject (q Q) so Adobe Acrobat does NOT render duplicate text
-    const apStream = pdfDoc.context.stream("q\nQ\n", {
-      Type: "XObject",
-      Subtype: "Form",
-      BBox: [0, 0, rw, rh],
-    });
-
-    if (isMultiWidget) {
-      // Child widget annotation: NO /T, NO /FT, NO /V! References /Parent to prevent duplicate signature errors in Acrobat
-      const widgetDict = pdfDoc.context.obj({
-        Type: "Annot",
-        Subtype: "Widget",
-        Rect: rect,
-        Parent: parentFieldRef,
-        F: ANNOTATION_FLAGS.PRINT | 128, // PRINT | LOCKED
-        P: page.ref,
-        AP: { N: pdfDoc.context.register(apStream) },
+    if (index === 0) {
+      // Appearance stream on signature widget is an empty Form XObject (q Q) with mandatory /Resources << >>
+      const apStream = pdfDoc.context.stream("q\nQ\n", {
+        Type: "XObject",
+        Subtype: "Form",
+        BBox: [0, 0, rw, rh],
+        Resources: pdfDoc.context.obj({}),
       });
 
-      const widgetRef = pdfDoc.context.register(widgetDict);
-      childWidgetRefs.push(widgetRef);
-      annotations.push(widgetRef);
-    } else {
-      // Single terminal field
+      // Single terminal widget annotation bound to primary signature box (widgetRects[0])
       const widgetDict = pdfDoc.context.obj({
         Type: "Annot",
         Subtype: "Widget",
@@ -1879,17 +1867,6 @@ export async function signPdfBuffer(
       annotations.push(widgetRef);
       rootFieldRefs.push(widgetRef);
     }
-  }
-
-  if (isMultiWidget) {
-    const parentFieldDict = pdfDoc.context.obj({
-      FT: "Sig",
-      T: PDFString.of(baseFieldName),
-      V: signatureDictRef,
-      Kids: childWidgetRefs,
-    });
-    pdfDoc.context.assign(parentFieldRef!, parentFieldDict);
-    rootFieldRefs.push(parentFieldRef);
   }
 
   page.node.set(PDFName.of("Annots"), annotations);
