@@ -202,10 +202,10 @@ export async function parsePdfFileToRecords(
 ): Promise<{ records: Record<string, any>[]; rawPreview: string }> {
   const buffer = await file.arrayBuffer();
   const bytes = new Uint8Array(buffer);
-  const latin1 = new TextDecoder("latin1").decode(bytes);
+  const pdfStr = new TextDecoder("utf-8").decode(bytes);
 
   // 1. Check for embedded DICT_PROJECT_JSON_B64 payload in PDF metadata
-  const markerMatch = latin1.match(/DICT_PROJECT_JSON_B64:([A-Za-z0-9+/=]+)/);
+  const markerMatch = pdfStr.match(/DICT_PROJECT_JSON_B64:([A-Za-z0-9+/=]+)/);
   if (markerMatch && markerMatch[1]) {
     try {
       const jsonStr = decodeURIComponent(escape(atob(markerMatch[1])));
@@ -260,7 +260,7 @@ export async function parsePdfFileToRecords(
   // Find stream ... endstream blocks
   const streamRegex = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
   let streamMatch: RegExpExecArray | null;
-  while ((streamMatch = streamRegex.exec(latin1)) !== null) {
+  while ((streamMatch = streamRegex.exec(pdfStr)) !== null) {
     const rawStreamStr = streamMatch[1];
     // Try direct token extraction first
     const directTokens = extractPdfTextTokens(rawStreamStr);
@@ -282,7 +282,7 @@ export async function parsePdfFileToRecords(
         writer.write(streamBytes).catch(() => {});
         writer.close().catch(() => {});
         const decompressedBuf = await new Response(ds.readable).arrayBuffer();
-        const decompressedText = new TextDecoder("latin1").decode(decompressedBuf);
+        const decompressedText = new TextDecoder("utf-8").decode(decompressedBuf);
         const tokens = extractPdfTextTokens(decompressedText);
         if (tokens.length > 0) {
           extractedChunks.push(...tokens);

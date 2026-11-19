@@ -1,0 +1,189 @@
+{
+  "timestamp": "2026-11-15T03:32:43.053Z",
+  "total": 30,
+  "passed": 30,
+  "failed": 0,
+  "verdict": "APPROVE",
+  "probes": [
+    {
+      "id": "A1",
+      "category": "Catalog Nesting",
+      "description": "Catalog with /MarkInfo << /Marked true >> survives incremental update",
+      "passed": true
+    },
+    {
+      "id": "A2",
+      "category": "Catalog Nesting",
+      "description": "Catalog with 3-level deeply nested dictionary preserves inner keys without corruption",
+      "passed": true
+    },
+    {
+      "id": "A3",
+      "category": "Catalog Nesting",
+      "description": "Sibling nested dictionaries (/MarkInfo and /ViewerPreferences) both preserved",
+      "passed": true
+    },
+    {
+      "id": "A4",
+      "category": "Catalog Nesting",
+      "description": "Nested dictionary immediately before closing >> (/Perms << >>) not truncated by sanitizer",
+      "passed": true
+    },
+    {
+      "id": "A5",
+      "category": "Catalog Nesting",
+      "description": "String with embedded '>>' delimiter in document info / catalog does not trick regex",
+      "passed": true
+    },
+    {
+      "id": "A6",
+      "category": "Catalog Nesting",
+      "description": "Catalog with comments and trailing whitespace before >> parses cleanly",
+      "passed": true
+    },
+    {
+      "id": "B1",
+      "category": "Sequential Multi-Pass",
+      "description": "All 4 sequential passes sign cleanly without unhandled exception",
+      "passed": true
+    },
+    {
+      "id": "B2",
+      "category": "Sequential Multi-Pass",
+      "description": "Pass 4 document contains 4 distinct incremental revision boundaries (%%EOF)",
+      "passed": true
+    },
+    {
+      "id": "B3",
+      "category": "Sequential Multi-Pass",
+      "description": "/Prev pointer in revisions 2, 3, 4 links precisely to previous startxref offsets",
+      "passed": true
+    },
+    {
+      "id": "B4",
+      "category": "Sequential Multi-Pass",
+      "description": "All 4 revisions maintain valid /ByteRange enclosing cryptographic contents",
+      "passed": true
+    },
+    {
+      "id": "B5",
+      "category": "Sequential Multi-Pass",
+      "description": "4 distinct terminal /FT /Sig widgets created with unique /T names and no /Kids",
+      "passed": true
+    },
+    {
+      "id": "B6",
+      "category": "Sequential Multi-Pass",
+      "description": "AcroForm /Fields array preserves all 4 terminal widget references across passes",
+      "passed": true
+    },
+    {
+      "id": "B7",
+      "category": "Sequential Multi-Pass",
+      "description": "AcroForm /SigFlags is 3 (SIGNATURES_EXIST | APPEND_ONLY) in Pass 4",
+      "passed": true
+    },
+    {
+      "id": "C1",
+      "category": "Dual-Copy CS Form 48",
+      "description": "Dual signature rects (Copy 1 + Copy 2) produce exactly 1 terminal /FT /Sig with 0 /Kids",
+      "passed": true
+    },
+    {
+      "id": "C2",
+      "category": "Dual-Copy CS Form 48",
+      "description": "Identical duplicate rects deduplicated cleanly to 1 terminal widget",
+      "passed": true
+    },
+    {
+      "id": "C3",
+      "category": "Dual-Copy CS Form 48",
+      "description": "Degenerate zero-dimension rect normalizes to min bounds (w >= 125, h >= 26)",
+      "passed": true
+    },
+    {
+      "id": "C4",
+      "category": "Dual-Copy CS Form 48",
+      "description": "Inverted coordinates [max, max, min, min] properly re-ordered to [llx, lly, urx, ury]",
+      "passed": true
+    },
+    {
+      "id": "C5",
+      "category": "Dual-Copy CS Form 48",
+      "description": "Empty sigRects [] falls back to standard default rect without error",
+      "passed": true
+    },
+    {
+      "id": "C6",
+      "category": "Dual-Copy CS Form 48",
+      "description": "Quad-copy rects (4 boxes) produces exactly 1 terminal /FT /Sig and 0 /Kids",
+      "passed": true
+    },
+    {
+      "id": "D1",
+      "category": "Form XObjects",
+      "description": "First-signature appearance Form XObject (/AP /N) contains valid /Resources << >>",
+      "passed": true
+    },
+    {
+      "id": "D2",
+      "category": "Form XObjects",
+      "description": "Incremental update Form XObjects (Pass 1 & Pass 2) 100% contain valid /Resources << >>",
+      "passed": true
+    },
+    {
+      "id": "D3",
+      "category": "Form XObjects",
+      "description": "Form XObject with skipVisualText: true retains /Resources << >>",
+      "passed": true
+    },
+    {
+      "id": "D4",
+      "category": "Form XObjects",
+      "description": "Appearance Form XObjects define strictly positive bounding box /BBox [llx lly urx ury]",
+      "passed": true
+    },
+    {
+      "id": "E1",
+      "category": "Image XObjects",
+      "description": "Transparent PNG in incremental update generates both RGB and SMask Image XObjects with /Resources << >>",
+      "passed": true
+    },
+    {
+      "id": "E2",
+      "category": "Image XObjects",
+      "description": "1x1 minimal PNG embeds cleanly with /Resources << >>",
+      "passed": true
+    },
+    {
+      "id": "E3",
+      "category": "Image XObjects",
+      "description": "Incremental update without image omits Image XObjects cleanly with zero broken references",
+      "passed": true
+    },
+    {
+      "id": "F1",
+      "category": "AcroForm /DR",
+      "description": "AcroForm indirect /DR reference (/DR 99 0 R) preserved in incremental update without corruption",
+      "passed": true
+    },
+    {
+      "id": "F2",
+      "category": "AcroForm /DR",
+      "description": "AcroForm existing /DA string (/Courier 12 Tf 0 g) preserved alongside indirect /DR",
+      "passed": true
+    },
+    {
+      "id": "F3",
+      "category": "AcroForm /DR",
+      "description": "Existing non-signature form fields (98 0 R) preserved in AcroForm /Fields",
+      "passed": true
+    },
+    {
+      "id": "G1",
+      "category": "Real-World CS Form 48",
+      "description": "Dual-copy CS Form 48 two-pass signing satisfies 100% Adobe Acrobat ISO 32000 structural requirements",
+      "passed": true
+    }
+  ]
+}

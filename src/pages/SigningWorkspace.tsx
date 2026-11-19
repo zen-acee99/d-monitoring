@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import JSZip from "jszip";
-import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+import { PDFDocument, rgb } from "pdf-lib";
+import fontkit from "@pdf-lib/fontkit";
 import {
   PenLine,
   Upload,
@@ -148,16 +149,7 @@ export function formatTargetPdfFilename(doc: WorkspaceDocument): string {
   return `${rawName}.pdf`;
 }
 
-function sanitizeForStandardPdf(text: string): string {
-  return (text || "")
-    .replace(/[✓✔]/g, "[V]")
-    .replace(/[•●]/g, "-")
-    .replace(/[—–]/g, "-")
-    .replace(/[""]/g, '"')
-    .replace(/['']/g, "'")
-    .replace(/[^\x20-\x7E\xA0-\xFF]/g, " ")
-    .trim();
-}
+
 
 export function parseDocTimestampSafe(val: any): number {
   if (!val) return 0;
@@ -251,9 +243,12 @@ export function isDocUploadedWithin5Minutes(
 
 export async function generateWorkspaceFallbackPdfBytes(doc: WorkspaceDocument): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
+  pdfDoc.registerFontkit(fontkit);
   const page = pdfDoc.addPage([612, 792]);
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const fontBytes = await fetch('/fonts/NotoSerif-Regular.ttf').then(res => res.arrayBuffer());
+  const boldFontBytes = await fetch('/fonts/Roboto-Bold.ttf').then(res => res.arrayBuffer());
+  const font = await pdfDoc.embedFont(fontBytes);
+  const boldFont = await pdfDoc.embedFont(boldFontBytes);
   const { width, height } = page.getSize();
 
   // Header Banner
@@ -265,7 +260,7 @@ export async function generateWorkspaceFallbackPdfBytes(doc: WorkspaceDocument):
     color: rgb(0.04, 0.12, 0.28),
   });
 
-  page.drawText(sanitizeForStandardPdf("DEPARTMENT OF INFORMATION AND COMMUNICATIONS TECHNOLOGY"), {
+  page.drawText(("DEPARTMENT OF INFORMATION AND COMMUNICATIONS TECHNOLOGY"), {
     x: 48,
     y: height - 56,
     size: 11,
@@ -273,7 +268,7 @@ export async function generateWorkspaceFallbackPdfBytes(doc: WorkspaceDocument):
     color: rgb(1, 1, 1),
   });
 
-  page.drawText(sanitizeForStandardPdf("Region V - Bicol Region | Official Signing Workspace Transmittal Record"), {
+  page.drawText(("Region V - Bicol Region | Official Signing Workspace Transmittal Record"), {
     x: 48,
     y: height - 70,
     size: 8.5,
@@ -284,7 +279,7 @@ export async function generateWorkspaceFallbackPdfBytes(doc: WorkspaceDocument):
   let currentY = height - 110;
 
   // Title
-  page.drawText(sanitizeForStandardPdf("OFFICIAL DOCUMENT RECORD & SIGNATURE TRANSMITTAL"), {
+  page.drawText(("OFFICIAL DOCUMENT RECORD & SIGNATURE TRANSMITTAL"), {
     x: 36,
     y: currentY,
     size: 13,
@@ -316,14 +311,14 @@ export async function generateWorkspaceFallbackPdfBytes(doc: WorkspaceDocument):
 
   let fieldY = currentY - 22;
   fields.forEach(([label, value]) => {
-    page.drawText(sanitizeForStandardPdf(label), {
+    page.drawText((label), {
       x: 48,
       y: fieldY,
       size: 9,
       font: boldFont,
       color: rgb(0.2, 0.25, 0.35),
     });
-    page.drawText(sanitizeForStandardPdf(value).slice(0, 75), {
+    page.drawText((value).slice(0, 75), {
       x: 180,
       y: fieldY,
       size: 9,
@@ -336,7 +331,7 @@ export async function generateWorkspaceFallbackPdfBytes(doc: WorkspaceDocument):
   currentY -= 165;
 
   // Signatures Section
-  page.drawText(sanitizeForStandardPdf("AUTHORIZED SIGNATORIES & MATRIX STATUS"), {
+  page.drawText(("AUTHORIZED SIGNATORIES & MATRIX STATUS"), {
     x: 36,
     y: currentY,
     size: 11,
@@ -351,7 +346,7 @@ export async function generateWorkspaceFallbackPdfBytes(doc: WorkspaceDocument):
 
   signers.slice(0, 10).forEach((s, idx) => {
     const isSigned = s.status === "signed";
-    page.drawText(sanitizeForStandardPdf(`${idx + 1}. ${s.name || "Signer"} (${s.role || "Signatory"})`), {
+    page.drawText((`${idx + 1}. ${s.name || "Signer"} (${s.role || "Signatory"})`), {
       x: 48,
       y: currentY,
       size: 8.5,
@@ -359,7 +354,7 @@ export async function generateWorkspaceFallbackPdfBytes(doc: WorkspaceDocument):
       color: rgb(0.15, 0.2, 0.3),
     });
     page.drawText(
-      sanitizeForStandardPdf(isSigned ? `[COMPLETED] ${s.signedAt || "Signed"}` : `[PENDING] Awaiting Signature`),
+      (isSigned ? `[COMPLETED] ${s.signedAt || "Signed"}` : `[PENDING] Awaiting Signature`),
       {
         x: 340,
         y: currentY,
@@ -374,7 +369,7 @@ export async function generateWorkspaceFallbackPdfBytes(doc: WorkspaceDocument):
   const counterSigners = doc.counterSigners || [];
   if (counterSigners.length > 0) {
     currentY -= 8;
-    page.drawText(sanitizeForStandardPdf("COUNTER-SIGNATORIES"), {
+    page.drawText(("COUNTER-SIGNATORIES"), {
       x: 36,
       y: currentY,
       size: 10,
@@ -383,7 +378,7 @@ export async function generateWorkspaceFallbackPdfBytes(doc: WorkspaceDocument):
     });
     currentY -= 15;
     counterSigners.slice(0, 6).forEach((c) => {
-      page.drawText(sanitizeForStandardPdf(`+ ${c.name} - Counter-Signed (${c.position || "beside"})`), {
+      page.drawText((`+ ${c.name} - Counter-Signed (${c.position || "beside"})`), {
         x: 48,
         y: currentY,
         size: 8.5,
@@ -406,7 +401,7 @@ export async function generateWorkspaceFallbackPdfBytes(doc: WorkspaceDocument):
   });
 
   page.drawText(
-    sanitizeForStandardPdf("Security & Authenticity Notice: Generated by DICT Region V Signing Workspace System."),
+    ("Security & Authenticity Notice: Generated by DICT Region V Signing Workspace System."),
     {
       x: 48,
       y: 58,
@@ -416,7 +411,7 @@ export async function generateWorkspaceFallbackPdfBytes(doc: WorkspaceDocument):
     }
   );
   page.drawText(
-    sanitizeForStandardPdf("This electronic transmittal document is certified valid and registered in the DICT cloud database."),
+    ("This electronic transmittal document is certified valid and registered in the DICT cloud database."),
     {
       x: 48,
       y: 45,
@@ -4842,10 +4837,11 @@ export function SigningWorkspace() {
       return updatedDoc;
     } catch (err: any) {
       console.error("Signing document failed:", err);
+      const detailedError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
       return {
         ...doc,
         status: "failed",
-        notes: `Signing error: ${err.message || "Failed"}`,
+        notes: `Signing process failed at ${new Date().toISOString()}: ${detailedError}`,
       };
     }
   };

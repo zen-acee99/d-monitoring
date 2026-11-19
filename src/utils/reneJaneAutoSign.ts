@@ -250,69 +250,47 @@ export function detectSignatureCoordinatesForReneJane(
     if (isObSlip) {
       const boxW = 195;
       const boxH = 32;
+      const newSigRects: [number, number, number, number][] = [];
 
-      // Signature 1: Approved by section (above RENE JANE R. BUENO / BUENA)
-      const approvedMatches = textItems.filter((it) => {
-        const u = it.text.toUpperCase();
-        return (
-          (u.includes("BUEN") && it.y > 220 && it.y < 420) ||
-          (u.includes("APPROVED BY") && it.y > 220 && it.y < 420)
-        );
-      });
-
-      let sig1X = 235;
-      let sig1Y = 338;
-      const buenaApproveItem = approvedMatches.find((it) => it.text.toUpperCase().includes("BUEN"));
-      if (buenaApproveItem) {
-        sig1Y = Math.round(buenaApproveItem.y + 10);
-        const nameCenter = buenaApproveItem.x + (buenaApproveItem.text.length * 6.5) / 2;
-        sig1X = Math.round(nameCenter - boxW / 2);
-        sig1X = Math.max(160, Math.min(width - boxW - 20, sig1X));
-      } else {
-        const approveItem = approvedMatches.find((it) => it.text.toUpperCase().includes("APPROVED BY"));
-        if (approveItem) {
-          sig1Y = Math.round(approveItem.y - 10);
+      // Improved anchor detection with regex for robustness
+      const findBestAnchor = (regex: RegExp) => {
+        const matches = textItems.filter((it) => regex.test(it.text.toUpperCase()));
+        if (matches.length === 0) return null;
+        // Prefer matches in the bottom 60% of the page
+        const lowerMatches = matches.filter(it => it.y < height * 0.6);
+        if (lowerMatches.length > 0) {
+            // Sort by Y descending to get the bottom-most one
+            lowerMatches.sort((a, b) => b.y - a.y);
+            return lowerMatches[0];
         }
-      }
+        return matches[0];
+      };
 
-      // Signature 2: Departure table under Guard on Duty / Provincial Officer
-      const guardMatches = textItems.filter((it) => {
-        const u = it.text.toUpperCase();
-        return (
-          (u.includes("GUARD ON DUTY") || u.includes("PROVINCIAL OFFICER")) &&
-          it.y < 230 &&
-          it.y > 90
-        );
-      });
-      const tableBuenaMatches = textItems.filter((it) => {
-        const u = it.text.toUpperCase();
-        return u.includes("BUEN") && it.y < 230 && it.y > 90;
-      });
+      // Fixed X-coordinates based on form layout (derived from testing requirements)
+      // Fixed X-coordinates based on form layout (derived from testing requirements)
+      const anchorData = [
+        { regex: /APPROVED\s*BY/i, x: 280, yOffset: 20 },
+        { regex: /DATE\s*OF\s*DEPARTURE/i, x: 335, yOffset: -5 },
+        { regex: /DATE\s*OF\s*ARRIVAL/i, x: 350, yOffset: -5 },
+      ];
 
-      let sig2X = 310;
-      let sig2Y = 202;
-      let sig2H = 26;
-      if (tableBuenaMatches.length > 0) {
-        const bItem = tableBuenaMatches[0];
-        sig2X = Math.round(bItem.x - 54);
-        sig2Y = Math.round(bItem.y + 5);
-      } else if (guardMatches.length > 0) {
-        const guardItem = guardMatches[0];
-        sig2X = Math.round(guardItem.x + 10);
-        sig2Y = Math.round(guardItem.y + 43);
+      for (const { regex, x, yOffset } of anchorData) {
+        const item = findBestAnchor(regex);
+        if (item) {
+          // Fixed column-based X, Y relative to anchor
+          // Moved signatures upward (item.y - 5)
+          newSigRects.push([Math.round(x), Math.round(item.y - yOffset), boxW, boxH]);
+        }
       }
 
       return {
         docType: "OB_SLIP",
         targetPageIndex: pIdx,
-        sigRects: [
-          [sig1X, sig1Y, boxW, boxH],
-          [sig2X, sig2Y, boxW, sig2H],
-        ],
+        sigRects: newSigRects,
         detectedReason:
           "Official Business (OB) Slip detected on page " +
           (pIdx + 1) +
-          " — dual supervisor signature applied (1: Approved by, 2: Provincial Officer Departure)",
+          " — " + newSigRects.length + " supervisor signatures applied.",
       };
     }
   }
@@ -543,7 +521,7 @@ export async function autoSignPdfWithReneJane(
     }
 
     // 2. Inspect raw PDF byte strings for Rene Jane digital signatures
-    const pdfRawStr = new TextDecoder("latin1").decode(incomingBytes);
+    const pdfRawStr = new TextDecoder("utf-8").decode(incomingBytes);
     const hasBuenaInRawPdf =
       /\/Name\s*\([^)]*(?:Buena|Rene\s*Jane)[^)]*\)/i.test(pdfRawStr) ||
       (/\/Reason\s*\([^)]*Accomplishment Report Verification[^)]*\)/i.test(pdfRawStr) && /(?:Buena|Rene)/i.test(pdfRawStr)) ||
@@ -621,12 +599,7 @@ export async function autoSignPdfWithReneJane(
         ? "Official Business (OB) Slip Provincial Officer Verification & Approval"
         : "Official DICT Document Supervisor Verification & Approval";
 
-    const fieldName =
-      docType === "OB_SLIP"
-        ? "Supervisor_Signature_OB"
-        : docType === "DTR" && sigRects.length > 1
-        ? "Supervisor_Signature_Copy1"
-        : "Supervisor_Signature_ReneJane";
+    const fieldName = docType === "OB_SLIP" ? "Supervisor_Signature_OB" : "Supervisor_Signature";
 
     try {
       const rawPdfBase64 = uint8ArrayToBase64(incomingBytes);

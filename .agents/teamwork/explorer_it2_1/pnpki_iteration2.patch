@@ -1,0 +1,51 @@
+--- a/server/services/pnpkiSigningService.ts
++++ b/server/services/pnpkiSigningService.ts
+@@ -1446,5 +1446,9 @@ export async function appendSignatureIncremental(
+     }
+ 
+-    // Clean dangling >> if any safely without stripping nested dictionaries
+-    cleanedCatalogBody = cleanedCatalogBody.replace(/>>\s*$/, "").trim();
++    // Only strip trailing >> if dictionary brackets are genuinely unbalanced (extra closing >>)
++    const openCount = (cleanedCatalogBody.match(/<</g) || []).length;
++    const closeCount = (cleanedCatalogBody.match(/>>/g) || []).length;
++    if (closeCount > openCount) {
++      cleanedCatalogBody = cleanedCatalogBody.replace(/>>\s*$/, "").trim();
++    }
+ 
+@@ -1748,2 +1752,19 @@ export async function signPdfBuffer(
+         const embedded = isPng ? await pdfDoc.embedPng(imgBuf) : await pdfDoc.embedJpg(imgBuf);
++        await embedded.embed();
++
++        // Inject mandatory /Resources << >> into Image XObject and SMask XObject for ISO 32000 / Acrobat compliance
++        const rawImg: any = pdfDoc.context.lookup(embedded.ref);
++        if (rawImg && rawImg.dict) {
++          if (!rawImg.dict.has(PDFName.of("Resources"))) {
++            rawImg.dict.set(PDFName.of("Resources"), pdfDoc.context.obj({}));
++          }
++          const smaskRef = rawImg.dict.get(PDFName.of("SMask"));
++          if (smaskRef) {
++            const smaskObj: any = pdfDoc.context.lookup(smaskRef);
++            if (smaskObj && smaskObj.dict && !smaskObj.dict.has(PDFName.of("Resources"))) {
++              smaskObj.dict.set(PDFName.of("Resources"), pdfDoc.context.obj({}));
++            }
++          }
++        }
++
+         page.drawImage(embedded, {
+@@ -1895,2 +1916,15 @@ export async function signPdfBuffer(
+ 
++  // Guarantee 100% of Image XObjects in first-signature mode have /Resources << >> (ISO 32000 / Acrobat compliance)
++  for (const [ref, obj] of pdfDoc.context.enumerateIndirectObjects()) {
++    if (obj && (obj as any).dict) {
++      const dict = (obj as any).dict;
++      const subtype = dict.get(PDFName.of("Subtype"));
++      if (
++        (subtype === PDFName.of("Image") || subtype?.toString() === "/Image") &&
++        !dict.has(PDFName.of("Resources"))
++      ) {
++        dict.set(PDFName.of("Resources"), pdfDoc.context.obj({}));
++      }
++    }
++  }
++
+   const savedBytes = await pdfDoc.save({ useObjectStreams: false });

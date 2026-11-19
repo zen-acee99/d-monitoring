@@ -297,7 +297,7 @@ function countDictionaryBrackets(str: string): { open: number; close: number } {
  */
 function parsePdfObjects(pdfBuf: Buffer): Map<number, string> {
   const map = new Map<number, string>();
-  const pdfStr = pdfBuf.toString("latin1");
+  const pdfStr = pdfBuf.toString("utf8");
 
   // 1. Regular uncompressed objects
   const regex = /(\d+)\s+0\s+obj\s*([\s\S]*?)\s*endobj/g;
@@ -330,7 +330,7 @@ function parsePdfObjects(pdfBuf: Buffer): Map<number, string> {
 
     const streamData = pdfBuf.slice(streamStart, streamStart + length);
     try {
-      const decompressed = zlib.inflateSync(streamData).toString("latin1");
+      const decompressed = zlib.inflateSync(streamData).toString("utf8");
       const headerStr = decompressed.slice(0, first).trim();
       const tokens = headerStr.split(/\s+/);
       const pairs: { objNum: number; offset: number }[] = [];
@@ -367,29 +367,27 @@ function parsePdfObjects(pdfBuf: Buffer): Map<number, string> {
  * Guarantees names like "Annabel C. Odoño-Calimpong" break cleanly onto the next line
  * without clipping, overflowing, or shrinking to unreadable font sizes.
  */
-export function fixMojibake(str?: string | null): string {
-  if (!str) return "";
-  return str
-    .replace(/Odoæo/g, "Odoño")
-    .replace(/ODOÆO/g, "ODOÑO")
-    .replace(/OdoÃ±o/g, "Odoño")
-    .replace(/ODOÃ‘O/g, "ODOÑO")
-    .replace(/æ/g, "ñ")
-    .replace(/Æ/g, "Ñ")
-    .replace(/Ã±/g, "ñ")
-    .replace(/Ã‘/g, "Ñ")
-    .replace(/Ã©/g, "é")
-    .replace(/Ã¨/g, "è")
-    .replace(/Ã-/g, "í")
-    .replace(/Ã³/g, "ó");
-}
+
 
 export function splitSignerNameToLines(rawSigner: string, maxLen: number = 20): string[] {
-  const clean = fixMojibake(rawSigner).trim();
+  const clean = (rawSigner || "").trim();
   const withBy = `by ${clean}`;
   if (withBy.length <= maxLen) {
     return [withBy];
   }
+  
+  // Try splitting by hyphen first if it's very long and has hyphens
+  if (clean.includes("-")) {
+    const hTokens = clean.split("-");
+    if (hTokens.length >= 2) {
+      // Create a more balanced split if possible
+      const mid = Math.ceil(hTokens.length / 2);
+      const line1 = `by ${hTokens.slice(0, mid).join("-")}-`;
+      const line2 = hTokens.slice(mid).join("-");
+      if (line1.length <= maxLen + 10) return [line1, line2];
+    }
+  }
+
   const tokens = clean.split(/\s+/);
   if (tokens.length >= 2) {
     const half = Math.ceil(tokens.length / 2);
@@ -397,10 +395,7 @@ export function splitSignerNameToLines(rawSigner: string, maxLen: number = 20): 
     const line2 = tokens.slice(half).join(" ");
     return [line1, line2];
   }
-  if (clean.includes("-")) {
-    const hTokens = clean.split("-");
-    return [`by ${hTokens[0]}-`, hTokens.slice(1).join("-")];
-  }
+  
   return [withBy];
 }
 
@@ -533,7 +528,7 @@ export function loadPageFontCMaps(pdfDoc: PDFDocument, page: any): Map<string, M
           const toUnicodeStream = pdfDoc.context.lookup(toUnicodeRef);
           if (toUnicodeStream && (toUnicodeStream instanceof PDFRawStream || (toUnicodeStream as any).getContents || (toUnicodeStream as any).decode)) {
             const decoded = decodePDFRawStream(toUnicodeStream as any).decode();
-            const cmapText = new TextDecoder("latin1").decode(decoded);
+            const cmapText = new TextDecoder("utf8").decode(decoded);
             fontCMaps.set(fontName, parsePdfCMap(cmapText));
           }
         }
@@ -634,7 +629,7 @@ function decodeBytesWithCMap(rawBytes: Uint8Array, cmap?: Map<string, string>): 
     if (s.trim()) return s;
   }
 
-  return new TextDecoder("latin1").decode(rawBytes);
+  return new TextDecoder("utf8").decode(rawBytes);
 }
 
 export function extractTextItemsFromContentStream(
@@ -695,7 +690,7 @@ export function extractTextItemsFromContentStream(
     ) {
       idx++;
     }
-    return new TextDecoder("latin1").decode(streamBytes.subarray(start, idx));
+    return new TextDecoder("utf8").decode(streamBytes.subarray(start, idx));
   }
 
   function readLiteralStringBytes(): Uint8Array {
@@ -955,7 +950,7 @@ export function checkVisualTypographyOnPage(
             } catch {
               decoded = stm.getContents ? stm.getContents() : new Uint8Array(0);
             }
-            const apStr = Buffer.from(decoded).toString("latin1").toLowerCase();
+            const apStr = Buffer.from(decoded).toString("utf8").toLowerCase();
             const hasDigi = apStr.includes("digitally signed") || apStr.includes("digisigned");
             const hasSigner = !normSigner || apStr.replace(/[^a-z0-9]/g, "").includes(normSigner);
 
@@ -1058,7 +1053,7 @@ export async function appendSignatureIncremental(
     skipVisualText?: boolean;
   }
 ): Promise<Buffer> {
-  const pdfStr = pdfBuffer.toString("latin1");
+  const pdfStr = pdfBuffer.toString("utf8");
 
   // 1. Find previous startxref (support both text xref and xref streams)
   const startXrefMatches = [...pdfStr.matchAll(/startxref\s*(\d+)/g)];
@@ -1253,7 +1248,7 @@ export async function appendSignatureIncremental(
   }
 
   // Allocate new objects
-  const sigDictObjNum = maxObj + 1;
+  // We will now iterate over each rect and create an independent signature object for each
   const signatureLength = 32768;
   const placeholderContents = "0".repeat(signatureLength * 2);
   const byteRangePlaceholder = "   0 /********** /********** /**********";
@@ -1267,13 +1262,18 @@ export async function appendSignatureIncremental(
     appendData += `${objNum} 0 obj\n${content}\nendobj\n`;
   }
 
-  // 1. Signature Dictionary Object
-  appendObj(
-    sigDictObjNum,
-    `<<\n/Type /Sig\n/Filter /Adobe.PPKLite\n/SubFilter /adbe.pkcs7.detached\n/ByteRange [${byteRangePlaceholder}]\n/Contents <${placeholderContents}>\n/Reason (${reason})\n/M (D:${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)}+08'00')\n/Name (${signerName})\n/ContactInfo (${contactInfo})\n/Location (${location})\n/Prop_Build << /Filter << /Name /Adobe.PPKLite >> >>\n>>`
-  );
+  let nextFreeObj = maxObj + 1;
 
-  let nextFreeObj = maxObj + 2;
+  // 1. Signature Dictionary Objects (one for each rect)
+  const sigDictObjNums: number[] = [];
+  uniqueRects.forEach(() => {
+    const sigDictObjNum = nextFreeObj++;
+    sigDictObjNums.push(sigDictObjNum);
+    appendObj(
+      sigDictObjNum,
+      `<<\n/Type /Sig\n/Filter /Adobe.PPKLite\n/SubFilter /adbe.pkcs7.detached\n/ByteRange [${byteRangePlaceholder}]\n/Contents <${placeholderContents}>\n/Reason (${reason})\n/M (D:${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)}+08'00')\n/Name (${signerName})\n/ContactInfo (${contactInfo})\n/Location (${location})\n/Prop_Build << /Filter << /Name /Adobe.PPKLite >> >>\n>>`
+    );
+  });
 
   // 2. Shared Type 1 Helvetica Font Object for clean vector text
   const fontObjNum = nextFreeObj++;
@@ -1340,6 +1340,7 @@ export async function appendSignatureIncremental(
   const baseFieldName = customFieldName || defaultFieldName;
 
   uniqueRects.forEach(({ minX, minY, maxX, maxY, bboxW, bboxH }, idx) => {
+    const currentFieldName = uniqueRects.length > 1 ? `${baseFieldName}_${idx + 1}` : baseFieldName;
     const wNum = nextFreeObj++;
     const apNum = nextFreeObj++;
     newWidgetRefs.push(`${wNum} 0 R`);
@@ -1425,30 +1426,16 @@ export async function appendSignatureIncremental(
       `<<\n/Type /XObject\n/Subtype /Form\n/BBox [0 0 ${bboxW} ${bboxH}]\n/Resources <<\n/ProcSet [/PDF /Text /ImageC]\n/Font << /Helv ${fontObjNum} 0 R >>\n${imgResourceEntry}>>\n/Length ${streamLen}\n>>\nstream\n${streamContent}\nendstream`
     );
 
-    if (isMultiWidget) {
-      // Child widget annotation under parent signature field
-      appendObj(
-        wNum,
-        `<<\n/Type /Annot\n/Subtype /Widget\n/Parent ${parentFieldNum} 0 R\n/Rect [${minX} ${minY} ${maxX} ${maxY}]\n/F 132\n/P ${pageObjNum} 0 R\n/AP << /N ${apNum} 0 R >>\n>>`
-      );
-    } else {
-      // Single terminal widget signature field bound to uniqueRects[0]
-      appendObj(
-        wNum,
-        `<<\n/Type /Annot\n/Subtype /Widget\n/FT /Sig\n/Rect [${minX} ${minY} ${maxX} ${maxY}]\n/V ${sigDictObjNum} 0 R\n/T (${baseFieldName})\n/F 132\n/P ${pageObjNum} 0 R\n/AP << /N ${apNum} 0 R >>\n>>`
-      );
-      newFieldRefs.push(`${wNum} 0 R`);
-    }
+    // Independent signature widget bound to its own unique Sig dictionary
+    const sigDictObjNum = sigDictObjNums[idx];
+    appendObj(
+      wNum,
+      `<<\n/Type /Annot\n/Subtype /Widget\n/FT /Sig\n/Rect [${minX} ${minY} ${maxX} ${maxY}]\n/V ${sigDictObjNum} 0 R\n/T (${currentFieldName})\n/F 132\n/P ${pageObjNum} 0 R\n/AP << /N ${apNum} 0 R >>\n>>`
+    );
+    newFieldRefs.push(`${wNum} 0 R`);
   });
 
-  if (isMultiWidget) {
-    const kidsStr = newWidgetRefs.join(" ");
-    appendObj(
-      parentFieldNum,
-      `<<\n/FT /Sig\n/T (${baseFieldName})\n/V ${sigDictObjNum} 0 R\n/Kids [${kidsStr}]\n>>`
-    );
-    newFieldRefs.push(`${parentFieldNum} 0 R`);
-  }
+  // No longer using parentFieldNum/isMultiWidget logic as signatures are now fully independent
 
   // Add new root field(s) to the combined fields set
   newFieldRefs.forEach((r) => fieldRefsSet.add(r));
@@ -1647,7 +1634,7 @@ export async function signPdfBuffer(
   console.log("[pnpki] Validity Period:       ", signerIdentity.validFrom.toISOString(), "to", signerIdentity.validTo.toISOString());
   console.log("[pnpki] ========================================================\n");
 
-  const signerName = fixMojibake(options?.signerName || signerIdentity.commonName || "").trim();
+  const signerName = (options?.signerName || signerIdentity.commonName || "").trim();
   const reason =
     options?.reason ||
     "Civil Service Form No. 48 Official Daily Time Record Digital Certification";
@@ -1931,7 +1918,7 @@ export async function signPdfBuffer(
         FT: "Sig",
         Rect: rect,
         V: signatureDictRef,
-        T: PDFString.of(baseFieldName),
+        T: PDFString.of(widgetRects.length > 1 ? `${baseFieldName}_${index}` : baseFieldName),
         F: ANNOTATION_FLAGS.PRINT | 128, // PRINT | LOCKED
         P: page.ref,
         AP: { N: pdfDoc.context.register(apStream) },

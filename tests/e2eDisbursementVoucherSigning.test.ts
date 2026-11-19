@@ -200,7 +200,7 @@ async function createSyntheticDisbursementVoucher(
 
 function inspectPdfSignatures(pdfBytes: Buffer | Uint8Array) {
   const buf = Buffer.isBuffer(pdfBytes) ? pdfBytes : Buffer.from(pdfBytes);
-  const pdfStr = buf.toString("latin1");
+  const pdfStr = buf.toString("utf8");
 
   const sigMatches = pdfStr.match(/\/Type\s*\/Sig\b/g) || [];
   const widgetMatches = pdfStr.match(/\/Subtype\s*\/Widget\b/g) || [];
@@ -708,7 +708,7 @@ async function runAllE2ETests() {
       }
     );
 
-    const signedStr = signRes.signedBuffer.toString("latin1");
+    const signedStr = signRes.signedBuffer.toString("utf8");
     const byteRangeMatch = signedStr.match(/\/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]/);
     assert(Boolean(byteRangeMatch), "Must contain valid /ByteRange [o1 l1 o2 l2]");
     const [_, o1, l1, o2, l2] = byteRangeMatch!.map(Number);
@@ -732,7 +732,7 @@ async function runAllE2ETests() {
       }
     );
 
-    const signedStr = signRes.signedBuffer.toString("latin1");
+    const signedStr = signRes.signedBuffer.toString("utf8");
     assert(signedStr.includes("/SubFilter /adbe.pkcs7.detached"), "Must contain /SubFilter /adbe.pkcs7.detached");
   });
 
@@ -751,7 +751,7 @@ async function runAllE2ETests() {
       }
     );
 
-    const signedStr = signRes.signedBuffer.toString("latin1");
+    const signedStr = signRes.signedBuffer.toString("utf8");
     assert(signedStr.includes("/Type /Sig"), "Must contain /Type /Sig");
     const contentsMatch = signedStr.match(/\/Contents\s*<([0-9a-fA-F]+)>/);
     assert(Boolean(contentsMatch) && contentsMatch![1].length > 100, "Must contain hex-encoded /Contents with length > 100");
@@ -772,7 +772,7 @@ async function runAllE2ETests() {
       }
     );
 
-    const signedStr = signRes.signedBuffer.toString("latin1");
+    const signedStr = signRes.signedBuffer.toString("utf8");
     assert(signedStr.includes("/AP"), "Widget annotation must reference /AP appearance dictionary");
     assert(
       signedStr.includes("DigiSigned") ||
@@ -1131,7 +1131,7 @@ async function runAllE2ETests() {
     );
 
     assert(pass2.signedBuffer.length > pass1.signedBuffer.length, "Pass 2 buffer must be larger than Pass 1 buffer (incremental append)");
-    const pass2Str = pass2.signedBuffer.toString("latin1");
+    const pass2Str = pass2.signedBuffer.toString("utf8");
     const prevTrailerIdx = pass2Str.indexOf("/Prev");
     assert(prevTrailerIdx > 0, "Incremental revision trailer must contain /Prev pointer to earlier xref");
   });

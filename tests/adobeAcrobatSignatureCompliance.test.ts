@@ -216,7 +216,7 @@ async function createSyntheticPdf(options?: {
 // PDF Object inspection helper utilities
 function parsePdfObjectsFromBuffer(pdfBuf: Buffer): Map<number, string> {
   const map = new Map<number, string>();
-  const pdfStr = pdfBuf.toString("latin1");
+  const pdfStr = pdfBuf.toString("utf8");
   const regex = /(\d+)\s+0\s+obj\s*([\s\S]*?)\s*endobj/g;
   let match;
   while ((match = regex.exec(pdfStr)) !== null) {
@@ -483,7 +483,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
           "Supervisor_Signature"
         );
 
-        const pdfStr = pass2.toString("latin1");
+        const pdfStr = pass2.toString("utf8");
         assert.ok(pdfStr.includes("/Type /Sig"), "Must contain signature dictionary");
         assert.ok(pdfStr.includes("/FT /Sig"), "Must contain signature widget");
       });
@@ -667,7 +667,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
           "Verification"
         );
 
-        const pdfStr = pass2.toString("latin1");
+        const pdfStr = pass2.toString("utf8");
         assert.match(pdfStr, /\/DR\s+(?:<<|\d+\s+0\s+R)/, "AcroForm /DR must be preserved");
         const doc = await PDFDocument.load(pass2);
         assert.ok(doc, "PDF must load cleanly with indirect /DR");
@@ -683,7 +683,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
           "Verification"
         );
 
-        const pdfStr = pass2.toString("latin1");
+        const pdfStr = pass2.toString("utf8");
         assert.match(pdfStr, /\/DR\s*<<[\s\S]*?>>/, "Inline /DR must remain a balanced dictionary");
       });
 
@@ -697,7 +697,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
           "Verification"
         );
 
-        const acroFormMatches = [...pass2.toString("latin1").matchAll(/\/Fields\s*\[[^\]]*\][\s\S]*?>>/g)];
+        const acroFormMatches = [...pass2.toString("utf8").matchAll(/\/Fields\s*\[[^\]]*\][\s\S]*?>>/g)];
         assert.ok(acroFormMatches.length > 0, "Must find AcroForm definition");
         for (const m of acroFormMatches) {
           assert.ok(m[0].includes(">>"), "AcroForm must terminate with >>");
@@ -724,7 +724,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
           "Verification"
         );
 
-        const pdfStr = pass2.toString("latin1");
+        const pdfStr = pass2.toString("utf8");
         assert.match(pdfStr, /\/DA\s*\([^)]*\)/, "Default appearance /DA must be preserved");
       });
     });
@@ -786,7 +786,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
           signerName: "Juan Dela Cruz",
         });
 
-        const pdfStr = signed.signedBuffer.toString("latin1");
+        const pdfStr = signed.signedBuffer.toString("utf8");
         assert.ok(pdfStr.includes("q\nBT\n/F_PNPKI") || pdfStr.includes("q\n/F_PNPKI") || pdfStr.includes("/Helv"), "Text stream exists");
       });
     });
@@ -851,7 +851,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
           "Supervisor_Signature"
         );
 
-        const pdfStr = pass2.toString("latin1");
+        const pdfStr = pass2.toString("utf8");
         const sigMatches = [...pdfStr.matchAll(/\/Type\s*\/Sig\b/g)];
         assert.strictEqual(sigMatches.length, 2, "Must contain exactly 2 signatures in 2 revisions");
       });
@@ -883,7 +883,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
       it("T1.8.5: Signed PDFs contain valid /ByteRange and PKCS#7 /Contents", async () => {
         const basePdf = await createSyntheticPdf();
         const signed = await signPdfBuffer(basePdf, cachedDefaultP12Base64, DEFAULT_P12_PASS);
-        const pdfStr = signed.signedBuffer.toString("latin1");
+        const pdfStr = signed.signedBuffer.toString("utf8");
         assert.match(pdfStr, /\/ByteRange\s*\[\s*\d+\s+\d+\s+\d+\s+\d+\s*\]/, "Must have resolved ByteRange");
         assert.match(pdfStr, /\/Filter\s*\/Adobe\.PPKLite/, "Must use Adobe.PPKLite filter");
         assert.match(pdfStr, /\/SubFilter\s*\/adbe\.pkcs7\.detached/, "Must use adbe.pkcs7.detached");
@@ -985,7 +985,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
           0,
           { isCounterSign: true }
         );
-        assert.ok(pass2.toString("latin1").includes("DigiSigned"));
+        assert.ok(pass2.toString("utf8").includes("DigiSigned"));
       });
 
       it("T2.2.4: High aspect-ratio signature image embeds without distorting", async () => {
@@ -1094,7 +1094,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
           [[100, 200, 225, 226]],
           "Verification"
         );
-        const pdfStr = pass2.toString("latin1");
+        const pdfStr = pass2.toString("utf8");
         assert.ok(pdfStr.includes("trailer"));
       });
 
@@ -1143,7 +1143,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
           "Verification 4"
         );
 
-        const pdfStr = pass4.toString("latin1");
+        const pdfStr = pass4.toString("utf8");
         const sigMatches = [...pdfStr.matchAll(/\/Type\s*\/Sig\b/g)];
         assert.strictEqual(sigMatches.length, 4, "Must contain all 4 signatures");
       });
@@ -1168,7 +1168,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
           [[100, 200, 225, 226]],
           "Verification"
         );
-        assert.match(pass2.toString("latin1"), /\/DR\s*<<\s*\/Font/);
+        assert.match(pass2.toString("utf8"), /\/DR\s*<<\s*\/Font/);
       });
 
       it("T2.5.3: AcroForm with empty Fields [] array appends cleanly", async () => {
@@ -1197,7 +1197,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
       it("T2.5.5: AcroForm default appearance string /DA is preserved", async () => {
         const basePdf = await createSyntheticPdf({ indirectDR: true });
         const pass1 = await signPdfBuffer(basePdf, cachedDefaultP12Base64, DEFAULT_P12_PASS);
-        const pdfStr = pass1.signedBuffer.toString("latin1");
+        const pdfStr = pass1.signedBuffer.toString("utf8");
         assert.match(pdfStr, /\/DA\s*\(/);
       });
     });
@@ -1351,7 +1351,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
 
       const doc = await PDFDocument.load(pass2);
       assert.strictEqual(doc.getPageCount(), 1);
-      const pdfStr = pass2.toString("latin1");
+      const pdfStr = pass2.toString("utf8");
       assert.strictEqual((pdfStr.match(/\/Type\s*\/Sig\b/g) || []).length, 2);
     });
 
@@ -1427,7 +1427,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
       });
 
       assert.strictEqual(signed.signerName, "Engr. Ace Malto");
-      const pdfStr = signed.signedBuffer.toString("latin1");
+      const pdfStr = signed.signedBuffer.toString("utf8");
       assert.ok(pdfStr.includes("Engr. Ace Malto"));
     });
 
@@ -1462,7 +1462,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
         "Final Audit"
       );
 
-      const pdfStr = p3.toString("latin1");
+      const pdfStr = p3.toString("utf8");
       const sigs = [...pdfStr.matchAll(/\/Type\s*\/Sig\b/g)];
       assert.strictEqual(sigs.length, 3, "All 3 signatures preserved across 3 revisions");
     });
@@ -1518,7 +1518,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
         }
       );
 
-      const pdfStr = pass2.toString("latin1");
+      const pdfStr = pass2.toString("utf8");
       assert.strictEqual((pdfStr.match(/\/Type\s*\/Sig\b/g) || []).length, 2);
       const doc = await PDFDocument.load(pass2);
       assert.ok(doc);
@@ -1558,7 +1558,7 @@ describe("Adobe Acrobat Digital Signature Verification Compliance Test Suite", (
       });
 
       assert.ok(signed.signerName.includes("Odoño"));
-      const pdfStr = signed.signedBuffer.toString("latin1");
+      const pdfStr = signed.signedBuffer.toString("utf8");
       assert.ok(pdfStr.includes("/Filter /Adobe.PPKLite"));
     });
 

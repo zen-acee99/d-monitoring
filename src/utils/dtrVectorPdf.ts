@@ -41,7 +41,7 @@ export async function normalizePdfAnnotations(pdfBytes: Uint8Array | ArrayBuffer
   const incoming = pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes);
   // CRITICAL: If document is already cryptographically signed, NEVER run pdfDoc.save()
   // because re-serializing destroys existing cryptographic ByteRange boundaries (ISO 32000-1).
-  const pdfStr = new TextDecoder("latin1").decode(incoming);
+  const pdfStr = new TextDecoder("utf-8").decode(incoming);
   if (pdfStr.includes("/ByteRange") || /\/Type\s*\/Sig\b/.test(pdfStr)) {
     return incoming;
   }
@@ -1401,7 +1401,7 @@ export function loadPageFontCMaps(pdfDoc: PDFDocument, page: any): Map<string, M
           const toUnicodeStream = pdfDoc.context.lookup(toUnicodeRef);
           if (toUnicodeStream && (toUnicodeStream instanceof PDFRawStream || (toUnicodeStream as any).getContents || (toUnicodeStream as any).decode)) {
             const decoded = decodePDFRawStream(toUnicodeStream as any).decode();
-            const cmapText = new TextDecoder("latin1").decode(decoded);
+            const cmapText = new TextDecoder("utf-8").decode(decoded);
             fontCMaps.set(fontName, parsePdfCMap(cmapText));
           }
         }
@@ -1505,7 +1505,7 @@ function decodeBytesWithCMap(rawBytes: Uint8Array, cmap?: Map<string, string>): 
     if (s.trim()) return s;
   }
 
-  return new TextDecoder("latin1").decode(rawBytes);
+  return new TextDecoder("utf-8").decode(rawBytes);
 }
 
 export function extractTextItemsFromContentStream(
@@ -1568,7 +1568,7 @@ export function extractTextItemsFromContentStream(
     ) {
       idx++;
     }
-    return new TextDecoder("latin1").decode(streamBytes.subarray(start, idx));
+    return new TextDecoder("utf-8").decode(streamBytes.subarray(start, idx));
   }
 
   function readLiteralStringBytes(): Uint8Array {
@@ -1912,9 +1912,9 @@ export function checkVisualTypographyOnPage(
             }
             let apStr = "";
             if (typeof TextDecoder !== "undefined") {
-              apStr = new TextDecoder("latin1").decode(decoded).toLowerCase();
+              apStr = new TextDecoder("utf-8").decode(decoded).toLowerCase();
             } else if (typeof Buffer !== "undefined") {
-              apStr = (Buffer as any).from(decoded).toString("latin1").toLowerCase();
+              apStr = (Buffer as any).from(decoded).toString("utf-8").toLowerCase();
             } else {
               apStr = Array.from(decoded).map((b) => String.fromCharCode(b)).join("").toLowerCase();
             }
@@ -2007,7 +2007,7 @@ export function extractVerticalLinesFromContentStream(
   if (!sBytes || sBytes.length === 0) return [];
   const lines: PdfVerticalLine[] = [];
 
-  const str = new TextDecoder("latin1").decode(sBytes);
+  const str = new TextDecoder("utf-8").decode(sBytes);
   const tokenRegex = /(-?\d*\.?\d+(?:[eE][-+]?\d+)?|[a-zA-Z*]+)/g;
   let match: RegExpExecArray | null;
 
@@ -2110,7 +2110,7 @@ export function extractHorizontalLinesFromContentStream(
   if (!sBytes || sBytes.length === 0) return [];
   const lines: PdfHorizontalLine[] = [];
 
-  const str = new TextDecoder("latin1").decode(sBytes);
+  const str = new TextDecoder("utf-8").decode(sBytes);
   const tokenRegex = /(-?\d*\.?\d+(?:[eE][-+]?\d+)?|[a-zA-Z*]+)/g;
   let match: RegExpExecArray | null;
 
@@ -2479,7 +2479,7 @@ export async function signUploadedArPdfBytes(
   supervisorTitle?: string
 ): Promise<{ bytes: Uint8Array; resolvedSignerName: string }> {
   const incoming = existingPdfBytes instanceof Uint8Array ? existingPdfBytes : new Uint8Array(existingPdfBytes);
-  const pdfStr = new TextDecoder("latin1").decode(incoming);
+  const pdfStr = new TextDecoder("utf-8").decode(incoming);
   const isAlreadySigned = pdfStr.includes("/ByteRange") || /\/Type\s*\/Sig\b/.test(pdfStr);
 
   const pdfDoc = await safeLoadPdfDocument(incoming);
@@ -2763,7 +2763,7 @@ export function detectExistingPdfSignatures(pdfDoc: PDFDocument): DetectedPdfSig
                 const nObj = page.node.context.lookup(nRef);
                 if (nObj && typeof (nObj as any).getContents === "function") {
                   const bytes = (nObj as any).getContents();
-                  const text = new TextDecoder("latin1").decode(bytes);
+                  const text = new TextDecoder("utf-8").decode(bytes);
                   const match = text.match(/by\s+([A-Za-z\s\.,\-]+)/i) || text.match(/Digitally signed\s+by\s+([A-Za-z\s\.,\-]+)/i);
                   if (match) {
                     signerName = match[1].replace(/[()\\]/g, "").trim();
@@ -4577,7 +4577,7 @@ export async function signUploadedPersonnelPdfBytes(
       : new Uint8Array(existingPdfBytes);
 
   // Check if PDF is already cryptographically signed across the entire document
-  const pdfStr = new TextDecoder("latin1").decode(incomingBytes);
+  const pdfStr = new TextDecoder("utf-8").decode(incomingBytes);
   const isAlreadySigned =
     pdfStr.includes("/ByteRange") ||
     /\/Type\s*\/Sig\b/.test(pdfStr);
